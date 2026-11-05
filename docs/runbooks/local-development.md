@@ -29,13 +29,18 @@ Pin: [`docs/UPSTREAM_PIN.md`](../UPSTREAM_PIN.md).
 ## Bring-up
 
 ```bash
-cp .env.example .env            # or ./install.sh (interactive)
+cp .env.example .env
+# Required for local CLI/boot with the stock example values:
+#   SHOPANDA_DEV_MODE=true
+#   SHOPANDA_AUTH_JWT_SECRET=$(openssl rand -hex 32)
+# PostgreSQL must be reachable (docker compose up -d postgres, or native).
 go build -o app ./cmd/api
 ./app setup                     # connectivity check, migrations, seed
 ./app dev                       # HTTP + embedded worker + scheduler
+./app help                      # live command list (needs a valid local .env)
 ```
 
-Open the default Shopanda storefront on the configured HTTP port (see `.env.example`).
+Open the default Shopanda storefront on the configured HTTP port (see `.env.example`). `docker compose up -d` is the upstream-supported path for Postgres + app processes.
 
 Plugin enablement (`plugins.metaldogs.enabled`) lands in `F1`. Until then `plugins/metaldogs` is an empty placeholder and is not registered.
 
