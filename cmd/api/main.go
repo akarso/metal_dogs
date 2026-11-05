@@ -1,0 +1,1389 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	adminApp "github.com/akarso/shopanda/internal/application/admin"
+	adminuserApp "github.com/akarso/shopanda/internal/application/adminuser"
+	cacheApp "github.com/akarso/shopanda/internal/application/cache"
+	cartApp "github.com/akarso/shopanda/internal/application/cart"
+	extensionApp "github.com/akarso/shopanda/internal/application/extension"
+	integrationApp "github.com/akarso/shopanda/internal/application/integration"
+	inventoryApp "github.com/akarso/shopanda/internal/application/inventory"
+	"github.com/akarso/shopanda/internal/application/notification"
+	searchApp "github.com/akarso/shopanda/internal/application/search"
+	setupApp "github.com/akarso/shopanda/internal/application/setup"
+	slotsApp "github.com/akarso/shopanda/internal/application/slots"
+	webhookApp "github.com/akarso/shopanda/internal/application/webhook"
+	"github.com/akarso/shopanda/internal/domain/cache"
+	"github.com/akarso/shopanda/internal/domain/customer"
+	"github.com/akarso/shopanda/internal/domain/jobs"
+	"github.com/akarso/shopanda/internal/domain/mail"
+	"github.com/akarso/shopanda/internal/domain/rbac"
+	"github.com/akarso/shopanda/internal/domain/scheduler"
+	"github.com/akarso/shopanda/internal/domain/search"
+	"github.com/akarso/shopanda/internal/infrastructure/cron"
+	"github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/internal/platform/config"
+	"github.com/akarso/shopanda/internal/platform/db"
+	"github.com/akarso/shopanda/internal/platform/event"
+	"github.com/akarso/shopanda/internal/platform/logger"
+	"github.com/akarso/shopanda/internal/platform/metrics"
+	"github.com/akarso/shopanda/internal/platform/migrate"
+
+	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/internal/platform/runtime"
+	"github.com/akarso/shopanda/internal/platform/tracing"
+	"github.com/akarso/shopanda/internal/seed"
+
+	shophttp "github.com/akarso/shopanda/internal/interfaces/http"
+
+	"gopkg.in/yaml.v3"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	result, err := config.Load(config.FindConfigFile())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cfg := result.Config
+
+	log := logger.New(cfg.Log.Level)
+
+	if result.DotEnvUsed {
+		log.Warn("app.config.dotenv", map[string]interface{}{
+			"path": result.DotEnvPath,
+			"message": ".env file loaded — this is a development convenience; " +
+				"in production, prefer configs/config.yaml or export variables in your shell " +
+				"before starting the binary",
+		})
+	}
+
+	log.Info("app.config.loaded", map[string]interface{}{
+		"config": cfg.String(),
+	})
+
+	// Subcommand dispatch.
+	if len(os.Args) > 1 {
+		var pluginCLIRegistry *plugin.Registry
+		pluginCLIRegistryFn := func() (*plugin.Registry, error) {
+			if pluginCLIRegistry == nil {
+				reg, err := bootstrapPluginCLIRegistry(cfg, log)
+				if err != nil {
+					return nil, err
+				}
+				pluginCLIRegistry = reg
+			}
+			return pluginCLIRegistry, nil
+		}
+		switch os.Args[1] {
+		case "help":
+			printHelp(cfg, log, pluginCLIRegistryFn)
+			return nil
+		case "setup":
+			return runSetup(cfg, log)
+		case "migrate":
+			return runMigrate(cfg, log)
+		case "serve":
+			return runServe(cfg, log, false)
+		case "dev":
+			return runServe(cfg, log, cfg.Dev.EmbedScheduler)
+		case "worker":
+			return runWorker(cfg, log)
+		case "scheduler":
+			return runScheduler(cfg, log)
+		case "seed":
+			return runSeed(cfg, log)
+		case "search:reindex":
+			return runSearchReindex(os.Stdout, cfg, log, os.Args[2:])
+		case "search:reindex-runs:reconcile":
+			return runSearchReindexRunsReconcile(os.Stdout, cfg, log, os.Args[2:])
+		case "config:export":
+			return runConfigExport(cfg, log)
+		case "config:import":
+			return runConfigImport(cfg, log)
+		case "import:products":
+			return runImportProducts(cfg, log)
+		case "export:products":
+			return runExportProducts(cfg, log)
+		case "import:bundle-components":
+			return runImportBundleComponents(cfg, log)
+		case "export:bundle-components":
+			return runExportBundleComponents(cfg, log)
+		case "import:grouped-members":
+			return runImportGroupedMembers(cfg, log)
+		case "export:grouped-members":
+			return runExportGroupedMembers(cfg, log)
+		case "import:linked-eligible-parents":
+			return runImportLinkedEligibleParents(cfg, log)
+		case "export:linked-eligible-parents":
+			return runExportLinkedEligibleParents(cfg, log)
+		case "import:linked-eligible-categories":
+			return runImportLinkedEligibleCategories(cfg, log)
+		case "export:linked-eligible-categories":
+			return runExportLinkedEligibleCategories(cfg, log)
+		case "import:downloadable-files":
+			return runImportDownloadableFiles(cfg, log)
+		case "export:downloadable-files":
+			return runExportDownloadableFiles(cfg, log)
+		case "import:stock":
+			return runImportStock(cfg, log)
+		case "export:stock":
+			return runExportStock(cfg, log)
+		case "import:customers":
+			return runImportCustomers(cfg, log)
+		case "export:customers":
+			return runExportCustomers(cfg, log)
+		case "import:attributes":
+			return runImportAttributes(cfg, log)
+		case "export:attributes":
+			return runExportAttributes(cfg, log)
+		case "import:categories":
+			return runImportCategories(cfg, log)
+		case "export:categories":
+			return runExportCategories(cfg, log)
+		case "import:prices":
+			return runImportPrices(cfg, log)
+		case "export:prices":
+			return runExportPrices(cfg, log)
+		case "export:epr":
+			return runExportEpr(cfg, log)
+		case "export:oss":
+			return runExportOss(cfg, log)
+		case "jobs:list":
+			return runJobsList(os.Stdout, cfg, log, os.Args[2:])
+		case "jobs:show":
+			return runJobsShow(os.Stdout, cfg, log, os.Args[2:])
+		case "jobs:retry":
+			return runJobsRetry(os.Stdout, cfg, log, os.Args[2:])
+		case "jobs:cancel":
+			return runJobsCancel(os.Stdout, cfg, log, os.Args[2:])
+		case "cache:stats":
+			return runCacheStats(os.Stdout, cfg, log, os.Args[2:])
+		case "cache:clear":
+			return runCacheClear(os.Stdout, cfg, log, os.Args[2:])
+		case "cache:purge-url":
+			return runCachePurgeURL(os.Stdout, cfg, log, os.Args[2:])
+		case "theme:init":
+			return runThemeInit(cfg, log, os.Args[2:])
+		case "schedule:list":
+			return runScheduleList(os.Stdout, cfg, log, os.Args[2:])
+		case "schedule:trigger":
+			return runScheduleTrigger(os.Stdout, cfg, log, os.Args[2:])
+		case "schedule:enable":
+			return runScheduleEnable(os.Stdout, cfg, log, os.Args[2:])
+		case "schedule:disable":
+			return runScheduleDisable(os.Stdout, cfg, log, os.Args[2:])
+		case "plugins":
+			if len(os.Args) < 3 {
+				return fmt.Errorf("usage: app plugins report [--json]")
+			}
+			switch os.Args[2] {
+			case "report":
+				return runPluginsReport(os.Stdout, cfg, log, os.Args[3:])
+			default:
+				return fmt.Errorf("unknown plugins command: %s (try: plugins report)", os.Args[2])
+			}
+		default:
+			if ran, err := runPluginCLICommand(cfg, log, pluginCLIRegistryFn, os.Args[1], os.Args[2:]); err != nil {
+				return err
+			} else if ran {
+				return nil
+			}
+			return fmt.Errorf("unknown command: %s (run 'help' for usage)", os.Args[1])
+		}
+	}
+
+	// Default: start HTTP server (production-style, no embedded scheduler).
+	return runServe(cfg, log, false)
+}
+
+func runServe(cfg *config.Config, log logger.Logger, embedScheduler bool) error {
+	// Database.
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	repos, err := openServeRepos(conn)
+	if err != nil {
+		return err
+	}
+
+	// Tracing must be set up before wireServeRuntime (which constructs the
+	// checkout Workflow) and buildServeHandler (which constructs
+	// TracingMiddleware): both resolve their otel.Tracer(...) handle once,
+	// at construction time, and only get a real exporter if the global SDK
+	// provider is already installed by then (see workflow.go's NewWorkflow
+	// / shared.TracingMiddleware for why a handle obtained before Setup
+	// runs would otherwise stay bound to the no-op default forever).
+	tracingShutdown, err := tracing.Setup(context.Background(), cfg.Tracing, "shopanda-api")
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	// Bounded best-effort flush for every early-return path below, once
+	// Setup has installed a real provider — without this, a startup
+	// failure after that point would leak the batch exporter's background
+	// goroutine and drop any spans already buffered (unlikely to be more
+	// than a handful this early, but not zero: process exit via
+	// os.Exit(1) in main() doesn't run this either way, so it's cheap
+	// insurance against that assumption ever changing rather than a fix
+	// for an observed problem).
+	shutdownTracing := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracingShutdown(ctx); err != nil {
+			log.Error("tracing.shutdown.failed", err, nil)
+		}
+	}
+
+	metricsRecorder, metricsHandler := newMetrics(cfg)
+
+	bootSig := startBootSignal()
+	rt, err := wireServeRuntime(cfg, log, conn, repos, metricsRecorder, bootSig.Context())
+	bootInterrupted := bootSig.Stop()
+	if err != nil {
+		shutdownTracing()
+		return err // UnbindRuntime already run inside wireServeRuntime
+	}
+	if bootInterrupted != nil {
+		shutdownTracing()
+		rbac.UnbindRuntime()
+		if rt.rateLimitClose != nil {
+			rt.rateLimitClose()
+		}
+		return bootInterrupted
+	}
+	if rt.rateLimitClose != nil {
+		defer rt.rateLimitClose()
+	}
+
+	serveCtx, serveCancel := context.WithCancel(context.Background())
+	defer serveCancel()
+	handler, err := buildServeHandler(cfg, log, rt, conn, serveCtx)
+	if err != nil {
+		shutdownTracing()
+		rbac.UnbindRuntime()
+		return err
+	}
+
+	srv := shophttp.NewServer(
+		cfg.Server.Host,
+		cfg.Server.Port,
+		handler,
+		log,
+	)
+
+	var sched scheduler.Scheduler
+	var schedulerCancel context.CancelFunc
+	var schedulerDone chan struct{}
+	if embedScheduler {
+		// PR-1030: attach the Postgres-backed scheduler store (already
+		// constructed in wireServeRuntime for the admin API's List/
+		// SetEnabled, which must work regardless of whether a scheduler is
+		// embedded here) so this process's registrations/overrides are
+		// visible admin-side, and hand the store a LocalTrigger reference
+		// so the admin API's Trigger action actually works from this
+		// process — it stays a no-op-returning-conflict in a `serve`
+		// process that doesn't embed a scheduler (production default).
+		cronSched := cron.New(log, cron.WithStore(rt.schedulerStore))
+		rt.schedulerStore.SetLocalTrigger(cronSched)
+		sched = cronSched
+		runtime.RegisterCacheCleanup(rt.jobQueue, cacheApp.JobType, log, sched)
+		runtime.RegisterCartRecovery(rt.jobQueue, log, sched)
+		runtime.RegisterAuditRetention(rt.jobQueue, log, sched)
+		runtime.RegisterReservationExpiry(rt.jobQueue, log, sched)
+		if cfg.Queue.Driver == "postgres" {
+			// setupWorker only registers a handler for this job type under
+			// queue.driver=postgres (see its own comment) — skip enqueueing
+			// it here too, or a broker-backed deployment's worker would
+			// just log "no handler registered" and fail the job every tick.
+			runtime.RegisterReindexReconcile(rt.jobQueue, log, sched)
+		}
+		if err := integrationApp.RegisterSyncJobCronTriggers(rt.pluginApp, rt.jobQueue, sched, log); err != nil {
+			shutdownTracing()
+			rbac.UnbindRuntime()
+			return fmt.Errorf("sync job cron triggers: %w", err)
+		}
+		schedulerCtx, cancel := context.WithCancel(context.Background())
+		schedulerCancel = cancel
+		schedulerDone = make(chan struct{})
+		go func() {
+			defer close(schedulerDone)
+			sched.Start(schedulerCtx)
+		}()
+		log.Info("app.dev.scheduler.embedded", nil)
+	}
+
+	// Start job worker in background.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	workerDone := make(chan struct{})
+	go func() {
+		rt.jobWorker.Start(workerCtx)
+		close(workerDone)
+	}()
+
+	// Metrics: dedicated listener, only started when metrics.enabled (see
+	// configs/config.example.yaml). Scrapes are stateless, so an abrupt
+	// Close() on shutdown is sufficient — no drain grace needed.
+	metricsSrv, metricsDone, err := startMetricsServer(cfg, metricsHandler, log)
+	if err != nil {
+		// Scheduler/worker are already running goroutines at this point —
+		// cancel and wait for them (bounded) instead of leaking them into a
+		// process that returns an error but doesn't necessarily exit.
+		earlyCancels := []func(){workerCancel}
+		earlyDones := []<-chan struct{}{workerDone}
+		if schedulerCancel != nil {
+			earlyCancels = append(earlyCancels, schedulerCancel)
+			earlyDones = append(earlyDones, schedulerDone)
+		}
+		runtime.ShutdownBackground(log, 10*time.Second, sched, earlyCancels, earlyDones)
+		shutdownTracing()
+		rbac.UnbindRuntime()
+		return fmt.Errorf("metrics: %w", err)
+	}
+
+	// Block until server shuts down (handles SIGINT/SIGTERM internally).
+	err = srv.ListenAndServe()
+
+	var cancels []func()
+	var dones []<-chan struct{}
+	if schedulerCancel != nil {
+		cancels = append(cancels, schedulerCancel)
+		dones = append(dones, schedulerDone)
+	}
+	cancels = append(cancels, workerCancel)
+	dones = append(dones, workerDone)
+	if metricsSrv != nil {
+		cancels = append(cancels, func() { metricsSrv.Close() })
+		dones = append(dones, metricsDone)
+	}
+
+	const backgroundTimeout = 10 * time.Second
+	// Extra wait so Drain can log event.bus.drain.timeout before process exit.
+	// Drain's 10s is the handler budget; this slack is not extra handler grace.
+	const drainWaitSlack = time.Second
+	rt.bus.BeginShutdown()
+	busDone := make(chan struct{})
+	go func() {
+		defer close(busDone)
+		rt.bus.Drain(backgroundTimeout)
+	}()
+	dones = append(dones, busDone)
+	runtime.ShutdownBackground(log, backgroundTimeout+drainWaitSlack, sched, cancels, dones)
+
+	// Flush any spans still buffered by the batch processor, after
+	// everything else has stopped so shutdown-path spans (if any future
+	// instrumentation adds them) aren't dropped.
+	shutdownTracing()
+
+	return err
+}
+
+func runSetup(cfg *config.Config, log logger.Logger) error {
+	skipSeed := false
+	demoSeed := false
+	verbose := false
+
+	for _, arg := range os.Args[2:] {
+		switch arg {
+		case "--skip-seed":
+			skipSeed = true
+		case "--demo-seed":
+			demoSeed = true
+		case "--verbose":
+			verbose = true
+		case "--non-interactive":
+			// Accepted for forward compatibility; currently the default.
+		case "--help", "-h":
+			fmt.Println(`Usage: shopanda setup [flags]
+
+Flags:
+  --skip-seed          Skip the seeding step
+  --demo-seed          Populate demo compliance metadata on seed catalog products
+  --verbose            Print structured log entries during setup
+  --non-interactive    Use env vars only, no prompts (default)
+  --help, -h           Show this help`)
+			return nil
+		default:
+			if strings.HasPrefix(arg, "--") {
+				return fmt.Errorf("setup: unknown flag %q (boolean flags do not accept =value syntax)", arg)
+			}
+			return fmt.Errorf("setup: unexpected argument %q", arg)
+		}
+	}
+
+	// Step 1: Database connectivity.
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("setup: database: %w", err)
+	}
+	defer conn.Close()
+	fmt.Println("✓ Database connected")
+	if verbose {
+		log.Info("setup.db.connected", map[string]interface{}{
+			"host":     cfg.Database.Host,
+			"port":     cfg.Database.Port,
+			"database": cfg.Database.Name,
+		})
+	}
+
+	// Step 2: Migrations (core then plugin Migrator FS — no InitAll).
+	applied, err := migrate.Run(conn, "migrations")
+	if err != nil {
+		return fmt.Errorf("setup: migrate: %w", err)
+	}
+	pluginRes, err := applyPluginMigrations(context.Background(), cfg, log, conn)
+	if err != nil {
+		if applied > 0 {
+			fmt.Printf("✓ %d core migrations applied (plugin step failed)\n", applied)
+		}
+		return fmt.Errorf("setup: %w", err)
+	}
+	if applied > 0 {
+		fmt.Printf("✓ %d core migrations applied\n", applied)
+	} else {
+		fmt.Println("✓ Core migrations up to date")
+	}
+	if pluginRes.Applied > 0 || pluginRes.Adopted > 0 {
+		fmt.Printf("✓ Plugin migrations applied=%d adopted=%d\n", pluginRes.Applied, pluginRes.Adopted)
+	} else {
+		fmt.Println("✓ Plugin migrations up to date")
+	}
+	if verbose {
+		log.Info("setup.migrate", map[string]interface{}{
+			"applied":        applied,
+			"plugin_applied": pluginRes.Applied,
+			"plugin_adopted": pluginRes.Adopted,
+		})
+	}
+
+	// Step 3: Seeders.
+	if skipSeed {
+		fmt.Println("– Seeding skipped (--skip-seed)")
+	} else {
+		reg := seed.NewRegistry()
+		registerDefaultSeeders(reg)
+
+		deps := seed.Deps{DB: conn, Logger: log, DemoData: demoSeed}
+		result, seedErr := reg.Run(context.Background(), deps)
+		if seedErr != nil {
+			return fmt.Errorf("setup: seed: %w", seedErr)
+		}
+		fmt.Printf("✓ Seed complete (executed: %d, skipped: %d)\n",
+			result.Executed, result.Skipped)
+		if verbose {
+			log.Info("setup.seed", map[string]interface{}{
+				"executed": result.Executed,
+				"skipped":  result.Skipped,
+			})
+		}
+	}
+
+	// Summary.
+	baseURL := cfg.Server.PublicBaseURL
+	if baseURL == "" {
+		baseURL = fmt.Sprintf("http://localhost:%d", cfg.Server.Port)
+	}
+	fmt.Println()
+	fmt.Printf("Store is ready at %s\n", baseURL)
+	fmt.Printf("Admin API: %s/api/v1/admin\n", baseURL)
+	fmt.Printf("API Docs:  %s/docs\n", baseURL)
+
+	return nil
+}
+
+func runMigrate(cfg *config.Config, log logger.Logger) error {
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	log.Info("migrate.start", nil)
+
+	ctx := context.Background()
+	applied, err := migrate.Run(conn, "migrations")
+	if err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+
+	pluginRes, err := applyPluginMigrations(ctx, cfg, log, conn)
+	if err != nil {
+		log.Error("migrate.plugin_failed", err, map[string]interface{}{
+			"core_applied": applied,
+		})
+		return err
+	}
+
+	log.Info("migrate.complete", map[string]interface{}{
+		"applied":        applied,
+		"plugin_applied": pluginRes.Applied,
+		"plugin_adopted": pluginRes.Adopted,
+	})
+	return nil
+}
+
+func runScheduler(cfg *config.Config, log logger.Logger) error {
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, cfg)
+	boot, err := newPluginBootstrap(conn)
+	if err != nil {
+		return err
+	}
+	pluginApp := &plugin.App{
+		Logger:    log,
+		Config:    cfg,
+		Bootstrap: boot,
+	}
+	pluginApp.SetExtensionRegistry(extensionApp.NewRegistry())
+	if _, err := wireIntegrationStockSyncerFromDB(conn, pluginApp); err != nil {
+		return err
+	}
+	preparePermissionRegistry(pluginApp)
+	bootSig := startBootSignal()
+	summary := registry.InitAllContext(bootSig.Context(), pluginApp)
+	bootInterrupted := bootSig.Stop()
+	if err := plugin.InitSummaryError(summary); err != nil {
+		return err
+	}
+	if summary.Failed > 0 {
+		return fmt.Errorf("plugin init failed: %d plugin(s) failed to initialize", summary.Failed)
+	}
+	if bootInterrupted != nil {
+		return bootInterrupted
+	}
+	freezePermissionRegistry(pluginApp) // scheduler: freeze only (no BindRuntime; multi-command process)
+
+	// Bind the plugin-registered queue when present (default core/postgres-queue).
+	// BindQueue rejects a different instance, so a second NewJobQueue cannot
+	// silently split cron/Enqueue from the worker's queue.
+	jobQueue, err := resolveAndBindJobQueue(pluginApp, conn, cfg)
+	if err != nil {
+		return err
+	}
+	// PR-1030: the standalone scheduler process is the one that's actually
+	// running in production (RUNTIME_MODES.md), so it's the one that must
+	// write its registrations and read enable/disable overrides through
+	// the same Postgres table the admin API (hosted by `serve`, a
+	// different process) reads/writes — no LocalTrigger attached here,
+	// since there's no HTTP surface in this process for it to serve.
+	schedulerStore, err := postgres.NewSchedulerStore(conn)
+	if err != nil {
+		return fmt.Errorf("scheduler store: %w", err)
+	}
+	var sched scheduler.Scheduler = cron.New(log, cron.WithStore(schedulerStore))
+	if err := registerSchedulerTasks(pluginApp, jobQueue, log, sched); err != nil {
+		return err
+	}
+
+	// Block until interrupted (context cancelled via signal).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Listen for shutdown signals (same as server).
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		log.Info("scheduler.shutdown.signal", nil)
+		cancel()
+	}()
+
+	defer sched.Stop()
+	sched.Start(ctx)
+	return nil
+}
+
+func runConfigExport(cfg *config.Config, log logger.Logger) error {
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	repo := postgres.NewConfigRepo(conn)
+	entries, err := repo.All(context.Background())
+	if err != nil {
+		return fmt.Errorf("config export: %w", err)
+	}
+
+	// Build flat map keyed by full dot-notation keys.
+	// This avoids ambiguity between branch maps and map-valued leaves.
+	root := make(map[string]interface{}, len(entries))
+	for _, e := range entries {
+		if _, dup := root[e.Key]; dup {
+			return fmt.Errorf("config export: duplicate key %q", e.Key)
+		}
+		root[e.Key] = e.Value
+	}
+
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("config export: marshal: %w", err)
+	}
+	fmt.Print(string(out))
+	return nil
+}
+
+func runConfigImport(cfg *config.Config, log logger.Logger) error {
+	if len(os.Args) < 3 {
+		return fmt.Errorf("usage: app config:import <file.yaml>")
+	}
+	filePath := os.Args[2]
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("config import: read %s: %w", filePath, err)
+	}
+
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("config import: parse %s: %w", filePath, err)
+	}
+
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("config import: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	repo := postgres.NewConfigRepo(tx)
+	var count int
+	for k, v := range raw {
+		if err := repo.Set(ctx, k, v); err != nil {
+			return fmt.Errorf("config import: set %q: %w", k, err)
+		}
+		count++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("config import: commit: %w", err)
+	}
+
+	log.Info("config.import.complete", map[string]interface{}{
+		"file":    filePath,
+		"entries": count,
+	})
+	return nil
+}
+
+func runSeed(cfg *config.Config, log logger.Logger) error {
+	demoData := false
+	for _, arg := range os.Args[2:] {
+		switch arg {
+		case "--demo-seed":
+			demoData = true
+		case "--help", "-h":
+			fmt.Println(`Usage: shopanda seed [flags]
+
+Flags:
+  --demo-seed   Populate demo compliance metadata on seed catalog products
+  --help, -h    Show this help`)
+			return nil
+		default:
+			if strings.HasPrefix(arg, "--") {
+				return fmt.Errorf("seed: unknown flag %q", arg)
+			}
+			return fmt.Errorf("seed: unexpected argument %q", arg)
+		}
+	}
+
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	log.Info("seed.start", nil)
+
+	reg := seed.NewRegistry()
+	registerDefaultSeeders(reg)
+
+	deps := seed.Deps{
+		DB:       conn,
+		Logger:   log,
+		DemoData: demoData,
+	}
+
+	result, err := reg.Run(context.Background(), deps)
+	if err != nil {
+		return fmt.Errorf("seed: %w", err)
+	}
+
+	log.Info("seed.complete", map[string]interface{}{
+		"executed": result.Executed,
+		"skipped":  result.Skipped,
+	})
+
+	return nil
+}
+
+func registerDefaultSeeders(reg *seed.Registry) {
+	reg.Register(&seed.ConfigSeeder{})
+	reg.Register(&seed.StoreSeeder{})
+	reg.Register(&seed.TaxSeeder{})
+	reg.Register(&seed.AdminSeeder{})
+	reg.Register(&seed.CatalogSeeder{})
+	reg.Register(&seed.WeeeAttributesSeeder{})
+	reg.Register(&seed.EprAttributesSeeder{})
+	reg.Register(&seed.GpsrAttributesSeeder{})
+}
+
+func printHelp(cfg *config.Config, log logger.Logger, pluginCLIRegistryFn func() (*plugin.Registry, error)) {
+	fmt.Print(appendPluginCLIHelp(pluginCLIRegistryFn, `Usage: app <command> [arguments]
+
+Commands:
+  dev                  Start HTTP server with embedded worker and scheduler (local dev)
+  serve                Start the HTTP server with embedded worker (default)
+  setup                Run first-time setup (migrate + seed + verify)
+  worker               Start the background job worker
+  scheduler            Start the cron scheduler
+  migrate              Run database migrations (core then plugin-owned schema)
+  seed                 Seed the database with initial data
+  search:reindex       Re-index all products in the search engine ([--wait])
+  search:reindex-runs:reconcile <run-id> --reason=<text>
+                       Manually flip a stuck "processing" reindex run to "failed"
+  config:export        Export configuration to stdout (YAML)
+  config:import <file> Import configuration from a YAML file
+  import:products <f>  Import products from a CSV file
+  export:products <f>  Export products to a CSV file
+  import:bundle-components <f>  Import bundle component links from a CSV file
+  export:bundle-components <f>  Export bundle component links to a CSV file
+  import:grouped-members <f>  Import grouped member links from a CSV file
+  export:grouped-members <f>  Export grouped member links to a CSV file
+  import:linked-eligible-parents <f>  Import linked eligibility parent allowlist CSV
+  export:linked-eligible-parents <f>  Export linked eligibility parent allowlist CSV
+  import:linked-eligible-categories <f>  Import linked eligibility category rules CSV
+  export:linked-eligible-categories <f>  Export linked eligibility category rules CSV
+  import:downloadable-files <f>  Import downloadable file attachment metadata CSV
+  export:downloadable-files <f>  Export downloadable file attachment metadata CSV
+  import:stock <f>     Import stock from a CSV file
+  export:stock <f>     Export stock to a CSV file
+  import:customers <f> Import customers from a CSV file
+  export:customers <f> Export customers to a CSV file
+  import:attributes <f> Import attributes from a CSV file
+  export:attributes <f> Export attributes to a CSV file
+  import:categories <f> Import categories from a CSV file
+  export:categories <f> Export categories to a CSV file
+  import:prices <f>    Import prices from a CSV file
+  export:prices <f>    Export prices to a CSV file
+  export:epr <f>       Export EPR packaging metadata ([--include-empty] <file.csv>)
+  export:oss <f>       Export OSS/IOSS tax report ([--summary] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD] <file.csv>)
+  jobs:list            List background jobs ([--type=X] [--status=Y] [--limit=N] [--offset=N] [--json])
+  jobs:show <id>       Show a job's full detail ([--json])
+  jobs:retry <id>      Retry a failed job
+  jobs:cancel <id>     Cancel a pending job
+  cache:stats          Show cache occupancy ([--json])
+  cache:clear          Clear cache (--prefix=<p> | --tag=<t> | --key=<k> | --all)
+  cache:purge-url <p>  Purge full-page cache keys for a storefront path
+  schedule:list        List registered scheduled tasks ([--json])
+  schedule:trigger <n> Trigger a scheduled task immediately
+  schedule:enable <n>  Re-enable a scheduled task
+  schedule:disable <n> Disable a scheduled task
+  plugins report       Print registered extension points and ports ([--json])
+  theme:init <name>    Create a child theme under themes/<name>
+  help                 Show this help message
+`))
+}
+
+type storefrontOrderClaimEmailer struct {
+	mailer   mail.Mailer
+	claimURL string
+}
+
+func storefrontClaimPageURL(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if u := strings.TrimSpace(cfg.Frontend.ClaimURL); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	if cfg.Frontend.StorefrontHTML() {
+		base := strings.TrimRight(strings.TrimSpace(cfg.Server.PublicBaseURL), "/")
+		if base == "" {
+			return ""
+		}
+		return base + "/account/orders/claim"
+	}
+	return ""
+}
+
+func (e storefrontOrderClaimEmailer) SendClaimEmail(contactEmail, claimToken string) error {
+	if e.mailer == nil {
+		return fmt.Errorf("storefront order claim emailer: mailer not configured")
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(e.claimURL))
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return fmt.Errorf("storefront order claim emailer: invalid claim URL")
+	}
+	q := baseURL.Query()
+	q.Set("claim_token", claimToken)
+	baseURL.RawQuery = q.Encode()
+
+	body := "Use the link below to claim your guest order and view it in your account:\n\n" + baseURL.String()
+	return e.mailer.Send(context.Background(), mail.Message{
+		To:      contactEmail,
+		Subject: "Claim your guest order",
+		Body:    body,
+	})
+}
+
+// setupWorker creates a job queue, worker, mail handler, and cache cleanup
+// handler. It returns the configured worker, the job queue (needed by
+// notification services), and the cache instance.
+func setupWorker(conn *sql.DB, cfg *config.Config, log logger.Logger, app *plugin.App, metricsRecorder metrics.Recorder) (*jobs.Worker, jobs.Queue, cache.Cache, *cacheApp.FPCObserver, error) {
+	if metricsRecorder == nil {
+		metricsRecorder = metrics.Noop()
+	}
+	jobQueue, err := resolveAndBindJobQueue(app, conn, cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	jobWorker := jobs.NewWorker(jobQueue, log, time.Second).WithMetrics(metricsRecorder)
+
+	mailer, err := resolveMailer(app, cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	jobWorker.Register(notification.NewEmailSendHandler(mailer))
+
+	appCache, err := resolveCache(app, conn, cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	ed, ok := appCache.(cacheApp.ExpiredDeleter)
+	if !ok {
+		return nil, nil, nil, nil, fmt.Errorf("cache driver %q does not support expired entry cleanup", cfg.Cache.Driver)
+	}
+	jobWorker.Register(cacheApp.NewCleanupHandler(ed, log))
+
+	mailTemplates := mail.NewTemplates()
+	notification.RegisterTemplates(mailTemplates)
+	cartRepo, err := postgres.NewCartRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	customerRepo, err := postgres.NewCustomerRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	variantRepo, err := postgres.NewVariantRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	productRepo, err := postgres.NewProductRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	configRepo := postgres.NewConfigRepo(conn)
+	jobWorker.Register(cartApp.NewRecoveryHandler(cartApp.RecoveryHandlerConfig{
+		Carts:     cartRepo,
+		Customers: customerRepo,
+		Variants:  variantRepo,
+		Products:  productRepo,
+		Templates: mailTemplates,
+		Queue:     jobQueue,
+		StoreURL:  cfg.Server.PublicBaseURL,
+		Settings:  configRepo,
+		Log:       log,
+	}))
+
+	auditLogRepo, err := postgres.NewAuditLogRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	jobWorker.Register(adminApp.NewRetentionHandler(auditLogRepo, configRepo, log))
+
+	reservationRepo, err := postgres.NewReservationRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	reservationExpiryHandler := inventoryApp.NewReservationExpiryHandler(reservationRepo, log)
+	// app.Bus is nil for a process that never wired one (see runWorker's own
+	// comment on why it now does) — SetEventPublishing is skipped rather
+	// than called with a nil bus, matching its own documented default.
+	if app.Bus != nil {
+		reservationExpiryHandler.SetEventPublishing(variantRepo, app.Bus)
+	}
+	jobWorker.Register(reservationExpiryHandler)
+
+	merchantWebhookRepo, err := postgres.NewWebhookEndpointRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	jobWorker.Register(webhookApp.NewDeliverHandler(merchantWebhookRepo, webhookApp.NewDefaultHTTPPoster(), log).WithMetrics(metricsRecorder))
+
+	if err := integrationApp.RegisterSyncJobHandlers(app, jobWorker); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("sync job handlers: %w", err)
+	}
+
+	searchEngine, err := resolveSearchEngine(app, conn, cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	searchIndexRunRepo, err := postgres.NewSearchIndexRunRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	searchProductSource, err := postgres.NewSearchProductSource(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	// PR-1079: resolve visibility axes at index time (same as serve wiring).
+	searchFactsRepo, err := postgres.NewVisibilityFactsRepo(conn)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	searchProductSource.WithVisibility(searchFactsRepo, catalogVisibilityOptions(cfg))
+	fpcObs := cacheApp.NewFPCObserver(metricsRecorder)
+	fpcInvalidation := cacheApp.NewFPCInvalidationSubscriber(appCache, log).
+		WithObserver(fpcObs).
+		WithVisibilityListingPurge(cfg.Catalog.Visibility.Enforce)
+	jobWorker.Register(searchApp.NewReindexHandler(searchIndexRunRepo, searchProductSource, searchEngine, log).
+		WithListingCacheInvalidator(fpcInvalidation))
+
+	// ReconcileHandler's ReindexJobFinder queries the "jobs" table directly
+	// (not through the jobs.Queue port) — meaningful only when that table
+	// is actually the queue's source of truth, i.e. queue.driver=postgres.
+	// A broker-backed queue (redis/rabbitmq/kafka/sqs) leaves this table
+	// empty regardless of what jobs are really running, which would make
+	// FindReindexJobByRunID report "no job found" for every live job and
+	// the sweep would then incorrectly mark still-running runs failed —
+	// the same Postgres-queue-only constraint jobs.Reader/jobs.Admin
+	// already have (see jobs_cli.go's newJobsService). Registering the
+	// handler only under queue.driver=postgres avoids that false positive
+	// outright; RegisterReindexReconcile is skipped to match (no point
+	// enqueueing a job type no handler in this process can run) — see its
+	// call sites. search:reindex-runs:reconcile (the manual CLI) is
+	// unaffected: it only touches search_index_runs, never the jobs table.
+	if cfg.Queue.Driver == "postgres" {
+		reindexJobFinder, err := postgres.NewReindexJobFinder(conn)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		jobWorker.Register(searchApp.NewReconcileHandler(searchIndexRunRepo, reindexJobFinder, log))
+	} else {
+		log.Info("search.reindex.reconcile.disabled", map[string]interface{}{
+			"reason": fmt.Sprintf("queue.driver=%q, not postgres — job introspection has no equivalent for a broker-backed queue", cfg.Queue.Driver),
+		})
+	}
+
+	return jobWorker, jobQueue, appCache, fpcObs, nil
+}
+
+func runWorker(cfg *config.Config, log logger.Logger) error {
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer conn.Close()
+
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, cfg)
+	boot, err := newPluginBootstrap(conn)
+	if err != nil {
+		return err
+	}
+	// PR-1049: the reservation-expiry sweep registered below via
+	// setupWorker runs in this process — it needs a real bus to publish
+	// inventory.EventStockUpdated (see ReservationExpiryHandler.
+	// SetEventPublishing), which wireServeRuntime's own bus (serve's
+	// embedded worker) can't reach since this is a separate process.
+	bus := event.NewBus(log)
+	pluginApp := &plugin.App{
+		Logger:    log,
+		Bus:       bus,
+		Config:    cfg,
+		Bootstrap: boot,
+	}
+	pluginApp.SetExtensionRegistry(extensionApp.NewRegistry())
+	stockSyncSvc, err := wireIntegrationStockSyncerFromDB(conn, pluginApp)
+	if err != nil {
+		return err
+	}
+	preparePermissionRegistry(pluginApp)
+	bootSig := startBootSignal()
+	summary := registry.InitAllContext(bootSig.Context(), pluginApp)
+	bootInterrupted := bootSig.Stop()
+	if err := plugin.InitSummaryError(summary); err != nil {
+		return err
+	}
+	if summary.Failed > 0 {
+		return fmt.Errorf("plugin init failed: %d plugin(s) failed to initialize", summary.Failed)
+	}
+	if bootInterrupted != nil {
+		return bootInterrupted
+	}
+	freezePermissionRegistry(pluginApp) // worker: freeze only (no BindRuntime)
+
+	// serve and worker are separate processes; if both enable metrics and
+	// this one is still on the unmodified default, move it to the
+	// documented worker port so they don't collide on the same host.
+	if cfg.Metrics.Enabled && cfg.Metrics.Listen == config.DefaultMetricsListen {
+		cfg.Metrics.Listen = config.DefaultWorkerMetricsListen
+	}
+
+	// Set up before setupWorker for the same reason as runServe: any future
+	// job-handler instrumentation that resolves otel.Tracer(...) at
+	// construction time needs the real SDK provider installed first.
+	tracingShutdown, err := tracing.Setup(context.Background(), cfg.Tracing, "shopanda-worker")
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	shutdownTracing := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracingShutdown(ctx); err != nil {
+			log.Error("tracing.shutdown.failed", err, nil)
+		}
+	}
+
+	metricsRecorder, metricsHandler := newMetrics(cfg)
+	jobWorker, jobQueue, appCache, fpcObs, err := setupWorker(conn, cfg, log, pluginApp, metricsRecorder)
+	if err != nil {
+		shutdownTracing()
+		return err
+	}
+
+	// PR-1049: wire the ERP stock syncer's batched reindex trigger now
+	// that jobQueue exists — wireIntegrationStockSyncerFromDB ran earlier,
+	// before setupWorker, because the plugin app needs the syncer wired
+	// before registry.InitAll (plugins consume it during their own Init);
+	// ReindexService needs the queue setupWorker constructs, so this is
+	// necessarily a two-step wiring, same as wireServeRuntime's own
+	// (see its call site for the analogous reasoning). Best-effort: a
+	// failure here just means this worker's own ERP syncs won't trigger a
+	// reindex (the existing manual/scheduled search:reindex remains the
+	// fallback), not that the worker fails to start.
+	//
+	// IndexUpdateSubscriber is registered on this process's bus for the
+	// same reason: setupWorker publishes reservation-expiry
+	// inventory.EventStockUpdated here, and without a subscriber on this
+	// bus (wireServeRuntime's copy lives in the serve process) those
+	// restores would never enqueue a reindex.
+	//
+	// FPCInvalidationSubscriber likewise must live on this bus (PR-1046):
+	// stock restores would otherwise leave tagged full-page entries stale
+	// until TTL while only serve's bus ran DeleteByTag.
+	bundleParentsForWorker, bundleParentsErr := postgres.NewBundleComponentRepo(conn)
+	if bundleParentsErr != nil {
+		log.Warn("worker.bundle_parents_unavailable", map[string]interface{}{"error": bundleParentsErr.Error()})
+	}
+	fpcSub := cacheApp.NewFPCInvalidationSubscriber(appCache, log).
+		WithObserver(fpcObs).
+		WithVisibilityListingPurge(cfg.Catalog.Visibility.Enforce)
+	if bundleParentsForWorker != nil {
+		fpcSub = fpcSub.WithBundleParents(bundleParentsForWorker) // PR-1080: leaf → parent kit PDP purge
+	}
+	fpcSub.Register(bus)
+	if reindexService, err := newWorkerReindexService(conn, cfg, log, jobQueue); err != nil {
+		log.Warn("worker.stock_sync_reindex_unavailable", map[string]interface{}{"error": err.Error()})
+	} else {
+		stockSyncSvc.SetReindexService(reindexService)
+		if bundleParentsForWorker != nil {
+			stockSyncSvc.SetBundleParents(bundleParentsForWorker) // PR-1080: bulk ERP stock → parent kit reindex
+		}
+		if err := registerWorkerIndexUpdateSubscriber(conn, cfg, log, pluginApp, bus, reindexService); err != nil {
+			log.Warn("worker.index_update_subscriber_unavailable", map[string]interface{}{"error": err.Error()})
+		}
+	}
+
+	metricsSrv, metricsDone, err := startMetricsServer(cfg, metricsHandler, log)
+	if err != nil {
+		shutdownTracing()
+		return fmt.Errorf("metrics: %w", err)
+	}
+
+	log.Info("worker.start", nil)
+
+	// Block until interrupted.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		log.Info("worker.shutdown.signal", nil)
+		cancel()
+	}()
+
+	jobWorker.Start(ctx)
+
+	// IndexUpdateSubscriber (and any other OnAsync handlers on this bus)
+	// must be allowed to finish enqueueing a reindex after the last
+	// reservation-expiry publish; exiting immediately would drop them.
+	const backgroundTimeout = 10 * time.Second
+	bus.BeginShutdown()
+	bus.Drain(backgroundTimeout)
+
+	if metricsSrv != nil {
+		// Mirrors runServe's drain: wait (bounded) for the metrics server's
+		// own Serve goroutine to actually return after Close(), instead of
+		// closing and immediately exiting the process out from under it.
+		runtime.ShutdownBackground(log, backgroundTimeout, nil, []func(){func() { metricsSrv.Close() }}, []<-chan struct{}{metricsDone})
+	}
+
+	shutdownTracing()
+	return nil
+}
+
+// searchReindexPollInterval is how often `search:reindex --wait` polls the
+// run row for a terminal status. The actual indexing happens in the
+// worker process (ReindexHandler, registered in setupWorker) — this CLI
+// invocation only enqueues the job and, if asked, watches the row that
+// worker updates.
+const searchReindexPollInterval = 500 * time.Millisecond
+
+// newSearchReindexService opens a standalone DB connection and constructs
+// a search.ReindexService plus the RunStore needed to poll a run's
+// progress. Goes through the same plugin-bootstrap-then-resolveJobQueue
+// path as runScheduleTrigger (not the Postgres-only shortcut jobs_cli.go
+// and schedule_cli.go's read/admin paths use) because Trigger only needs
+// Enqueue, which every queue driver supports — unlike job introspection,
+// there's no reason to fail fast on a non-Postgres queue.driver here.
+func newSearchReindexService(cfg *config.Config, log logger.Logger) (svc *searchApp.ReindexService, runs *postgres.SearchIndexRunRepo, conn *sql.DB, err error) {
+	dsn := config.DatabaseDSN(cfg)
+	conn, err = db.Open(dsn)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("database: %w", err)
+	}
+
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, cfg)
+	boot, err := newPluginBootstrap(conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, err
+	}
+	pluginApp := &plugin.App{
+		Logger:            log,
+		Config:            cfg,
+		Bootstrap:         boot,
+		PluginMigrateMode: plugin.PluginMigrateVerify, // require app migrate; no DDL lock
+	}
+	pluginApp.SetExtensionRegistry(extensionApp.NewRegistry())
+	preparePermissionRegistry(pluginApp)
+	summary := registry.InitAll(pluginApp)
+	if err := plugin.InitSummaryError(summary); err != nil {
+		conn.Close()
+		return nil, nil, nil, err
+	}
+	if summary.Failed > 0 {
+		conn.Close()
+		return nil, nil, nil, fmt.Errorf("plugin init failed: %d plugin(s) failed to initialize", summary.Failed)
+	}
+	freezePermissionRegistry(pluginApp) // search-reindex: freeze only (no BindRuntime)
+
+	jobQueue, err := resolveAndBindJobQueue(pluginApp, conn, cfg)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, err
+	}
+	runs, err = postgres.NewSearchIndexRunRepo(conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, fmt.Errorf("search index run store: %w", err)
+	}
+	products, err := postgres.NewSearchProductSource(conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, fmt.Errorf("search product source: %w", err)
+	}
+	searchFactsRepo, err := postgres.NewVisibilityFactsRepo(conn)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, fmt.Errorf("visibility facts: %w", err)
+	}
+	products.WithVisibility(searchFactsRepo, catalogVisibilityOptions(cfg))
+	svc, err = searchApp.NewReindexService(runs, products, jobQueue, log, cfg.Search.ReindexFullScanThreshold)
+	if err != nil {
+		conn.Close()
+		return nil, nil, nil, fmt.Errorf("reindex service: %w", err)
+	}
+	return svc, runs, conn, nil
+}
+
+// registerWorkerIndexUpdateSubscriber wires search's on-save subscriber
+// onto the standalone worker's bus, matching wireServeRuntime, so
+// reservation-expiry EventStockUpdated publishes in this process enqueue
+// a reindex. Best-effort: a construction failure is returned for the
+// caller to log, not a worker start failure.
+func registerWorkerIndexUpdateSubscriber(conn *sql.DB, cfg *config.Config, log logger.Logger, pluginApp *plugin.App, bus *event.Bus, reindexService *searchApp.ReindexService) error {
+	searchEngine, err := resolveSearchEngine(pluginApp, conn, cfg)
+	if err != nil {
+		return fmt.Errorf("search engine: %w", err)
+	}
+	searchCategorySource, err := postgres.NewSearchCategorySource(conn)
+	if err != nil {
+		return fmt.Errorf("search category source: %w", err)
+	}
+	categoryLock, err := postgres.NewAdvisoryLock(conn)
+	if err != nil {
+		return fmt.Errorf("category lock: %w", err)
+	}
+	bundleParents, err := postgres.NewBundleComponentRepo(conn)
+	if err != nil {
+		return fmt.Errorf("bundle component repo: %w", err)
+	}
+	searchApp.NewIndexUpdateSubscriber(reindexService, searchEngine, searchCategorySource, categoryLock, log).
+		WithBundleParents(bundleParents). // PR-1080: leaf product/stock/price/variant → parent bundle reindex
+		Register(bus)
+	return nil
+}
+
+// newWorkerReindexService builds a search.ReindexService reusing an
+// already-open conn and jobQueue — unlike newSearchReindexService (which
+// opens its own connection and does a full plugin bootstrap for a
+// standalone CLI invocation), this is for runWorker's PR-1049 stock-sync
+// wiring, where both already exist by the time it's needed.
+func newWorkerReindexService(conn *sql.DB, cfg *config.Config, log logger.Logger, jobQueue jobs.Queue) (*searchApp.ReindexService, error) {
+	runs, err := postgres.NewSearchIndexRunRepo(conn)
+	if err != nil {
+		return nil, fmt.Errorf("search index run store: %w", err)
+	}
+	products, err := postgres.NewSearchProductSource(conn)
+	if err != nil {
+		return nil, fmt.Errorf("search product source: %w", err)
+	}
+	searchFactsRepo, err := postgres.NewVisibilityFactsRepo(conn)
+	if err != nil {
+		return nil, fmt.Errorf("visibility facts: %w", err)
+	}
+	products.WithVisibility(searchFactsRepo, catalogVisibilityOptions(cfg))
+	svc, err := searchApp.NewReindexService(runs, products, jobQueue, log, cfg.Search.ReindexFullScanThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("reindex service: %w", err)
+	}
+	return svc, nil
+}
+
+// runSearchReindex handles `app search:reindex [--wait]`. It enqueues a
+// search.reindex job (PR-1033) instead of scanning and indexing inline —
+// the actual work happens in whichever process runs the worker (`worker`,
+// or `serve`'s embedded worker). Without --wait it returns as soon as the
+// job is enqueued; with --wait it polls the run row until the worker
+// marks it completed or failed, so scripts/CI can still get synchronous
+// behavior.
+func runSearchReindex(w io.Writer, cfg *config.Config, log logger.Logger, args []string) error {
+	wait := false
+	for _, arg := range args {
+		if arg != "--wait" {
+			return fmt.Errorf("search:reindex: unknown argument %q (usage: search:reindex [--wait])", arg)
+		}
+		wait = true
+	}
+
+	svc, runs, conn, err := newSearchReindexService(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		cancel()
+	}()
+
+	runID, err := svc.Trigger(ctx, searchApp.ScopeAll{})
+	if err != nil {
+		return fmt.Errorf("search:reindex: %w", err)
+	}
+	log.Info("search.reindex.triggered", map[string]interface{}{"run_id": runID})
+
+	if !wait {
+		return writeSuccessLinef(w, "Reindex triggered (run %s). Check jobs:list --type=search.reindex or re-run with --wait to track progress.\n", runID)
+	}
+
+	ticker := time.NewTicker(searchReindexPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("search:reindex: interrupted while waiting for run %s (it continues in the background)", runID)
+		case <-ticker.C:
+			run, err := runs.Get(ctx, runID)
+			if err != nil {
+				return fmt.Errorf("search:reindex: poll run %s: %w", runID, err)
+			}
+			if run == nil {
+				return fmt.Errorf("search:reindex: run %s vanished while waiting", runID)
+			}
+			switch run.Status {
+			case search.RunStatusCompleted:
+				return writeSuccessLinef(w, "Reindex completed: %d/%d products indexed.\n", run.ProcessedCount, run.TotalCount)
+			case search.RunStatusFailed:
+				return fmt.Errorf("search:reindex: run %s failed: %s", runID, run.LastError)
+			}
+		}
+	}
+}
+
+type setupAdminUserCreator struct {
+	svc *adminuserApp.Service
+}
+
+func (a setupAdminUserCreator) Create(ctx context.Context, in setupApp.AdminUserCreateInput) (*customer.Customer, error) {
+	return a.svc.Create(ctx, adminuserApp.CreateInput{
+		Email:     in.Email,
+		Password:  in.Password,
+		FirstName: in.FirstName,
+		LastName:  in.LastName,
+		Role:      in.Role,
+	})
+}
+
+type slotRegistryThemeSource struct {
+	reg *slotsApp.Registry
+}
+
+func (s slotRegistryThemeSource) Render(anchor, placement string, data interface{}) string {
+	p, err := slotsApp.ParsePlacement(placement)
+	if err != nil {
+		return ""
+	}
+	return s.reg.Render(anchor, p, data)
+}

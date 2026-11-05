@@ -1,0 +1,482 @@
+package admin_test
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/akarso/shopanda/internal/interfaces/http/admin"
+	"github.com/akarso/shopanda/internal/testutil"
+
+	adminapp "github.com/akarso/shopanda/internal/application/admin"
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/domain/rbac"
+	"github.com/akarso/shopanda/internal/platform/auth/testhelper"
+	"github.com/akarso/shopanda/internal/platform/event"
+)
+
+type mockStockRepo struct {
+	listInventoryFn    func(ctx context.Context, offset, limit int, search string) ([]inventory.InventoryListItem, error)
+	getInventoryItemFn func(ctx context.Context, variantID string) (inventory.InventoryListItem, error)
+	getStockFn         func(ctx context.Context, variantID string) (inventory.StockEntry, error)
+	setStockFn         func(ctx context.Context, entry *inventory.StockEntry) error
+	setStockCalls      int
+}
+
+func (m *mockStockRepo) GetStock(ctx context.Context, variantID string) (inventory.StockEntry, error) {
+	if m.getStockFn != nil {
+		return m.getStockFn(ctx, variantID)
+	}
+	return inventory.StockEntry{VariantID: variantID}, nil
+}
+
+func (m *mockStockRepo) SetStock(ctx context.Context, entry *inventory.StockEntry) error {
+	m.setStockCalls++
+	if m.setStockFn != nil {
+		return m.setStockFn(ctx, entry)
+	}
+	return nil
+}
+
+func (m *mockStockRepo) SetStocks(context.Context, []inventory.StockEntry) error { return nil }
+
+func (m *mockStockRepo) ListStock(context.Context, int, int) ([]inventory.StockEntry, error) {
+	return nil, nil
+}
+
+func (m *mockStockRepo) ListInventory(ctx context.Context, offset, limit int, search string) ([]inventory.InventoryListItem, error) {
+	if m.listInventoryFn != nil {
+		return m.listInventoryFn(ctx, offset, limit, search)
+	}
+	return nil, nil
+}
+
+func (m *mockStockRepo) GetInventoryItem(ctx context.Context, variantID string) (inventory.InventoryListItem, error) {
+	if m.getInventoryItemFn != nil {
+		return m.getInventoryItemFn(ctx, variantID)
+	}
+	return inventory.InventoryListItem{VariantID: variantID}, nil
+}
+
+func (m *mockStockRepo) WithTx(*sql.Tx) inventory.StockRepository { return m }
+
+type fixedInventoryProduct struct {
+	product   *catalog.Product
+	lockType  catalog.Type
+	lockStock catalog.StockMode
+}
+
+func (f fixedInventoryProduct) resolved(id string) *catalog.Product {
+	if f.product != nil {
+		return f.product
+	}
+	return &catalog.Product{
+		ID: id, Type: catalog.TypeSimple, Status: catalog.StatusActive,
+		PricingMode: catalog.PricingModeFixed, StockMode: catalog.StockModeFixed,
+	}
+}
+
+func (f fixedInventoryProduct) FindByID(_ context.Context, id string) (*catalog.Product, error) {
+	return f.resolved(id), nil
+}
+func (fixedInventoryProduct) FindBySlug(context.Context, string) (*catalog.Product, error) {
+	return nil, nil
+}
+func (fixedInventoryProduct) List(context.Context, catalog.ListFilter) ([]catalog.Product, error) {
+	return nil, nil
+}
+func (fixedInventoryProduct) FindByCategoryID(context.Context, string, int, int) ([]catalog.Product, error) {
+	return nil, nil
+}
+func (fixedInventoryProduct) Create(context.Context, *catalog.Product) error { return nil }
+func (fixedInventoryProduct) Update(context.Context, *catalog.Product) error { return nil }
+func (f fixedInventoryProduct) WithTx(*sql.Tx) catalog.ProductRepository     { return f }
+func (f fixedInventoryProduct) LockTypeAndModes(_ context.Context, id string) (catalog.Type, catalog.PricingMode, catalog.StockMode, bool, catalog.Status, error) {
+	p := f.resolved(id)
+	typ := p.Type
+	pricing := p.PricingMode
+	stock := p.StockMode
+	if f.lockType != "" {
+		typ = f.lockType
+	}
+	if f.lockStock != "" {
+		stock = f.lockStock
+	}
+	if pricing == "" {
+		pricing = catalog.PricingModeFixed
+	}
+	if stock == "" {
+		stock = catalog.StockModeFixed
+	}
+	return typ, pricing, stock, p.ExplodeOrderLines, p.Status, nil
+}
+
+func newAdjustHandler(stock inventory.StockRepository, variants catalog.VariantRepository, products fixedInventoryProduct) *admin.InventoryAdminHandler {
+	return admin.NewInventoryAdminHandler(stock, variants).WithProducts(products).WithTxStarter(adminFakeTxDBConn())
+}
+
+type mockVariantRepoForInventory struct {
+	findByIDFn func(ctx context.Context, id string) (*catalog.Variant, error)
+}
+
+func (m *mockVariantRepoForInventory) Create(context.Context, *catalog.Variant) error { return nil }
+func (m *mockVariantRepoForInventory) Update(context.Context, *catalog.Variant) error { return nil }
+func (m *mockVariantRepoForInventory) FindByID(ctx context.Context, id string) (*catalog.Variant, error) {
+	if m.findByIDFn != nil {
+		return m.findByIDFn(ctx, id)
+	}
+	return nil, nil
+}
+func (m *mockVariantRepoForInventory) FindBySKU(context.Context, string) (*catalog.Variant, error) {
+	return nil, nil
+}
+func (m *mockVariantRepoForInventory) FindBySKUs(context.Context, []string) (map[string]*catalog.Variant, error) {
+	return map[string]*catalog.Variant{}, nil
+}
+func (m *mockVariantRepoForInventory) WithTx(*sql.Tx) catalog.VariantRepository { return m }
+func (m *mockVariantRepoForInventory) ListByProductID(ctx context.Context, productID string, offset, limit int) ([]catalog.Variant, error) {
+	return nil, nil
+}
+
+func (m *mockVariantRepoForInventory) ListByProductIDs(ctx context.Context, productIDs []string, limitPerProduct int) (map[string][]catalog.Variant, error) {
+	return testutil.ListByProductIDsFromList(ctx, m.ListByProductID, productIDs, limitPerProduct)
+}
+
+func newInventoryAdminRouter(h *admin.InventoryAdminHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/admin/inventory", h.List())
+	mux.HandleFunc("PUT /api/v1/admin/inventory/{variantId}", h.Adjust())
+	return mux
+}
+
+func TestInventoryAdminHandler_List(t *testing.T) {
+	stock := &mockStockRepo{
+		listInventoryFn: func(_ context.Context, offset, limit int, search string) ([]inventory.InventoryListItem, error) {
+			if offset != 0 || limit != 20 {
+				t.Fatalf("offset=%d limit=%d", offset, limit)
+			}
+			if search != "sku-1" {
+				t.Fatalf("search = %q, want sku-1", search)
+			}
+			return []inventory.InventoryListItem{{
+				VariantID: "v1", ProductID: "p1", SKU: "SKU-1", ProductName: "Shirt",
+				VariantName: "Red", Quantity: 5, Reserved: 2,
+			}}, nil
+		},
+	}
+	h := admin.NewInventoryAdminHandler(stock, &mockVariantRepoForInventory{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/inventory?offset=0&limit=20&search=sku-1", nil)
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Items []struct {
+				SKU       string `json:"sku"`
+				Quantity  int    `json:"quantity"`
+				Reserved  int    `json:"reserved"`
+				Available int    `json:"available"`
+				LowStock  bool   `json:"low_stock"`
+			} `json:"items"`
+			LowStockThreshold int `json:"low_stock_threshold"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(resp.Data.Items))
+	}
+	item := resp.Data.Items[0]
+	if item.SKU != "SKU-1" || item.Quantity != 5 || item.Reserved != 2 || item.Available != 3 {
+		t.Fatalf("item = %+v", item)
+	}
+	if !item.LowStock {
+		t.Fatal("expected low_stock badge")
+	}
+	if resp.Data.LowStockThreshold != adminapp.LowStockThreshold {
+		t.Fatalf("threshold = %d", resp.Data.LowStockThreshold)
+	}
+}
+
+func TestInventoryAdminHandler_Adjust(t *testing.T) {
+	var saved *inventory.StockEntry
+	stock := &mockStockRepo{
+		getStockFn: func(_ context.Context, variantID string) (inventory.StockEntry, error) {
+			return inventory.StockEntry{VariantID: variantID, Quantity: 3}, nil
+		},
+		setStockFn: func(_ context.Context, entry *inventory.StockEntry) error {
+			saved = entry
+			return nil
+		},
+		getInventoryItemFn: func(_ context.Context, variantID string) (inventory.InventoryListItem, error) {
+			return inventory.InventoryListItem{
+				VariantID: variantID, ProductID: "p1", SKU: "SKU-1", ProductName: "Shirt",
+				VariantName: "Red", Quantity: 12, Reserved: 1,
+			}, nil
+		},
+	}
+	variants := &mockVariantRepoForInventory{
+		findByIDFn: func(_ context.Context, id string) (*catalog.Variant, error) {
+			return &catalog.Variant{ID: id, ProductID: "p1", SKU: "SKU-1", Name: "Red"}, nil
+		},
+	}
+	h := newAdjustHandler(stock, variants, fixedInventoryProduct{})
+
+	body, _ := json.Marshal(map[string]interface{}{"quantity": 12})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader(body))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if saved == nil || saved.Quantity != 12 {
+		t.Fatalf("saved = %+v, want quantity 12", saved)
+	}
+	var adjustResp struct {
+		Data struct {
+			Item struct {
+				ProductName string `json:"product_name"`
+				Reserved    int    `json:"reserved"`
+				Available   int    `json:"available"`
+			} `json:"item"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &adjustResp); err != nil {
+		t.Fatalf("decode adjust response: %v", err)
+	}
+	if adjustResp.Data.Item.ProductName != "Shirt" || adjustResp.Data.Item.Reserved != 1 || adjustResp.Data.Item.Available != 11 {
+		t.Fatalf("item = %+v", adjustResp.Data.Item)
+	}
+}
+
+// TestInventoryAdminHandler_Adjust_EmitsStockUpdatedEvent pins PR-1036's
+// wiring: a successful Adjust must publish inventory.EventStockUpdated so
+// the search index's on-save subscriber can pick it up.
+func TestInventoryAdminHandler_Adjust_EmitsStockUpdatedEvent(t *testing.T) {
+	stock := &mockStockRepo{
+		getStockFn: func(_ context.Context, variantID string) (inventory.StockEntry, error) {
+			return inventory.StockEntry{VariantID: variantID, Quantity: 3}, nil
+		},
+		getInventoryItemFn: func(_ context.Context, variantID string) (inventory.InventoryListItem, error) {
+			return inventory.InventoryListItem{VariantID: variantID, ProductID: "p1", SKU: "SKU-1"}, nil
+		},
+	}
+	variants := &mockVariantRepoForInventory{
+		findByIDFn: func(_ context.Context, id string) (*catalog.Variant, error) {
+			return &catalog.Variant{ID: id, ProductID: "p1", SKU: "SKU-1", Name: "Red"}, nil
+		},
+	}
+	h := newAdjustHandler(stock, variants, fixedInventoryProduct{})
+	bus := testAdminBus()
+	h.SetBus(bus)
+
+	var captured event.Event
+	bus.On(inventory.EventStockUpdated, func(_ context.Context, evt event.Event) error {
+		captured = evt
+		return nil
+	})
+
+	body, _ := json.Marshal(map[string]interface{}{"quantity": 12})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader(body))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if captured.Name != inventory.EventStockUpdated {
+		t.Fatalf("event name = %q, want %q", captured.Name, inventory.EventStockUpdated)
+	}
+	data, ok := captured.Data.(inventory.StockUpdatedData)
+	if !ok {
+		t.Fatalf("event data type = %T, want StockUpdatedData", captured.Data)
+	}
+	if data.ProductID != "p1" || data.VariantID != "v1" || data.SKU != "SKU-1" || data.OnHand == nil || *data.OnHand != 12 || data.Delta != nil {
+		t.Fatalf("data = %+v, want product_id=p1 variant_id=v1 sku=SKU-1 on_hand=12 and Delta omitted (SetStock does not return an atomic prior)", data)
+	}
+}
+
+// TestInventoryAdminHandler_Adjust_NoBusNoEvent pins that Adjust still
+// works, unchanged, when SetBus was never called (nil bus skips
+// publishing rather than panicking) — the default for every existing
+// caller/test that doesn't need eventing.
+func TestInventoryAdminHandler_Adjust_NoBusNoEvent(t *testing.T) {
+	stock := &mockStockRepo{
+		getStockFn: func(_ context.Context, variantID string) (inventory.StockEntry, error) {
+			return inventory.StockEntry{VariantID: variantID, Quantity: 3}, nil
+		},
+		getInventoryItemFn: func(_ context.Context, variantID string) (inventory.InventoryListItem, error) {
+			return inventory.InventoryListItem{VariantID: variantID, ProductID: "p1", SKU: "SKU-1"}, nil
+		},
+	}
+	variants := &mockVariantRepoForInventory{
+		findByIDFn: func(_ context.Context, id string) (*catalog.Variant, error) {
+			return &catalog.Variant{ID: id, ProductID: "p1", SKU: "SKU-1", Name: "Red"}, nil
+		},
+	}
+	h := newAdjustHandler(stock, variants, fixedInventoryProduct{})
+
+	body, _ := json.Marshal(map[string]interface{}{"quantity": 12})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader(body))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestInventoryAdminHandler_AdjustNegativeRejected(t *testing.T) {
+	stock := &mockStockRepo{
+		getStockFn: func(_ context.Context, variantID string) (inventory.StockEntry, error) {
+			return inventory.StockEntry{VariantID: variantID, Quantity: 3}, nil
+		},
+	}
+	variants := &mockVariantRepoForInventory{
+		findByIDFn: func(_ context.Context, id string) (*catalog.Variant, error) {
+			return &catalog.Variant{ID: id, ProductID: "p1", SKU: "SKU-1"}, nil
+		},
+	}
+	h := newAdjustHandler(stock, variants, fixedInventoryProduct{})
+
+	body, _ := json.Marshal(map[string]interface{}{"quantity": -1})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader(body))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if stock.setStockCalls != 0 {
+		t.Fatalf("SetStock calls = %d, want 0", stock.setStockCalls)
+	}
+}
+
+func TestInventoryAdminHandler_Adjust_RejectsDynamicBundleStock(t *testing.T) {
+	stock := &mockStockRepo{}
+	variants := &mockVariantRepoForInventory{
+		findByIDFn: func(_ context.Context, id string) (*catalog.Variant, error) {
+			return &catalog.Variant{ID: id, ProductID: "bundle", SKU: "SKU-B"}, nil
+		},
+	}
+	h := newAdjustHandler(stock, variants, fixedInventoryProduct{
+		product: &catalog.Product{ID: "bundle", Type: catalog.TypeBundle, StockMode: catalog.StockModeDynamic, Status: catalog.StatusActive},
+	})
+	body, _ := json.Marshal(map[string]interface{}{"quantity": 5})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/bundle-v", bytes.NewReader(body))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "cannot have their own stock") {
+		t.Fatalf("body = %s, want dynamic stock rejection", rec.Body.String())
+	}
+	if stock.setStockCalls != 0 {
+		t.Fatalf("SetStock calls = %d, want 0", stock.setStockCalls)
+	}
+}
+
+func TestInventoryAdminHandler_Adjust_RejectsLockedDynamicMode(t *testing.T) {
+	stock := &mockStockRepo{}
+	variants := &mockVariantRepoForInventory{
+		findByIDFn: func(_ context.Context, id string) (*catalog.Variant, error) {
+			return &catalog.Variant{ID: id, ProductID: "bundle", SKU: "SKU-B"}, nil
+		},
+	}
+	// FindByID is a stale fixed row. The locked mode is dynamic, and that
+	// is the read Adjust must honor.
+	h := newAdjustHandler(stock, variants, fixedInventoryProduct{
+		product:   &catalog.Product{ID: "bundle", Type: catalog.TypeSimple, StockMode: catalog.StockModeFixed, Status: catalog.StatusActive},
+		lockType:  catalog.TypeBundle,
+		lockStock: catalog.StockModeDynamic,
+	})
+	body, _ := json.Marshal(map[string]interface{}{"quantity": 5})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/bundle-v", bytes.NewReader(body))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "cannot have their own stock") {
+		t.Fatalf("body = %s, want dynamic stock rejection", rec.Body.String())
+	}
+	if stock.setStockCalls != 0 {
+		t.Fatalf("SetStock calls = %d, want 0", stock.setStockCalls)
+	}
+}
+
+func TestInventoryAdminHandler_AdjustUnknownFieldRejected(t *testing.T) {
+	stock := &mockStockRepo{}
+	h := admin.NewInventoryAdminHandler(stock, &mockVariantRepoForInventory{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader([]byte(`{"quantitty":5}`)))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if stock.setStockCalls != 0 {
+		t.Fatalf("SetStock calls = %d, want 0", stock.setStockCalls)
+	}
+}
+
+func TestInventoryAdminHandler_AdjustMissingQuantityRejected(t *testing.T) {
+	stock := &mockStockRepo{}
+	h := admin.NewInventoryAdminHandler(stock, &mockVariantRepoForInventory{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader([]byte(`{}`)))
+	newInventoryAdminRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if stock.setStockCalls != 0 {
+		t.Fatalf("SetStock calls = %d, want 0", stock.setStockCalls)
+	}
+}
+
+func TestInventoryAdminHandler_ForbiddenWithoutProductsPermission(t *testing.T) {
+	h := admin.NewInventoryAdminHandler(&mockStockRepo{}, &mockVariantRepoForInventory{})
+	requireProductsRead := admin.RequirePermission(rbac.ProductsRead)
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/v1/admin/inventory", requireProductsRead(h.List()))
+
+	rec := httptest.NewRecorder()
+	req := testhelper.CustomerRequest(httptest.NewRequest("GET", "/api/v1/admin/inventory", nil), "cust-1")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestInventoryAdminHandler_AdjustForbiddenWithoutProductsWrite(t *testing.T) {
+	h := admin.NewInventoryAdminHandler(&mockStockRepo{}, &mockVariantRepoForInventory{})
+	requireProductsWrite := admin.RequirePermission(rbac.ProductsWrite)
+	mux := http.NewServeMux()
+	mux.Handle("PUT /api/v1/admin/inventory/{variantId}", requireProductsWrite(h.Adjust()))
+
+	body, _ := json.Marshal(map[string]interface{}{"quantity": 5})
+	rec := httptest.NewRecorder()
+	req := testhelper.CustomerRequest(httptest.NewRequest("PUT", "/api/v1/admin/inventory/v1", bytes.NewReader(body)), "cust-1")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}

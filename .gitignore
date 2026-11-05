@@ -28,6 +28,17 @@ go.work.sum
 # env file
 .env
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Binary output
+/bin/
+shopanda
+/api
+/app
+
+# Editor/IDE / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+src

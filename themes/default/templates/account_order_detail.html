@@ -1,0 +1,74 @@
+{{ define "title" }}Order Detail{{ end }}
+
+{{ define "content" }}
+<section class="account-shell">
+    <div class="page-intro">
+        <span class="eyebrow">Account</span>
+        <h1>Order {{ .OrderID }}</h1>
+        <p>Placed on {{ .DateText }}. Current status: {{ .Status }}.</p>
+    </div>
+
+    {{ template "_account_nav.html" . }}
+
+    {{ if .SuccessMessage }}<p class="notice">{{ .SuccessMessage }}</p>{{ end }}
+    {{ if .ErrorMessage }}<p class="error">{{ .ErrorMessage }}</p>{{ end }}
+
+    <section class="account-panel">
+        <div class="checkout-summary-panel__totals">
+            <span>Total</span>
+            <strong>{{ .TotalText }}</strong>
+        </div>
+        <ul class="checkout-summary-panel__items">
+            {{ range .Items }}
+            <li>
+                <div>
+                    <strong>{{ .Name }}</strong>
+                    <span>{{ .SKU }} · Qty {{ .Quantity }}</span>
+                </div>
+                <strong>{{ .LineTotalText }}</strong>
+            </li>
+            {{ end }}
+        </ul>
+        <div class="checkout-actions">
+            <a class="chip" href="{{ .BackURL }}">Back to orders</a>
+            <a class="chip" href="{{ .ReturnsURL }}">View returns</a>
+        </div>
+    </section>
+
+    {{ if .Returns }}
+    <section class="account-panel">
+        <h2>Return requests</h2>
+        <ul class="checkout-summary-panel__items">
+            {{ range .Returns }}
+            <li>
+                <div>
+                    <strong>{{ .Status }}</strong>
+                    <span>{{ .Reason }} · {{ .DateText }}</span>
+                </div>
+            </li>
+            {{ end }}
+        </ul>
+    </section>
+    {{ end }}
+
+    {{ if .CanRequestReturn }}
+    <section class="account-panel">
+        <h2>Request a return</h2>
+        <form action="/account/orders/{{ .OrderID }}/returns" method="post">
+            <input type="hidden" name="csrf_token" value="{{ .CSRFToken }}">
+            <label>Reason
+                <input name="reason" required maxlength="500" placeholder="Describe why you are returning items">
+            </label>
+            {{ range .ReturnableLines }}
+            <label>{{ .Name }} ({{ .SKU }}) — max {{ .Returnable }}
+                <input type="number" name="qty_{{ .VariantID }}" min="0" max="{{ .Returnable }}" value="0">
+            </label>
+            {{ end }}
+            <button type="submit">Submit return request</button>
+        </form>
+    </section>
+    {{ end }}
+</section>
+{{ end }}
+
+{{ template "layout.html" . }}

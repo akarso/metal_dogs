@@ -1,0 +1,86 @@
+package identity
+
+import (
+	"errors"
+	"time"
+)
+
+// Role represents a user role.
+type Role string
+
+const (
+	RoleGuest    Role = "guest"
+	RoleCustomer Role = "customer"
+	RoleAdmin    Role = "admin"
+	RoleManager  Role = "manager"
+	RoleEditor   Role = "editor"
+	RoleSupport  Role = "support"
+)
+
+// IsValid returns true if r is a recognised role.
+func (r Role) IsValid() bool {
+	switch r {
+	case RoleGuest, RoleCustomer, RoleAdmin, RoleManager, RoleEditor, RoleSupport:
+		return true
+	}
+	return false
+}
+
+// Identity represents an authenticated (or anonymous) user.
+type Identity struct {
+	UserID          string
+	Role            Role
+	DisplayName     string
+	AuthenticatedAt time.Time
+}
+
+// NewIdentity creates an Identity with the given user ID and role.
+func NewIdentity(userID string, role Role) (Identity, error) {
+	if userID == "" {
+		return Identity{}, errors.New("identity: user id must not be empty")
+	}
+	if !role.IsValid() {
+		return Identity{}, errors.New("identity: invalid role")
+	}
+	return Identity{UserID: userID, Role: role}, nil
+}
+
+// WithDisplayName returns a copy of the identity with a presentation label.
+func (i Identity) WithDisplayName(displayName string) Identity {
+	i.DisplayName = displayName
+	return i
+}
+
+// WithAuthenticatedAt returns a copy of the identity with the session issue time.
+func (i Identity) WithAuthenticatedAt(authenticatedAt time.Time) Identity {
+	i.AuthenticatedAt = authenticatedAt.UTC()
+	return i
+}
+
+// Guest returns a guest identity (no user ID).
+func Guest() Identity {
+	return Identity{Role: RoleGuest}
+}
+
+// IsGuest returns true if the identity is a guest.
+func (i Identity) IsGuest() bool {
+	return i.Role == RoleGuest
+}
+
+// IsAuthenticated returns true if the identity has a known authenticated
+// role (customer, admin, manager, editor, or support) and a non-empty UserID.
+func (i Identity) IsAuthenticated() bool {
+	if i.UserID == "" {
+		return false
+	}
+	switch i.Role {
+	case RoleCustomer, RoleAdmin, RoleManager, RoleEditor, RoleSupport:
+		return true
+	}
+	return false
+}
+
+// HasRole returns true if the identity has the given role.
+func (i Identity) HasRole(role Role) bool {
+	return i.Role == role
+}

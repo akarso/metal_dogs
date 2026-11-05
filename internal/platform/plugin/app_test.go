@@ -1,0 +1,161 @@
+package plugin_test
+
+import (
+	"testing"
+
+	checkoutapp "github.com/akarso/shopanda/internal/application/checkout"
+	apppricing "github.com/akarso/shopanda/internal/application/pricing"
+	"github.com/akarso/shopanda/internal/platform/plugin"
+)
+
+func TestApp_RegisterPricingStep(t *testing.T) {
+	app := &plugin.App{}
+	app.RegisterPricingStep("step1")
+	app.RegisterPricingStep("step2", "after:promotions")
+
+	regs := app.PricingStepRegistrations()
+	if len(regs) != 2 {
+		t.Fatalf("PricingStepRegistrations() len = %d, want 2", len(regs))
+	}
+	if regs[0].Step != "step1" || regs[0].Position != apppricing.DefaultPluginStepPosition {
+		t.Errorf("first reg = %+v", regs[0])
+	}
+	if regs[1].Step != "step2" || regs[1].Position != "after:promotions" {
+		t.Errorf("second reg = %+v", regs[1])
+	}
+
+	steps := app.PricingSteps()
+	if len(steps) != 2 || steps[0] != "step1" || steps[1] != "step2" {
+		t.Errorf("PricingSteps() = %v", steps)
+	}
+}
+
+func TestApp_RegisterPricingStep_InvalidPositionPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for invalid pricing position")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterPricingStep("step", "after:unknown")
+}
+
+func TestApp_RegisterPricingStep_NilPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil pricing step")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterPricingStep(nil)
+}
+
+func TestApp_RegisterPricingStep_DuplicateReplacePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for duplicate replace registration")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterPricingStep("vat-a", "replace:tax")
+	app.RegisterPricingStep("vat-b", "replace:taxes")
+}
+
+func TestApp_RegisterCheckoutStep(t *testing.T) {
+	app := &plugin.App{}
+	app.RegisterCheckoutStep("step1")
+	app.RegisterCheckoutStep("step2", "before:create_order")
+
+	regs := app.CheckoutStepRegistrations()
+	if len(regs) != 2 {
+		t.Fatalf("CheckoutStepRegistrations() len = %d, want 2", len(regs))
+	}
+	if regs[0].Step != "step1" || regs[0].Position != checkoutapp.DefaultPluginStepPosition {
+		t.Errorf("first reg = %+v", regs[0])
+	}
+	if regs[1].Step != "step2" || regs[1].Position != "before:create_order" {
+		t.Errorf("second reg = %+v", regs[1])
+	}
+
+	steps := app.CheckoutSteps()
+	if len(steps) != 2 || steps[0] != "step1" || steps[1] != "step2" {
+		t.Errorf("CheckoutSteps() = %v", steps)
+	}
+}
+
+func TestApp_RegisterCheckoutStep_InvalidPositionPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for invalid checkout position")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterCheckoutStep("step", "after:unknown")
+}
+
+func TestApp_RegisterCheckoutStep_NilPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil checkout step")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterCheckoutStep(nil)
+}
+
+func TestApp_RegisterCompositionStep(t *testing.T) {
+	app := &plugin.App{}
+	app.RegisterCompositionStep("pdp", "step1")
+	app.RegisterCompositionStep("plp", "step2")
+	app.RegisterCompositionStep("pdp", "step3")
+
+	pdp := app.CompositionSteps("pdp")
+	if len(pdp) != 2 {
+		t.Fatalf("CompositionSteps(pdp) len = %d, want 2", len(pdp))
+	}
+	plp := app.CompositionSteps("plp")
+	if len(plp) != 1 {
+		t.Fatalf("CompositionSteps(plp) len = %d, want 1", len(plp))
+	}
+}
+
+func TestApp_RegisterCompositionStep_NilPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil composition step")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterCompositionStep("pdp", nil)
+}
+
+func TestApp_RegisterCompositionStep_EmptyPipelinePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for empty pipeline name")
+		}
+	}()
+	app := &plugin.App{}
+	app.RegisterCompositionStep("", "step")
+}
+
+func TestApp_CompositionSteps_UnknownPipeline(t *testing.T) {
+	app := &plugin.App{}
+	if steps := app.CompositionSteps("unknown"); steps != nil {
+		t.Fatalf("CompositionSteps(unknown) = %v, want nil", steps)
+	}
+}
+
+func TestApp_PricingSteps_Empty(t *testing.T) {
+	app := &plugin.App{}
+	if steps := app.PricingSteps(); steps != nil {
+		t.Fatalf("PricingSteps() = %v, want nil", steps)
+	}
+}
+
+func TestApp_CheckoutSteps_Empty(t *testing.T) {
+	app := &plugin.App{}
+	if steps := app.CheckoutSteps(); steps != nil {
+		t.Fatalf("CheckoutSteps() = %v, want nil", steps)
+	}
+}

@@ -1,0 +1,314 @@
+package importer
+
+import (
+	"context"
+	"database/sql"
+	"encoding/csv"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"time"
+
+	importctx "github.com/akarso/shopanda/internal/application/importctx"
+	searchApp "github.com/akarso/shopanda/internal/application/search"
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/platform/apperror"
+)
+
+// reindexTriggerTimeout bounds the post-commit ReindexService.Trigger call
+// so it does not inherit a canceled operation context. Expansion uses its
+// own timeout of the same length so a large parent lookup cannot expire
+// the enqueue context.
+const reindexTriggerTimeout = 30 * time.Second
+
+// stockReindexExpandMaxIDs is the largest touched set we expand to parent
+// bundles. At or above this, ReindexService.Trigger already substitutes a
+// full scan for a scoped ID list (maxScopedReindexProductIDs), so
+// expansion is wasted work and would compete with the enqueue timeout.
+const stockReindexExpandMaxIDs = 10_000
+
+// StockResult holds the summary of a stock import run.
+type StockResult struct {
+	Updated   int
+	Skipped   int
+	Errors    []string
+	RowErrors []importctx.ImportError
+}
+
+// txStockRepo binds a stock write to the import transaction.
+type txStockRepo interface {
+	inventory.StockRepository
+	WithTx(tx *sql.Tx) inventory.StockRepository
+}
+
+// StockImporter imports stock quantities from CSV.
+type StockImporter struct {
+	variants  catalog.VariantRepository
+	products  catalog.ProductRepository
+	stock     inventory.StockRepository
+	txStarter TxStarter
+	rowHooks  *RowHookRunner
+
+	// reindex is optional — see WithReindex.
+	reindex *searchApp.ReindexService
+	// bundleParents is optional — see WithBundleParents.
+	bundleParents catalog.BundleParentLookup
+}
+
+// NewStockImporter creates a StockImporter.
+func NewStockImporter(variants catalog.VariantRepository, stock inventory.StockRepository) *StockImporter {
+	return &StockImporter{variants: variants, stock: stock}
+}
+
+// WithProducts rejects rows that would write stock onto a dynamic bundle.
+// The mode is read with LockTypeAndModes in the same transaction as SetStock.
+// Import fails closed when this was not set and a row is ready to write.
+func (imp *StockImporter) WithProducts(products catalog.ProductRepository) *StockImporter {
+	imp.products = products
+	return imp
+}
+
+// WithTxStarter wires the transaction beginner for that lock and write.
+// Import fails closed when this was not set and a row is ready to write.
+// *sql.DB satisfies TxStarter.
+func (imp *StockImporter) WithTxStarter(starter TxStarter) *StockImporter {
+	imp.txStarter = starter
+	return imp
+}
+
+// WithRowHooks wires import row hooks invoked after header validation and before persist.
+func (imp *StockImporter) WithRowHooks(registry *importctx.Registry) *StockImporter {
+	imp.rowHooks = NewRowHookRunner(registry)
+	return imp
+}
+
+// WithReindex enables triggering one scoped reindex per Import call,
+// covering every product it actually touched (PR-1049: a bulk CSV import
+// publishes no per-row inventory.EventStockUpdated — that would reproduce
+// the exact one-job-per-row fan-out risk PR-1036 identified and
+// deliberately avoided for bulk price import. A single batched
+// ReindexService.Trigger(ScopeProducts{...}) call after the whole import
+// completes covers the same ground, and ReindexService's own full-scan-
+// threshold/hard-cap logic (PR-1034) already takes over automatically if
+// the touched set turns out to be large.). Left unset (the default),
+// Import works exactly as before — no reindex triggered, no error.
+func (imp *StockImporter) WithReindex(reindex *searchApp.ReindexService) *StockImporter {
+	imp.reindex = reindex
+	return imp
+}
+
+// WithBundleParents expands the post-import reindex set with parent
+// bundles that include each touched leaf (PR-1080). Bulk stock publishes
+// no per-row EventStockUpdated, so IndexUpdateSubscriber cannot fan out
+// for us — expand here before Trigger. Nil clears the lookup.
+func (imp *StockImporter) WithBundleParents(lookup catalog.BundleParentLookup) *StockImporter {
+	imp.bundleParents = lookup
+	return imp
+}
+
+// Import reads CSV rows from r and updates stock quantities.
+//
+// Required columns: sku, quantity.
+// Each row looks up the variant by SKU, then sets the stock quantity.
+//
+// touchedProductIDs is reindex-triggered via defer, not only on the
+// success path: a row partway through the file failing (e.g. SetStock
+// erroring on row N) must not leave every already-committed row before it
+// permanently unindexed — see StockSyncService.UpsertBySKU's identical
+// reasoning for its own chunked writes. Trigger runs on a bounded
+// independent context; its error is returned when the import itself
+// otherwise succeeded.
+func (imp *StockImporter) Import(ctx context.Context, r io.Reader) (result *StockResult, err error) {
+	touchedProductIDs := make(map[string]struct{})
+	defer func() {
+		if terr := imp.triggerReindex(touchedProductIDs); terr != nil && err == nil {
+			err = terr
+		}
+	}()
+
+	reader := csv.NewReader(r)
+	reader.TrimLeadingSpace = true
+
+	header, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("stock import: read header: %w", err)
+	}
+
+	colIdx := make(map[string]int, len(header))
+	for i, h := range header {
+		colIdx[strings.TrimSpace(strings.ToLower(h))] = i
+	}
+
+	_, hasSKU := colIdx["sku"]
+	_, hasQty := colIdx["quantity"]
+	if !hasSKU || !hasQty {
+		return nil, fmt.Errorf("stock import: CSV must have 'sku' and 'quantity' columns")
+	}
+
+	result = &StockResult{}
+	lineNum := 1 // header is line 1
+
+	for {
+		lineNum++
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("line %d: %v", lineNum, err))
+			result.Skipped++
+			continue
+		}
+
+		rowMap := RecordToRow(record, colIdx)
+		if imp.rowHooks != nil {
+			var cont bool
+			rowMap, cont = HandleRowHookOutcome(lineNum, imp.rowHooks.Invoke(ctx, importctx.EntityStock, lineNum, rowMap), &result.Skipped, &result.Errors, &result.RowErrors)
+			if !cont {
+				continue
+			}
+		}
+
+		sku := colValRow(rowMap, "sku")
+		if sku == "" {
+			result.Errors = append(result.Errors, fmt.Sprintf("line %d: empty sku", lineNum))
+			result.Skipped++
+			continue
+		}
+
+		qtyStr := colValRow(rowMap, "quantity")
+		qty, err := strconv.Atoi(qtyStr)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("line %d: invalid quantity %q", lineNum, qtyStr))
+			result.Skipped++
+			continue
+		}
+		if qty < 0 {
+			result.Errors = append(result.Errors, fmt.Sprintf("line %d: negative quantity %d", lineNum, qty))
+			result.Skipped++
+			continue
+		}
+
+		variant, err := imp.variants.FindBySKU(ctx, sku)
+		if err != nil {
+			return nil, fmt.Errorf("stock import: find variant by sku %q: %w", sku, err)
+		}
+		if variant == nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("line %d: unknown sku %q", lineNum, sku))
+			result.Skipped++
+			continue
+		}
+
+		entry, err := inventory.NewStockEntry(variant.ID, qty)
+		if err != nil {
+			return nil, fmt.Errorf("stock import: new stock entry: %w", err)
+		}
+		if err := imp.setStockUnderLock(ctx, variant.ProductID, &entry); err != nil {
+			var rejected *rowRejectError
+			if errors.As(err, &rejected) {
+				result.Errors = append(result.Errors, fmt.Sprintf("line %d: %s", lineNum, rejected.Error()))
+				result.Skipped++
+				continue
+			}
+			return nil, fmt.Errorf("stock import: set stock for sku %q: %w", sku, err)
+		}
+		result.Updated++
+		touchedProductIDs[variant.ProductID] = struct{}{}
+	}
+
+	return result, nil
+}
+
+// setStockUnderLock locks the product row and writes stock on that same
+// transaction. A dynamic bundle is a per-row skip. A missing transaction
+// starter, product repository, or row lock fails the import.
+func (imp *StockImporter) setStockUnderLock(ctx context.Context, productID string, entry *inventory.StockEntry) error {
+	if imp.txStarter == nil {
+		return fmt.Errorf("stock import: transaction starter is required")
+	}
+	if imp.products == nil {
+		return fmt.Errorf("stock import: product repository is required")
+	}
+	txProducts, ok := imp.products.(txProductRepo)
+	if !ok {
+		return fmt.Errorf("stock import: product repository does not support transactions")
+	}
+	txStock, ok := imp.stock.(txStockRepo)
+	if !ok {
+		return fmt.Errorf("stock import: stock repository does not support transactions")
+	}
+
+	tx, err := imp.txStarter.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	locker, ok := txProducts.WithTx(tx).(lockingProductRepo)
+	if !ok {
+		return fmt.Errorf("stock import: product repository does not support row locks")
+	}
+	productType, _, stockMode, _, _, err := locker.LockTypeAndModes(ctx, productID)
+	if err != nil {
+		if apperror.Is(err, apperror.CodeNotFound) {
+			return err
+		}
+		return fmt.Errorf("lock product: %w", err)
+	}
+	if productType == catalog.TypeBundle && stockMode == catalog.StockModeDynamic {
+		return &rowRejectError{msg: catalog.DynamicBundleStockRejectedMessage}
+	}
+	if err := txStock.WithTx(tx).SetStock(ctx, entry); err != nil {
+		return fmt.Errorf("set stock: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// triggerReindex fires a single scoped reindex covering every product
+// this import run touched (deferred by Import — see its own doc comment
+// on why this can't just be a plain call at the end) — see WithReindex's
+// own doc comment for why this is one batched call, not one per row.
+// When WithBundleParents is wired, parent kit IDs are merged in so
+// dynamic-bundle QuantityPositive stays fresh (PR-1080). Expansion and
+// Trigger each get their own timeout so a large parent lookup cannot
+// starve enqueue. A set at or above stockReindexExpandMaxIDs skips
+// expansion and Triggers a full scan. A Trigger failure is returned so
+// a queue, scope-resolution, or database error is actionable rather
+// than leaving search silently stale.
+func (imp *StockImporter) triggerReindex(touchedProductIDs map[string]struct{}) error {
+	if imp.reindex == nil || len(touchedProductIDs) == 0 {
+		return nil
+	}
+	if len(touchedProductIDs) >= stockReindexExpandMaxIDs {
+		ctx, cancel := context.WithTimeout(context.Background(), reindexTriggerTimeout)
+		defer cancel()
+		if _, err := imp.reindex.Trigger(ctx, searchApp.ScopeAll{}); err != nil {
+			return fmt.Errorf("stock import: reindex: %w", err)
+		}
+		return nil
+	}
+
+	expandCtx, expandCancel := context.WithTimeout(context.Background(), reindexTriggerTimeout)
+	expandErr := catalog.ExpandTouchedWithBundleParents(expandCtx, imp.bundleParents, touchedProductIDs)
+	expandCancel()
+
+	ids := make([]string, 0, len(touchedProductIDs))
+	for id := range touchedProductIDs {
+		ids = append(ids, id)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reindexTriggerTimeout)
+	defer cancel()
+	if _, err := imp.reindex.Trigger(ctx, searchApp.ScopeProducts{IDs: ids}); err != nil {
+		return fmt.Errorf("stock import: reindex: %w", err)
+	}
+	if expandErr != nil {
+		return fmt.Errorf("stock import: expand bundle parents: %w", expandErr)
+	}
+	return nil
+}

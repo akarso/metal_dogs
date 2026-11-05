@@ -1,0 +1,1113 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	catalogApp "github.com/akarso/shopanda/internal/application/catalog"
+	"github.com/akarso/shopanda/internal/application/exporter"
+	"github.com/akarso/shopanda/internal/application/importer"
+	"github.com/akarso/shopanda/internal/application/rewrite"
+	"github.com/akarso/shopanda/internal/domain/routing"
+	"github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/internal/platform/config"
+	"github.com/akarso/shopanda/internal/platform/event"
+	"github.com/akarso/shopanda/internal/platform/logger"
+)
+
+// registerImportProductsBusListeners wires sync create-path listeners on the
+// short-lived import:products bus. rewrite.Subscriber must run here so
+// EventProductCreated writes url_rewrites — otherwise /<slug> 404s even when
+// search reindex (WithReindex batch Trigger) succeeds. FPC / product-cache
+// listeners are omitted: a brand-new product has no cached PDP, and listing
+// shells refresh via TTL; IndexUpdateSubscriber is not registered (CLI uses
+// batch Trigger instead of a long-lived async subscriber).
+func registerImportProductsBusListeners(bus *event.Bus, rewrites routing.RewriteRepository, log logger.Logger) {
+	rewrite.NewSubscriber(rewrites, log).Register(bus)
+}
+
+func runImportProducts(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:products")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.start",
+		CompleteEvent: "import.complete",
+		RowErrorEvent: "import.row_error",
+		WithHooks:     true,
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		// PR-1081: publish EventProductCreated per create. Register rewrite
+		// on this bus (sync) so /<slug> resolves; search is batch-Triggered
+		// below (CLI has no long-lived IndexUpdateSubscriber — same pattern
+		// as import:stock).
+		bus := event.NewBus(log)
+		rewriteRepo, err := postgres.NewRewriteRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite repo: %w", err)
+		}
+		registerImportProductsBusListeners(bus, rewriteRepo, log)
+		imp := importer.NewProductImporter(productRepo, variantRepo, conn).
+			WithRowHooks(regs.Import).
+			WithBus(bus)
+		if reindexSvc, _, reindexConn, err := newSearchReindexService(cfg, log); err == nil {
+			defer reindexConn.Close()
+			imp = imp.WithReindex(reindexSvc)
+		} else {
+			log.Warn("import.products.reindex_service_unavailable", map[string]interface{}{"error": err.Error()})
+		}
+		result, err := imp.Import(ctx, f)
+		if result != nil {
+			bus.BeginShutdown()
+			bus.Drain(10 * time.Second)
+		}
+		if result == nil {
+			if err != nil {
+				return nil, fmt.Errorf("import: %w", err)
+			}
+			return &ioOutcome{}, nil
+		}
+		outcome := &ioOutcome{
+			Fields: map[string]interface{}{
+				"products": result.Products,
+				"variants": result.Variants,
+				"skipped":  result.Skipped,
+				"errors":   len(result.Errors),
+			},
+			Errors: result.Errors,
+		}
+		if err != nil {
+			// Preserve summary (e.g. reindex failure after successful writes).
+			return outcome, fmt.Errorf("import: %w", err)
+		}
+		return outcome, nil
+	})
+}
+
+func runExportProducts(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:products")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.start",
+		CompleteEvent: "export.complete",
+		RowErrorEvent: "export.row_error",
+		WithHooks:     true,
+		AtomicExport:  false, // preserve historical direct Create behavior
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		result, err := exporter.NewProductExporter(productRepo, variantRepo).
+			WithRowHooks(regs.Export).
+			Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"products": result.Products,
+				"variants": result.Variants,
+				"skipped":  result.Skipped,
+				"errors":   len(result.Errors),
+			},
+			Errors:       result.Errors,
+			Warnings:     result.Warnings,
+			WarningEvent: "export.products.warning",
+		}, nil
+	})
+}
+
+func runImportStock(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:stock")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.stock.start",
+		CompleteEvent: "import.stock.complete",
+		RowErrorEvent: "import.stock.row_error",
+		WithHooks:     true,
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		stockRepo, err := postgres.NewStockRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("stock repo: %w", err)
+		}
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		imp := importer.NewStockImporter(variantRepo, stockRepo).WithProducts(productRepo).WithTxStarter(conn).WithRowHooks(regs.Import)
+		if bundleParents, err := postgres.NewBundleComponentRepo(conn); err == nil {
+			imp = imp.WithBundleParents(bundleParents) // PR-1080: expand Trigger set with parent kits
+		} else {
+			log.Warn("import.stock.bundle_parents_unavailable", map[string]interface{}{"error": err.Error()})
+		}
+		// PR-1049: batch-trigger a scoped reindex for every product this
+		// import touches (see StockImporter.WithReindex's own doc comment
+		// for why this is one call after the whole import, not one per
+		// row). newSearchReindexService opens its own connection and
+		// plugin bootstrap — a real, but accepted, extra cost for a CLI
+		// command that already reads and processes a whole file; a failure
+		// here only means the import proceeds without reindex triggering
+		// (the existing manual/scheduled search:reindex remains the
+		// fallback), not that the import itself fails.
+		if reindexSvc, _, reindexConn, err := newSearchReindexService(cfg, log); err == nil {
+			defer reindexConn.Close()
+			imp = imp.WithReindex(reindexSvc)
+		} else {
+			log.Warn("import.stock.reindex_service_unavailable", map[string]interface{}{"error": err.Error()})
+		}
+		result, err := imp.Import(ctx, f)
+		if result == nil {
+			if err != nil {
+				return nil, fmt.Errorf("import stock: %w", err)
+			}
+			return &ioOutcome{}, nil
+		}
+		outcome := &ioOutcome{
+			Fields: map[string]interface{}{
+				"updated": result.Updated,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}
+		if err != nil {
+			// Preserve summary (e.g. reindex failure after successful writes).
+			return outcome, fmt.Errorf("import stock: %w", err)
+		}
+		return outcome, nil
+	})
+}
+
+func runExportStock(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:stock")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.stock.start",
+		CompleteEvent: "export.stock.complete",
+		RowErrorEvent: "export.stock.row_error",
+		WithHooks:     true,
+		AtomicExport:  true,
+		TempPrefix:    "stock-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		stockRepo, err := postgres.NewStockRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("stock repo: %w", err)
+		}
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		result, err := exporter.NewStockExporter(stockRepo, variantRepo).
+			WithRowHooks(regs.Export).
+			Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export stock: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"entries": result.Entries,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportCustomers(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:customers")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.customers.start",
+		CompleteEvent: "import.customers.complete",
+		RowErrorEvent: "import.customers.row_error",
+		WithHooks:     true,
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		customerRepo, err := postgres.NewCustomerRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("customer repo: %w", err)
+		}
+		result, err := importer.NewCustomerImporter(customerRepo).
+			WithRowHooks(regs.Import).
+			Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import customers: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"created": result.Created,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportCustomers(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:customers")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.customers.start",
+		CompleteEvent: "export.customers.complete",
+		RowErrorEvent: "export.customers.row_error",
+		WithHooks:     true,
+		AtomicExport:  true,
+		TempPrefix:    "customer-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		customerRepo, err := postgres.NewCustomerRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("customer repo: %w", err)
+		}
+		result, err := exporter.NewCustomerExporter(customerRepo).
+			WithRowHooks(regs.Export).
+			Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export customers: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"entries": result.Entries,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportAttributes(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:attributes")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:                ioImport,
+		Path:                path,
+		StartEvent:          "import.attributes.start",
+		CompleteEvent:       "import.attributes.complete",
+		RowErrorEvent:       "import.attributes.row_error",
+		RowErrorWarn:        true,
+		FailMessage:         "import completed with %d errors",
+		WithHooks:           true,
+		CompleteAfterErrors: true,
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("import attributes: begin tx: %w", err)
+		}
+		defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+		configRepo := postgres.NewConfigRepo(tx)
+		result, err := importer.NewAttributeImporter(configRepo).
+			WithRowHooks(regs.Import).
+			Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import attributes: %w", err)
+		}
+		out := &ioOutcome{
+			Fields: map[string]interface{}{
+				"attributes": result.Attributes,
+				"groups":     result.Groups,
+				"skipped":    result.Skipped,
+			},
+			Errors: result.Errors,
+		}
+		if len(result.Errors) > 0 {
+			return out, nil
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("import attributes: commit: %w", err)
+		}
+		if err := syncDiscoveryFacetsFromDB(cfg, log, conn); err != nil {
+			return nil, fmt.Errorf("import committed but discovery facet sync failed: %w", err)
+		}
+		return out, nil
+	})
+}
+
+func runExportAttributes(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:attributes")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.attributes.start",
+		CompleteEvent: "export.attributes.complete",
+		RowErrorEvent: "export.attributes.row_error",
+		WithHooks:     true,
+		AtomicExport:  true,
+		TempPrefix:    "attribute-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		configRepo := postgres.NewConfigRepo(conn)
+		result, err := exporter.NewAttributeExporter(configRepo).
+			WithRowHooks(regs.Export).
+			Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export attributes: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"entries": result.Entries,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportCategories(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:categories")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:                ioImport,
+		Path:                path,
+		StartEvent:          "import.categories.start",
+		CompleteEvent:       "import.categories.complete",
+		RowErrorEvent:       "import.categories.row_error",
+		RowErrorWarn:        true,
+		FailMessage:         "import completed with %d errors",
+		WithHooks:           true,
+		CompleteAfterErrors: true,
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		categoryRepo, err := postgres.NewCategoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("category repo: %w", err)
+		}
+		result, err := importer.NewCategoryImporter(categoryRepo).
+			WithRowHooks(regs.Import).
+			Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import categories: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"created": result.Created,
+				"updated": result.Updated,
+				"skipped": result.Skipped,
+			},
+			Errors:       result.Errors,
+			Warnings:     result.Warnings,
+			WarningEvent: "import.categories.row_warning",
+		}, nil
+	})
+}
+
+func runExportCategories(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:categories")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.categories.start",
+		CompleteEvent: "export.categories.complete",
+		RowErrorEvent: "export.categories.row_error",
+		WithHooks:     true,
+		AtomicExport:  true,
+		TempPrefix:    "category-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		categoryRepo, err := postgres.NewCategoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("category repo: %w", err)
+		}
+		result, err := exporter.NewCategoryExporter(categoryRepo).
+			WithRowHooks(regs.Export).
+			Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export categories: %w", err)
+		}
+		out := &ioOutcome{
+			Fields: map[string]interface{}{
+				"entries": result.Entries,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}
+		if result.Orphans > 0 {
+			orphans := result.Orphans
+			out.AfterOK = func() error {
+				log.Warn("export.categories.orphans", map[string]interface{}{"count": orphans})
+				return nil
+			}
+		}
+		return out, nil
+	})
+}
+
+func runImportPrices(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:prices")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:                ioImport,
+		Path:                path,
+		StartEvent:          "import.prices.start",
+		CompleteEvent:       "import.prices.complete",
+		RowErrorEvent:       "import.prices.row_error",
+		RowErrorWarn:        true,
+		FailMessage:         "import completed with %d errors",
+		WithHooks:           true,
+		CompleteAfterErrors: true,
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		priceRepo, err := postgres.NewPriceRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("price repo: %w", err)
+		}
+		priceHistoryRepo, err := postgres.NewPriceHistoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("price history repo: %w", err)
+		}
+		// bus is deliberately nil: PriceImporter publishes pricing.EventPriceUpserted
+		// once per imported row, and since PR-1036 that event also triggers a
+		// scoped search reindex (IndexUpdateSubscriber, debounced per product ID,
+		// not per event) — wiring a real bus here would mean one search_index_runs
+		// row and one queued job per distinct product in the CSV, potentially
+		// thousands for one import. If this ever needs eventing (e.g. for cache
+		// invalidation), batch the search-index side first rather than just
+		// passing a real bus through.
+		result, err := importer.NewPriceImporter(variantRepo, priceRepo, priceHistoryRepo, conn, nil).
+			WithProducts(productRepo).
+			WithRowHooks(regs.Import).
+			Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import prices: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"created": result.Created,
+				"updated": result.Updated,
+				"skipped": result.Skipped,
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportPrices(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:prices")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.prices.start",
+		CompleteEvent: "export.prices.complete",
+		RowErrorEvent: "export.prices.row_error",
+		WithHooks:     true,
+		AtomicExport:  true,
+		TempPrefix:    "price-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, regs ioRegs) (*ioOutcome, error) {
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		priceRepo, err := postgres.NewPriceRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("price repo: %w", err)
+		}
+		result, err := exporter.NewPriceExporter(priceRepo, variantRepo).
+			WithRowHooks(regs.Export).
+			Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export prices: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"entries": result.Entries,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportEpr(cfg *config.Config, log logger.Logger) error {
+	filePath, includeEmpty, err := parseEprExportArgs(ioArgs())
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          filePath,
+		StartEvent:    "export.epr.start",
+		CompleteEvent: "export.epr.complete",
+		RowErrorEvent: "export.epr.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "epr-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		variantRepo, err := postgres.NewVariantRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("variant repo: %w", err)
+		}
+		configRepo := postgres.NewConfigRepo(conn)
+		result, err := exporter.NewEprExporter(productRepo, variantRepo, configRepo).
+			Export(ctx, f, exporter.EprExportOptions{IncludeEmpty: includeEmpty})
+		if err != nil {
+			return nil, fmt.Errorf("export epr: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{"rows": result.Rows},
+		}, nil
+	})
+}
+
+func parseEprExportArgs(args []string) (filePath string, includeEmpty bool, err error) {
+	for _, arg := range args {
+		if arg == "--include-empty" {
+			includeEmpty = true
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			return "", false, fmt.Errorf("export:epr: unknown flag %q", arg)
+		}
+		if filePath != "" {
+			return "", false, fmt.Errorf("export:epr: unexpected argument %q", arg)
+		}
+		filePath = arg
+	}
+	if filePath == "" {
+		return "", false, fmt.Errorf("usage: app export:epr [--include-empty] <file.csv>")
+	}
+	return filePath, includeEmpty, nil
+}
+
+func runExportOss(cfg *config.Config, log logger.Logger) error {
+	filePath, summary, from, to, err := parseOssExportArgs(ioArgs())
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          filePath,
+		StartEvent:    "export.oss.start",
+		CompleteEvent: "export.oss.complete",
+		RowErrorEvent: "export.oss.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "oss-export-*.csv",
+		StartFields:   map[string]interface{}{"summary": summary},
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		orderRepo, err := postgres.NewOrderRepo(conn)
+		if err != nil {
+			return nil, err
+		}
+		configRepo := postgres.NewConfigRepo(conn)
+		result, err := exporter.NewOssExporter(orderRepo, configRepo).Export(ctx, f, exporter.OssExportOptions{
+			From:    from,
+			To:      to,
+			Summary: summary,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("export oss: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"rows":    result.Rows,
+				"summary": summary,
+			},
+		}, nil
+	})
+}
+
+func parseOssExportArgs(args []string) (filePath string, summary bool, from, to time.Time, err error) {
+	var fromRaw, toRaw string
+	for _, arg := range args {
+		switch {
+		case arg == "--summary":
+			summary = true
+		case strings.HasPrefix(arg, "--from="):
+			fromRaw = strings.TrimPrefix(arg, "--from=")
+		case strings.HasPrefix(arg, "--to="):
+			toRaw = strings.TrimPrefix(arg, "--to=")
+		case strings.HasPrefix(arg, "--"):
+			return "", false, time.Time{}, time.Time{}, fmt.Errorf("export:oss: unknown flag %q", arg)
+		default:
+			if filePath != "" {
+				return "", false, time.Time{}, time.Time{}, fmt.Errorf("export:oss: unexpected argument %q", arg)
+			}
+			filePath = arg
+		}
+	}
+	if filePath == "" {
+		return "", false, time.Time{}, time.Time{}, fmt.Errorf("usage: app export:oss [--summary] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD] <file.csv>")
+	}
+
+	fromDate, err := exporter.ParseReportDate(fromRaw)
+	if err != nil {
+		return "", false, time.Time{}, time.Time{}, fmt.Errorf("export:oss: %w", err)
+	}
+	toDate, err := exporter.ParseReportDate(toRaw)
+	if err != nil {
+		return "", false, time.Time{}, time.Time{}, fmt.Errorf("export:oss: %w", err)
+	}
+	if fromDate.IsZero() && toDate.IsZero() {
+		now := time.Now().UTC()
+		year, month, _ := now.Date()
+		quarterStartMonth := time.Month(((int(month)-1)/3)*3 + 1)
+		fromDate = time.Date(year, quarterStartMonth, 1, 0, 0, 0, 0, time.UTC)
+		toDate = now
+	} else if fromDate.IsZero() || toDate.IsZero() {
+		return "", false, time.Time{}, time.Time{}, fmt.Errorf("export:oss: --from and --to are required unless both are omitted")
+	}
+	toExclusive := exporter.ReportDateRangeEnd(toDate)
+	if !toExclusive.After(fromDate) {
+		return "", false, time.Time{}, time.Time{}, fmt.Errorf("export:oss: --to must be on or after --from")
+	}
+	return filePath, summary, fromDate, toExclusive, nil
+}
+
+func runImportBundleComponents(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:bundle-components")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.bundle_components.start",
+		CompleteEvent: "import.bundle_components.complete",
+		RowErrorEvent: "import.bundle_components.row_error",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		componentRepo, err := postgres.NewBundleComponentRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("bundle component repo: %w", err)
+		}
+		result, err := importer.NewBundleComponentImporter(productRepo, catalogApp.NewBundleService(productRepo, componentRepo, conn)).Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import bundle components: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"added":   result.Added,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportBundleComponents(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:bundle-components")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.bundle_components.start",
+		CompleteEvent: "export.bundle_components.complete",
+		RowErrorEvent: "export.bundle_components.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "bundle-components-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		componentRepo, err := postgres.NewBundleComponentRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("bundle component repo: %w", err)
+		}
+		result, err := exporter.NewBundleComponentExporter(productRepo, catalogApp.NewBundleService(productRepo, componentRepo, conn)).Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export bundle components: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"rows":    result.Rows,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportGroupedMembers(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:grouped-members")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.grouped_members.start",
+		CompleteEvent: "import.grouped_members.complete",
+		RowErrorEvent: "import.grouped_members.row_error",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		memberRepo, err := postgres.NewGroupedMemberRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("grouped member repo: %w", err)
+		}
+		result, err := importer.NewGroupedMemberImporter(productRepo, catalogApp.NewGroupedService(productRepo, memberRepo, conn)).Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import grouped members: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"added":   result.Added,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportGroupedMembers(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:grouped-members")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.grouped_members.start",
+		CompleteEvent: "export.grouped_members.complete",
+		RowErrorEvent: "export.grouped_members.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "grouped-members-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		memberRepo, err := postgres.NewGroupedMemberRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("grouped member repo: %w", err)
+		}
+		result, err := exporter.NewGroupedMemberExporter(productRepo, catalogApp.NewGroupedService(productRepo, memberRepo, conn)).Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export grouped members: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"rows":    result.Rows,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportLinkedEligibleParents(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:linked-eligible-parents")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.linked_eligible_parents.start",
+		CompleteEvent: "import.linked_eligible_parents.complete",
+		RowErrorEvent: "import.linked_eligible_parents.row_error",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		ruleRepo, err := postgres.NewLinkedEligibilityRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("linked eligibility repo: %w", err)
+		}
+		categoryRepo, err := postgres.NewCategoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("category repo: %w", err)
+		}
+		svc := catalogApp.NewLinkedEligibilityService(productRepo, categoryRepo, ruleRepo, conn)
+		result, err := importer.NewLinkedEligibleParentImporter(productRepo, svc).Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import linked eligible parents: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"added":   result.Added,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportLinkedEligibleParents(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:linked-eligible-parents")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.linked_eligible_parents.start",
+		CompleteEvent: "export.linked_eligible_parents.complete",
+		RowErrorEvent: "export.linked_eligible_parents.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "linked-eligible-parents-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		ruleRepo, err := postgres.NewLinkedEligibilityRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("linked eligibility repo: %w", err)
+		}
+		categoryRepo, err := postgres.NewCategoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("category repo: %w", err)
+		}
+		svc := catalogApp.NewLinkedEligibilityService(productRepo, categoryRepo, ruleRepo, conn)
+		result, err := exporter.NewLinkedEligibleParentExporter(productRepo, svc).Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export linked eligible parents: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"rows":    result.Rows,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportLinkedEligibleCategories(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:linked-eligible-categories")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.linked_eligible_categories.start",
+		CompleteEvent: "import.linked_eligible_categories.complete",
+		RowErrorEvent: "import.linked_eligible_categories.row_error",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		ruleRepo, err := postgres.NewLinkedEligibilityRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("linked eligibility repo: %w", err)
+		}
+		categoryRepo, err := postgres.NewCategoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("category repo: %w", err)
+		}
+		svc := catalogApp.NewLinkedEligibilityService(productRepo, categoryRepo, ruleRepo, conn)
+		result, err := importer.NewLinkedEligibleCategoryImporter(productRepo, categoryRepo, svc).Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import linked eligible categories: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"added":   result.Added,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportLinkedEligibleCategories(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:linked-eligible-categories")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.linked_eligible_categories.start",
+		CompleteEvent: "export.linked_eligible_categories.complete",
+		RowErrorEvent: "export.linked_eligible_categories.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "linked-eligible-categories-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		ruleRepo, err := postgres.NewLinkedEligibilityRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("linked eligibility repo: %w", err)
+		}
+		categoryRepo, err := postgres.NewCategoryRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("category repo: %w", err)
+		}
+		svc := catalogApp.NewLinkedEligibilityService(productRepo, categoryRepo, ruleRepo, conn)
+		result, err := exporter.NewLinkedEligibleCategoryExporter(productRepo, categoryRepo, svc).Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export linked eligible categories: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"rows":    result.Rows,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runImportDownloadableFiles(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("import:downloadable-files")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioImport,
+		Path:          path,
+		StartEvent:    "import.downloadable_files.start",
+		CompleteEvent: "import.downloadable_files.complete",
+		RowErrorEvent: "import.downloadable_files.row_error",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		fileRepo, err := postgres.NewDownloadableFileRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("downloadable file repo: %w", err)
+		}
+		assetRepo, err := postgres.NewAssetRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("asset repo: %w", err)
+		}
+		svc := catalogApp.NewDownloadableFileService(productRepo, fileRepo, assetRepo, conn)
+		result, err := importer.NewDownloadableFileImporter(productRepo, svc).Import(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("import downloadable files: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"added":   result.Added,
+				"updated": result.Updated,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}
+
+func runExportDownloadableFiles(cfg *config.Config, log logger.Logger) error {
+	path, err := requireIOPath("export:downloadable-files")
+	if err != nil {
+		return err
+	}
+	return runIOCommand(cfg, log, ioCommandOpts{
+		Kind:          ioExport,
+		Path:          path,
+		StartEvent:    "export.downloadable_files.start",
+		CompleteEvent: "export.downloadable_files.complete",
+		RowErrorEvent: "export.downloadable_files.row_error",
+		AtomicExport:  true,
+		TempPrefix:    "downloadable-files-export-*.csv",
+	}, func(ctx context.Context, conn *sql.DB, f *os.File, _ ioRegs) (*ioOutcome, error) {
+		productRepo, err := postgres.NewProductRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("product repo: %w", err)
+		}
+		fileRepo, err := postgres.NewDownloadableFileRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("downloadable file repo: %w", err)
+		}
+		assetRepo, err := postgres.NewAssetRepo(conn)
+		if err != nil {
+			return nil, fmt.Errorf("asset repo: %w", err)
+		}
+		svc := catalogApp.NewDownloadableFileService(productRepo, fileRepo, assetRepo, conn)
+		result, err := exporter.NewDownloadableFileExporter(productRepo, svc).Export(ctx, f)
+		if err != nil {
+			return nil, fmt.Errorf("export downloadable files: %w", err)
+		}
+		return &ioOutcome{
+			Fields: map[string]interface{}{
+				"rows":    result.Rows,
+				"skipped": result.Skipped,
+				"errors":  len(result.Errors),
+			},
+			Errors: result.Errors,
+		}, nil
+	})
+}

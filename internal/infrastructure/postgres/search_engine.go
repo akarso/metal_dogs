@@ -1,0 +1,556 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/akarso/shopanda/internal/domain/search"
+)
+
+// Compile-time check that SearchEngine implements search.SearchEngine.
+var _ search.SearchEngine = (*SearchEngine)(nil)
+
+// SearchEngine implements search.SearchEngine using PostgreSQL full-text search.
+type SearchEngine struct {
+	db *sql.DB
+}
+
+// NewSearchEngine returns a new SearchEngine backed by db.
+func NewSearchEngine(db *sql.DB) (*SearchEngine, error) {
+	if db == nil {
+		return nil, fmt.Errorf("NewSearchEngine: nil *sql.DB")
+	}
+	return &SearchEngine{db: db}, nil
+}
+
+// Name returns "postgres".
+func (e *SearchEngine) Name() string { return "postgres" }
+
+// IndexProduct updates the search vector and denormalized visibility axes
+// for a product (PR-1079). The search_vector trigger on the products table
+// handles normal INSERT/UPDATE of name/description, so this method is
+// primarily useful for explicit reindexing (and for writing the visibility
+// columns the trigger does not touch).
+func (e *SearchEngine) IndexProduct(ctx context.Context, p search.Product) error {
+	const q = `UPDATE products
+		SET search_vector = to_tsvector('english', coalesce($2, '') || ' ' || coalesce($3, '')),
+		    search_visible_in_catalog = $4,
+		    search_visible_in_search = $5,
+		    search_visible_individually = $6,
+		    search_purchasable = $7
+		WHERE id = $1`
+	result, err := e.db.ExecContext(ctx, q,
+		p.ID, p.Name, p.Description,
+		p.VisibleInCatalog, p.VisibleInSearch, p.VisibleIndividually, p.Purchasable,
+	)
+	if err != nil {
+		return fmt.Errorf("search_engine: index product: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("search_engine: index product rows: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("search_engine: product %s not found", p.ID)
+	}
+	return nil
+}
+
+// RemoveProduct clears the search vector for a product, making it unsearchable.
+func (e *SearchEngine) RemoveProduct(ctx context.Context, productID string) error {
+	const q = `UPDATE products SET search_vector = NULL WHERE id = $1`
+	_, err := e.db.ExecContext(ctx, q, productID)
+	if err != nil {
+		return fmt.Errorf("search_engine: remove product: %w", err)
+	}
+	return nil
+}
+
+// IndexCategory updates the search vector for a category.
+// The search_vector trigger on the categories table handles normal
+// INSERT/UPDATE, so this method is primarily useful for explicit
+// reindexing. Only name and slug feed the vector, matching the trigger —
+// catalog.Category has no description field yet.
+func (e *SearchEngine) IndexCategory(ctx context.Context, c search.Category) error {
+	const q = `UPDATE categories
+		SET search_vector = to_tsvector('english', coalesce($2, '') || ' ' || coalesce($3, ''))
+		WHERE id = $1`
+	result, err := e.db.ExecContext(ctx, q, c.ID, c.Name, c.Slug)
+	if err != nil {
+		return fmt.Errorf("search_engine: index category: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("search_engine: index category rows: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("search_engine: category %s not found", c.ID)
+	}
+	return nil
+}
+
+// RemoveCategory clears the search vector for a category, making it unsearchable.
+func (e *SearchEngine) RemoveCategory(ctx context.Context, categoryID string) error {
+	const q = `UPDATE categories SET search_vector = NULL WHERE id = $1`
+	_, err := e.db.ExecContext(ctx, q, categoryID)
+	if err != nil {
+		return fmt.Errorf("search_engine: remove category: %w", err)
+	}
+	return nil
+}
+
+// Suggest returns autocomplete suggestions using prefix matching on product names.
+// Filters use the same shared keys as Search (category, attr_*, visibility,
+// purchasable, type) via appendSharedProductFilters — callers pass only what
+// they need (PR-1079: do not bake visible_in_search into every Suggest call).
+func (e *SearchEngine) Suggest(ctx context.Context, query search.SuggestQuery) ([]search.Suggestion, error) {
+	if query.Prefix == "" {
+		return nil, nil
+	}
+	limit := query.EffectiveLimit()
+
+	wheres := []string{"p.status = 'active'", "p.name ILIKE $1 ESCAPE '\\'"}
+	joins := []string{}
+	args := []interface{}{escapeLike(query.Prefix) + "%"}
+	argN := 1
+	nextArg := func(v interface{}) string {
+		argN++
+		args = append(args, v)
+		return fmt.Sprintf("$%d", argN)
+	}
+	appendSharedProductFilters(query.Filters, nextArg, &joins, &wheres)
+	args = append(args, limit)
+	limitArg := fmt.Sprintf("$%d", argN+1)
+
+	joinClause := strings.Join(joins, " ")
+	q := fmt.Sprintf(`SELECT p.id, p.name, p.slug FROM products p %s
+		WHERE %s
+		ORDER BY p.name LIMIT %s`, joinClause, strings.Join(wheres, " AND "), limitArg)
+	rows, err := e.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search_engine: suggest: %w", err)
+	}
+	defer rows.Close()
+
+	var suggestions []search.Suggestion
+	for rows.Next() {
+		var id, name, slug string
+		if err := rows.Scan(&id, &name, &slug); err != nil {
+			return nil, fmt.Errorf("search_engine: suggest scan: %w", err)
+		}
+		suggestions = append(suggestions, search.Suggestion{
+			Text:      name,
+			Type:      "product",
+			URL:       "/products/" + slug,
+			ProductID: id,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search_engine: suggest rows: %w", err)
+	}
+	return suggestions, nil
+}
+
+// appendSharedProductFilters applies Filters keys shared by Search and Suggest:
+// category, attr_<code>, visibility axes, purchasable, and type. Price /
+// in_stock remain Search-only (Postgres price shape differs from Meili).
+func appendSharedProductFilters(
+	filters map[string]interface{},
+	nextArg func(interface{}) string,
+	joins, wheres *[]string,
+) {
+	if filters == nil {
+		return
+	}
+	if cat, ok := filters["category"]; ok {
+		if catStr, ok := cat.(string); ok && catStr != "" {
+			catArg := nextArg(catStr)
+			*joins = append(*joins, fmt.Sprintf(
+				"INNER JOIN product_categories pc ON pc.product_id = p.id AND pc.category_id = %s", catArg))
+		}
+	}
+	for key, raw := range filters {
+		code, ok := search.AttributeCodeFromFilterKey(key)
+		if !ok {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		codeArg := nextArg(code)
+		valArg := nextArg(value)
+		*wheres = append(*wheres, fmt.Sprintf("p.attributes->>%s = %s", codeArg, valArg))
+	}
+	// Denormalized visibility filters (PR-1079). Only truthy values are
+	// applied — callers AND these when present so Total/Facets match hits.
+	// Columns DEFAULT true (fail-open until reindex); see DEPLOYMENT.md.
+	if search.FilterBoolTrue(filters[search.FilterVisibleInSearch]) {
+		*wheres = append(*wheres, "p.search_visible_in_search = true")
+	}
+	if search.FilterBoolTrue(filters[search.FilterVisibleInCatalog]) {
+		*wheres = append(*wheres, "p.search_visible_in_catalog = true")
+	}
+	if search.FilterBoolTrue(filters[search.FilterPurchasable]) {
+		*wheres = append(*wheres, "p.search_purchasable = true")
+	}
+	if typeStr, ok := search.SanitizeFilterType(filters[search.FilterType]); ok {
+		*wheres = append(*wheres, fmt.Sprintf("p.type = %s", nextArg(typeStr)))
+	}
+}
+
+// Search executes a full-text search query with optional filters, sorting, and facets.
+func (e *SearchEngine) Search(ctx context.Context, query search.SearchQuery) (search.SearchResult, error) {
+	if err := query.Validate(); err != nil {
+		return search.SearchResult{}, err
+	}
+
+	limit := query.EffectiveLimit()
+	args := []interface{}{}
+	argN := 0
+
+	nextArg := func(v interface{}) string {
+		argN++
+		args = append(args, v)
+		return fmt.Sprintf("$%d", argN)
+	}
+
+	// Base WHERE clause: only active products with a search vector.
+	wheres := []string{"p.status = 'active'", "p.search_vector IS NOT NULL"}
+	joins := []string{}
+	hasText := strings.TrimSpace(query.Text) != ""
+
+	// Full-text filter.
+	var tsQueryRef string
+	if hasText {
+		textArg := nextArg(query.Text)
+		tsQueryRef = fmt.Sprintf("plainto_tsquery('english', %s)", textArg)
+		wheres = append(wheres, fmt.Sprintf("p.search_vector @@ %s", tsQueryRef))
+	}
+
+	appendSharedProductFilters(query.Filters, nextArg, &joins, &wheres)
+
+	// Price filter.
+	if priceFilter, ok := query.Filters["price"]; ok {
+		if priceMap, ok := priceFilter.(map[string]interface{}); ok {
+			priceConds := []string{}
+			if gt, ok := toInt64(priceMap["gt"]); ok {
+				priceConds = append(priceConds, fmt.Sprintf("pr.amount > %s", nextArg(gt)))
+			}
+			if gte, ok := toInt64(priceMap["gte"]); ok {
+				priceConds = append(priceConds, fmt.Sprintf("pr.amount >= %s", nextArg(gte)))
+			}
+			if lt, ok := toInt64(priceMap["lt"]); ok {
+				priceConds = append(priceConds, fmt.Sprintf("pr.amount < %s", nextArg(lt)))
+			}
+			if lte, ok := toInt64(priceMap["lte"]); ok {
+				priceConds = append(priceConds, fmt.Sprintf("pr.amount <= %s", nextArg(lte)))
+			}
+			if len(priceConds) > 0 {
+				joins = append(joins, "INNER JOIN variants v ON v.product_id = p.id")
+				joins = append(joins, "INNER JOIN prices pr ON pr.variant_id = v.id")
+				wheres = append(wheres, priceConds...)
+			}
+		}
+	}
+
+	whereClause := strings.Join(wheres, " AND ")
+	joinClause := strings.Join(joins, " ")
+
+	// ORDER BY — used in outer query over deduplicated rows.
+	orderBy := "sort_key DESC"
+	sortExpr := "p.created_at"
+	switch query.Sort {
+	case "name":
+		sortExpr = "p.name"
+		orderBy = "sort_key ASC"
+	case "-name":
+		sortExpr = "p.name"
+		orderBy = "sort_key DESC"
+	case "created_at":
+		sortExpr = "p.created_at"
+		orderBy = "sort_key ASC"
+	case "-created_at":
+		sortExpr = "p.created_at"
+		orderBy = "sort_key DESC"
+	default:
+		if hasText {
+			sortExpr = fmt.Sprintf("ts_rank(p.search_vector, %s)", tsQueryRef)
+			orderBy = "sort_key DESC"
+		}
+	}
+
+	// Count query.
+	countQ := fmt.Sprintf(
+		"SELECT COUNT(DISTINCT p.id) FROM products p %s WHERE %s",
+		joinClause, whereClause)
+
+	var total int
+	if err := e.db.QueryRowContext(ctx, countQ, args...).Scan(&total); err != nil {
+		return search.SearchResult{}, fmt.Errorf("search_engine: count: %w", err)
+	}
+
+	if total == 0 {
+		return search.SearchResult{
+			Products: []search.Product{},
+			Facets:   map[string][]search.FacetValue{},
+		}, nil
+	}
+
+	// Main query: inner subquery deduplicates and projects sort key,
+	// outer query applies ORDER BY, LIMIT, OFFSET.
+	filterArgs := make([]interface{}, len(args))
+	copy(filterArgs, args)
+	priceFilter := []string{"v.product_id = sub.id"}
+	priceOrder := "CASE WHEN pr.store_id = '' THEN 0 ELSE 1 END"
+	if query.Currency != "" {
+		priceFilter = append(priceFilter, fmt.Sprintf("pr.currency = %s", nextArg(query.Currency)))
+	}
+	if query.StoreID != "" {
+		storeIDArg := nextArg(query.StoreID)
+		priceOrder = fmt.Sprintf("CASE WHEN pr.store_id = %s THEN 0 WHEN pr.store_id = '' THEN 1 ELSE 2 END", storeIDArg)
+	}
+
+	limitArg := nextArg(limit)
+	offsetArg := nextArg(query.Offset)
+
+	mainQ := fmt.Sprintf(
+		`SELECT
+			sub.id,
+			sub.name,
+			sub.slug,
+			sub.description,
+			sub.type,
+			sub.created_at,
+			sub.attributes,
+			sub.search_visible_in_catalog,
+			sub.search_visible_in_search,
+			sub.search_visible_individually,
+			sub.search_purchasable,
+			COALESCE(
+				(
+					SELECT pr.amount
+					FROM variants v
+					INNER JOIN prices pr ON pr.variant_id = v.id
+					WHERE %s
+					ORDER BY %s, pr.amount ASC, pr.created_at ASC
+					LIMIT 1
+				),
+				0
+			) AS price,
+			CASE
+				WHEN sub.type = 'grouped' THEN FALSE
+				WHEN sub.type = 'bundle' AND sub.stock_mode = 'dynamic' THEN
+					%s
+				ELSE EXISTS(
+					SELECT 1
+					FROM variants v
+					LEFT JOIN stock s ON s.variant_id = v.id
+					LEFT JOIN LATERAL (
+						SELECT COALESCE(SUM(r.quantity), 0) AS reserved_qty
+						FROM reservations r
+						WHERE r.variant_id = v.id
+						  AND r.status = 'active'
+						  AND r.expires_at > now()
+					) reserved ON TRUE
+					WHERE v.product_id = sub.id
+					  AND COALESCE(s.quantity, 0) - COALESCE(reserved.reserved_qty, 0) > 0
+				)
+			END AS in_stock
+		FROM (
+			SELECT DISTINCT ON (p.id)
+				p.id,
+				p.name,
+				p.slug,
+				p.description,
+				p.created_at,
+				p.attributes,
+				p.type,
+				p.stock_mode,
+				p.search_visible_in_catalog,
+				p.search_visible_in_search,
+				p.search_visible_individually,
+				p.search_purchasable,
+				%s AS sort_key
+			FROM products p %s
+			WHERE %s
+			ORDER BY p.id, %s
+		) sub
+		ORDER BY %s
+		LIMIT %s OFFSET %s`,
+		strings.Join(priceFilter, " AND "), priceOrder,
+		dynamicBundleQuantityPositiveSQL("sub.id"),
+		sortExpr, joinClause, whereClause, sortExpr, orderBy, limitArg, offsetArg)
+
+	rows, err := e.db.QueryContext(ctx, mainQ, args...)
+	if err != nil {
+		return search.SearchResult{}, fmt.Errorf("search_engine: search: %w", err)
+	}
+	defer rows.Close()
+
+	var products []search.Product
+	for rows.Next() {
+		var p search.Product
+		var attrsJSON []byte
+		if err := rows.Scan(
+			&p.ID, &p.Name, &p.Slug, &p.Description, &p.Type, &p.CreatedAt, &attrsJSON,
+			&p.VisibleInCatalog, &p.VisibleInSearch, &p.VisibleIndividually, &p.Purchasable,
+			&p.Price, &p.InStock,
+		); err != nil {
+			return search.SearchResult{}, fmt.Errorf("search_engine: scan: %w", err)
+		}
+		if len(attrsJSON) > 0 {
+			if err := json.Unmarshal(attrsJSON, &p.Attributes); err != nil {
+				return search.SearchResult{}, fmt.Errorf("search_engine: unmarshal attributes: %w", err)
+			}
+		}
+		if p.Attributes == nil {
+			p.Attributes = make(map[string]interface{})
+		}
+		products = append(products, p)
+	}
+	if err := rows.Err(); err != nil {
+		return search.SearchResult{}, fmt.Errorf("search_engine: rows: %w", err)
+	}
+
+	// Facets: category and attribute counts from the filtered result set.
+	facets, err := e.categoryFacets(ctx, joinClause, whereClause, filterArgs)
+	if err != nil {
+		return search.SearchResult{}, err
+	}
+	attrFacets, err := e.attributeFacets(ctx, joinClause, whereClause, filterArgs, query.FacetAttributes)
+	if err != nil {
+		return search.SearchResult{}, err
+	}
+	for code, values := range attrFacets {
+		if search.ReservedFacetKey(code) {
+			continue
+		}
+		facets[code] = values
+	}
+
+	return search.SearchResult{
+		Products: products,
+		Total:    total,
+		Facets:   facets,
+	}, nil
+}
+
+// categoryFacets computes category counts for the filtered product set.
+func (e *SearchEngine) categoryFacets(ctx context.Context, joinClause, whereClause string, args []interface{}) (map[string][]search.FacetValue, error) {
+	q := fmt.Sprintf(
+		"SELECT c.name, COUNT(DISTINCT p.id) FROM products p %s INNER JOIN product_categories fpc ON fpc.product_id = p.id INNER JOIN categories c ON c.id = fpc.category_id WHERE %s GROUP BY c.name ORDER BY COUNT(DISTINCT p.id) DESC",
+		joinClause, whereClause)
+
+	rows, err := e.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search_engine: category facets: %w", err)
+	}
+	defer rows.Close()
+
+	var values []search.FacetValue
+	for rows.Next() {
+		var fv search.FacetValue
+		if err := rows.Scan(&fv.Value, &fv.Count); err != nil {
+			return nil, fmt.Errorf("search_engine: facet scan: %w", err)
+		}
+		values = append(values, fv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search_engine: facet rows: %w", err)
+	}
+
+	facets := map[string][]search.FacetValue{}
+	if len(values) > 0 {
+		facets["category"] = values
+	}
+	return facets, nil
+}
+
+func searchAttributeCodeValid(code string) bool {
+	if code == "" || len(code) > 64 {
+		return false
+	}
+	for i, r := range code {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= '0' && r <= '9' && i > 0 {
+			continue
+		}
+		if r == '_' && i > 0 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// attributeFacets computes value counts for the given attribute codes on the filtered product set.
+func (e *SearchEngine) attributeFacets(ctx context.Context, joinClause, whereClause string, args []interface{}, codes []string) (map[string][]search.FacetValue, error) {
+	out := map[string][]search.FacetValue{}
+	for _, code := range codes {
+		if !searchAttributeCodeValid(code) || search.ReservedFacetKey(code) {
+			continue
+		}
+		facetArgs := append(append([]interface{}{}, args...), code)
+		codeIdx := len(args) + 1
+		q := fmt.Sprintf(
+			`SELECT p.attributes->>$%d, COUNT(DISTINCT p.id)
+			 FROM products p %s
+			 WHERE %s
+			   AND p.attributes->>$%d IS NOT NULL
+			   AND btrim(p.attributes->>$%d) <> ''
+			 GROUP BY 1
+			 ORDER BY COUNT(DISTINCT p.id) DESC`,
+			codeIdx, joinClause, whereClause, codeIdx, codeIdx,
+		)
+		rows, err := e.db.QueryContext(ctx, q, facetArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("search_engine: attribute facets %q: %w", code, err)
+		}
+
+		var values []search.FacetValue
+		for rows.Next() {
+			var fv search.FacetValue
+			if err := rows.Scan(&fv.Value, &fv.Count); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("search_engine: attribute facet scan: %w", err)
+			}
+			values = append(values, fv)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("search_engine: attribute facet rows: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if len(values) > 0 {
+			out[code] = values
+		}
+	}
+	return out, nil
+}
+
+// toInt64 attempts to convert an interface value to int64.
+// Handles float64 (from JSON) and int/int64 types.
+func toInt64(v interface{}) (int64, bool) {
+	if v == nil {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
+

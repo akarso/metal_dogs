@@ -1,0 +1,742 @@
+package config
+
+import (
+	"fmt"
+	"math"
+	"net"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/akarso/shopanda/internal/platform/jwt"
+)
+
+// Forbidden local/compose default secrets — rejected unless DevModeEnabled.
+var forbiddenDevSecrets = map[string]struct{}{
+	"changeme": {},
+	"shopanda": {},
+}
+
+// Local DB hosts allowed to use sslmode=disable when DevModeEnabled.
+// "postgres" is the docker-compose service name for local profiles only.
+var localDBHosts = map[string]struct{}{
+	"localhost": {},
+	"127.0.0.1": {},
+	"::1":       {},
+	"postgres":  {},
+}
+
+func normalizeAndValidate(cfg *Config) error {
+	if cfg.Queue.Driver == "" {
+		cfg.Queue.Driver = "postgres"
+	}
+	if cfg.Search.Engine == "" {
+		cfg.Search.Engine = "postgres"
+	}
+	if cfg.Cache.Driver == "" {
+		cfg.Cache.Driver = "postgres"
+	}
+
+	switch cfg.Queue.Driver {
+	case "postgres", "redis", "rabbitmq", "kafka", "sqs":
+	default:
+		return fmt.Errorf("config: unsupported queue.driver: %q (allowed: postgres, redis, rabbitmq, kafka, sqs)", cfg.Queue.Driver)
+	}
+
+	switch cfg.Cache.Driver {
+	case "postgres", "redis":
+	default:
+		return fmt.Errorf("config: unsupported cache.driver: %q (allowed: postgres, redis)", cfg.Cache.Driver)
+	}
+	if cfg.Cache.Driver == "redis" && strings.TrimSpace(cfg.Cache.Redis.KeyPrefix) == "" {
+		return fmt.Errorf("config: cache.redis.key_prefix must be non-empty when cache.driver=redis (empty prefix makes SCAN/FlushAll match the whole Redis DB)")
+	}
+	if err := validateFullPageCache(&cfg.Cache.FullPage); err != nil {
+		return err
+	}
+
+	if err := validateRateLimit(cfg); err != nil {
+		return err
+	}
+
+	switch cfg.Search.Engine {
+	case "postgres", "meilisearch":
+	default:
+		return fmt.Errorf("config: unsupported search.engine: %q (allowed: postgres, meilisearch)", cfg.Search.Engine)
+	}
+	if err := validateSearch(&cfg.Search); err != nil {
+		return err
+	}
+	if err := validateCatalogDownloadable(&cfg.Catalog.Downloadable); err != nil {
+		return err
+	}
+
+	if cfg.Media.Storage == "" {
+		cfg.Media.Storage = "local"
+	}
+	switch cfg.Media.Storage {
+	case "local", "s3":
+	default:
+		return fmt.Errorf("config: unsupported media.storage: %q (allowed: local, s3)", cfg.Media.Storage)
+	}
+
+	if err := normalizeAuthJWT(&cfg.Auth); err != nil {
+		return err
+	}
+	if err := normalizeAuthLockout(&cfg.Auth.Lockout); err != nil {
+		return err
+	}
+	normalizeHTTP(&cfg.HTTP)
+	normalizeMetrics(&cfg.Metrics)
+	if err := validateMetricsListen(cfg); err != nil {
+		return err
+	}
+	normalizeTracing(&cfg.Tracing)
+	if err := validateTracing(&cfg.Tracing); err != nil {
+		return err
+	}
+	if err := validateStripe(&cfg.Payment.Stripe); err != nil {
+		return err
+	}
+	if err := validateStoreCredit(&cfg.StoreCredit); err != nil {
+		return err
+	}
+	if err := validateDatabase(&cfg.Database); err != nil {
+		return err
+	}
+
+	if err := validateSecureDefaults(cfg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateRateLimit(cfg *Config) error {
+	cfg.RateLimit.Driver = strings.ToLower(strings.TrimSpace(cfg.RateLimit.Driver))
+	if cfg.RateLimit.Driver == "" {
+		cfg.RateLimit.Driver = "memory"
+	}
+	switch cfg.RateLimit.Driver {
+	case "memory", "redis":
+	default:
+		return fmt.Errorf("config: unsupported rate_limit.driver: %q (allowed: memory, redis)", cfg.RateLimit.Driver)
+	}
+
+	cfg.RateLimit.OnError = strings.ToLower(strings.TrimSpace(cfg.RateLimit.OnError))
+	if cfg.RateLimit.OnError == "" {
+		cfg.RateLimit.OnError = "open"
+	}
+	switch cfg.RateLimit.OnError {
+	case "open", "closed", "local":
+	default:
+		return fmt.Errorf("config: unsupported rate_limit.on_error: %q (allowed: open, closed, local)", cfg.RateLimit.OnError)
+	}
+	for i := range cfg.RateLimit.PerRoute {
+		r := &cfg.RateLimit.PerRoute[i]
+		r.OnError = strings.ToLower(strings.TrimSpace(r.OnError))
+		if r.OnError == "" {
+			continue
+		}
+		switch r.OnError {
+		case "open", "closed", "local":
+		default:
+			return fmt.Errorf("config: unsupported rate_limit.per_route[%d].on_error: %q (allowed: open, closed, local)", i, r.OnError)
+		}
+	}
+
+	if cfg.RateLimit.Enabled && cfg.RateLimit.Driver == "redis" {
+		if cfg.RateLimit.RedisURL(cfg.Cache.Redis.URL) == "" {
+			return fmt.Errorf("config: rate_limit.driver=redis requires rate_limit.redis.url or cache.redis.url (or SHOPANDA_RATE_LIMIT_REDIS_URL / REDIS_URL / SHOPANDA_CACHE_REDIS_URL)")
+		}
+		if cfg.RateLimit.Redis.PoolSize < 0 {
+			return fmt.Errorf("config: rate_limit.redis.pool_size must be >= 0 (0 uses min(10*GOMAXPROCS, 64))")
+		}
+	}
+	return nil
+}
+
+// validateStoreCredit rejects a negative max_issue_amount — unlike 0
+// (an explicit, documented opt-out of the cap), a negative value has no
+// sensible interpretation and would otherwise reach
+// storecredit.Service.Issue's `amount.Amount() > s.maxIssueAmount` check,
+// where it would make the cap tighter than intended (any positive amount
+// exceeds a negative max) rather than doing whatever the operator
+// actually meant.
+func validateStoreCredit(s *StoreCreditConfig) error {
+	if s.MaxIssueAmount < 0 {
+		return fmt.Errorf("config: store_credit.max_issue_amount=%d must not be negative (0 disables the cap)", s.MaxIssueAmount)
+	}
+	return nil
+}
+
+// validateSearch rejects a reindex_full_scan_threshold outside [0, 1] — a
+// negative fraction has no sensible interpretation, and above 1 no
+// resolved scope could ever exceed it, silently disabling PR-1034's
+// threshold heuristic entirely (a partial reindex would never be
+// substituted with a full scan, no matter how much of the catalog it
+// covers). Both are far more likely a typo than an intentional value, so
+// this is caught at startup rather than surfacing as "partial reindex
+// scoping doesn't behave as documented" with no error anywhere.
+func validateSearch(s *SearchConfig) error {
+	// NaN checked explicitly, not folded into the range comparison below:
+	// every comparison with NaN (<, >, ==) is false per IEEE 754, so
+	// "NaN < 0 || NaN > 1" would silently pass a NaN threshold straight
+	// through — which would then make applyThreshold's own
+	// "ratio > fullScanThreshold" comparison always false too, silently
+	// disabling the threshold heuristic entirely with no error anywhere.
+	// YAML's `.nan` literal (or an env var of "nan") is a real way to
+	// reach this, not just a theoretical edge case.
+	if math.IsNaN(s.ReindexFullScanThreshold) {
+		return fmt.Errorf("config: search.reindex_full_scan_threshold must not be NaN")
+	}
+	if s.ReindexFullScanThreshold < 0 || s.ReindexFullScanThreshold > 1 {
+		return fmt.Errorf("config: search.reindex_full_scan_threshold=%v must be between 0 and 1", s.ReindexFullScanThreshold)
+	}
+	return nil
+}
+
+// validateCatalogDownloadable checks global DownloadGrant defaults (PR-1075).
+// Explicit 0 for default_download_limit is rejected (not coerced to 5).
+// DefaultConfig / empty yaml leave the compiled default of 5.
+func validateCatalogDownloadable(d *CatalogDownloadableConfig) error {
+	if strings.TrimSpace(d.DefaultExpiry) == "" {
+		d.DefaultExpiry = DefaultCatalogDownloadableExpiry
+	}
+	exp, err := time.ParseDuration(d.DefaultExpiry)
+	if err != nil {
+		return fmt.Errorf("config: catalog.downloadable.default_expiry=%q: %w", d.DefaultExpiry, err)
+	}
+	if exp <= 0 {
+		return fmt.Errorf("config: catalog.downloadable.default_expiry must be positive")
+	}
+	// Cap matches domain/download.MaxExpiryDays (3650).
+	const maxExpiry = 3650 * 24 * time.Hour
+	if exp > maxExpiry {
+		return fmt.Errorf("config: catalog.downloadable.default_expiry must not exceed 3650 days")
+	}
+	if d.DefaultDownloadLimit < 1 || d.DefaultDownloadLimit > 10000 {
+		return fmt.Errorf("config: catalog.downloadable.default_download_limit=%d must be between 1 and 10000", d.DefaultDownloadLimit)
+	}
+	return nil
+}
+
+// validateDatabase rejects a query_exec_mode pgx itself would reject at
+// connect time (pgx.ParseConfig only recognizes these five strings) —
+// caught at Load rather than surfacing as an opaque dial-time DSN parse
+// error on first use.
+func validateDatabase(d *DatabaseConfig) error {
+	switch d.QueryExecMode {
+	case "", "cache_statement", "cache_describe", "describe_exec", "exec", "simple_protocol":
+		return nil
+	default:
+		return fmt.Errorf("config: unsupported database.query_exec_mode: %q (allowed: cache_statement, cache_describe, describe_exec, exec, simple_protocol)", d.QueryExecMode)
+	}
+}
+
+// validateStripe rejects an enabled Stripe config missing either secret —
+// without both, every checkout payment and every incoming webhook would
+// fail at the first real request instead of at startup, where the mistake
+// is far cheaper to catch.
+func validateStripe(s *StripeConfig) error {
+	if !s.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(s.SecretKey) == "" {
+		return fmt.Errorf("config: payment.stripe.enabled=true requires payment.stripe.secret_key")
+	}
+	if strings.TrimSpace(s.WebhookSecret) == "" {
+		return fmt.Errorf("config: payment.stripe.enabled=true requires payment.stripe.webhook_secret")
+	}
+	return nil
+}
+
+// normalizeTracing clamps an out-of-range SampleRatio above 1 down to 1 — a
+// typo like 150 (meant as a percentage) is far more likely than a
+// deliberate attempt to oversample. It deliberately leaves 0 and negative
+// values untouched: 0 is a real "record spans, export none" signal (see
+// DefaultTracingSampleRatio, seeded in defaults() so it's distinguishable
+// from an operator never mentioning sample_ratio at all), and a negative
+// value is rejected outright by validateTracing rather than silently
+// reinterpreted as something the operator didn't ask for.
+func normalizeTracing(t *TracingConfig) {
+	if !t.Enabled {
+		return
+	}
+	if t.SampleRatio > 1 {
+		t.SampleRatio = 1.0
+	}
+}
+
+// validateTracing rejects an enabled tracing config that can't safely
+// export: no destination, a scheme-prefixed endpoint (otlptracehttp.
+// WithEndpoint expects host:port and would otherwise only fail at dial
+// time with a confusing error), a negative sample ratio, or a cleartext
+// (insecure) export target that isn't local or explicitly dev-mode.
+func validateTracing(t *TracingConfig) error {
+	if !t.Enabled {
+		return nil
+	}
+	endpoint := strings.TrimSpace(t.Endpoint)
+	if endpoint == "" {
+		return fmt.Errorf("config: tracing.enabled=true requires tracing.endpoint")
+	}
+	if strings.Contains(endpoint, "://") {
+		return fmt.Errorf("config: tracing.endpoint=%q must be host:port, not a URL (e.g. %q — no scheme)", endpoint, "localhost:4318")
+	}
+	if t.SampleRatio < 0 {
+		return fmt.Errorf("config: tracing.sample_ratio=%v must not be negative", t.SampleRatio)
+	}
+	if t.Insecure && !DevModeEnabled() && !isLoopbackHost(tracingEndpointHost(endpoint)) {
+		return fmt.Errorf("config: tracing.insecure=true would send spans in cleartext to %q; only allowed against a local collector (localhost, 127.0.0.1, ::1) or with SHOPANDA_DEV_MODE=true", endpoint)
+	}
+	return nil
+}
+
+// tracingEndpointHost extracts the host portion of a host:port tracing
+// endpoint for the loopback check above. Falls back to the endpoint as a
+// whole when it has no port (SplitHostPort's error case) — isLoopbackHost
+// simply won't match a non-host string, failing closed rather than open.
+func tracingEndpointHost(endpoint string) string {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	return host
+}
+
+// normalizeMetrics defaults a blank listen address so an operator who sets
+// metrics.enabled=true without metrics.listen never accidentally binds to
+// all interfaces (Go's http.Server treats an empty Addr as ":http").
+func normalizeMetrics(m *MetricsConfig) {
+	if m.Enabled && strings.TrimSpace(m.Listen) == "" {
+		m.Listen = DefaultMetricsListen
+	}
+}
+
+// validateMetricsListen rejects metrics binds that would expose unauthenticated
+// /metrics on all interfaces or on a non-loopback address outside dev mode.
+func validateMetricsListen(cfg *Config) error {
+	if !cfg.Metrics.Enabled {
+		return nil
+	}
+	listen := strings.TrimSpace(cfg.Metrics.Listen)
+	if listen == "" {
+		return fmt.Errorf("config: metrics.enabled=true requires metrics.listen")
+	}
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("config: invalid metrics.listen %q: %w", listen, err)
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if isMetricsWildcardBind(host) {
+		if MetricsInsecureBindAllowed() {
+			return nil
+		}
+		return fmt.Errorf("config: metrics.listen=%q binds all interfaces; use a loopback address (default %q), enable SHOPANDA_DEV_MODE for local development, or set SHOPANDA_METRICS_ALLOW_INSECURE_BIND=true if you understand /metrics has no authentication", listen, DefaultMetricsListen)
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	if MetricsInsecureBindAllowed() {
+		return nil
+	}
+	return fmt.Errorf("config: metrics.listen=%q is not loopback; use %q (default) and scrape via localhost, enable SHOPANDA_DEV_MODE for local development, or set SHOPANDA_METRICS_ALLOW_INSECURE_BIND=true if you understand /metrics has no authentication", listen, DefaultMetricsListen)
+}
+
+func isMetricsWildcardBind(host string) bool {
+	switch host {
+	case "", "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	if host != "localhost" {
+		return false
+	}
+	// "localhost" is only trusted as loopback if it actually resolves that
+	// way in this environment — a tampered /etc/hosts or DNS override could
+	// otherwise point it at a non-loopback address while a bare string
+	// comparison still waved it through. Falls back to trusting the literal
+	// if resolution itself fails, so this stays a pure, always-succeeding
+	// config check in environments (e.g. minimal containers) where local
+	// hostname resolution isn't set up, rather than a hard resolver
+	// dependency.
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return true
+	}
+	if len(addrs) == 0 {
+		return true
+	}
+	for _, addr := range addrs {
+		resolvedIP := net.ParseIP(addr)
+		if resolvedIP == nil || !resolvedIP.IsLoopback() {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeHTTP(h *HTTPConfig) {
+	if h.MaxBodyBytes <= 0 {
+		h.MaxBodyBytes = DefaultHTTPMaxBodyBytes
+	}
+	if h.MediaMaxBodyBytes <= 0 {
+		h.MediaMaxBodyBytes = DefaultHTTPMediaMaxBodyBytes
+	}
+	// Caps stay independent: a high JSON limit must not raise the media upload cap.
+}
+
+func normalizeAuthJWT(a *AuthConfig) error {
+	a.JWTSecret = strings.TrimSpace(a.JWTSecret)
+	if _, err := jwt.ParseSecret(a.JWTSecret); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	// Mirrors normalizeAuthLockout's validation of auth.lockout.window
+	// below: previously auth.jwt_ttl was only parsed in cmd/api's wiring
+	// code, well after config.Load() succeeded, so a typo here (e.g.
+	// "24hh") surfaced as a different error shape from every other config
+	// mistake, at a later point in startup than it needed to.
+	d, err := time.ParseDuration(a.JWTTTL)
+	if err != nil {
+		return fmt.Errorf("config: invalid auth.jwt_ttl %q: %w", a.JWTTTL, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("config: invalid auth.jwt_ttl %q: must be > 0", a.JWTTTL)
+	}
+	return nil
+}
+
+func normalizeAuthLockout(l *AuthLockoutConfig) error {
+	store := strings.ToLower(strings.TrimSpace(l.Store))
+	if store == "" {
+		store = DefaultAuthLockoutStore
+	}
+	switch store {
+	case "cache", "memory":
+		l.Store = store
+	default:
+		return fmt.Errorf("config: unsupported auth.lockout.store: %q (allowed: cache, memory)", l.Store)
+	}
+	if l.MaxFailures <= 0 {
+		l.MaxFailures = DefaultAuthLockoutMaxFailures
+	}
+	if strings.TrimSpace(l.Window) == "" {
+		l.Window = DefaultAuthLockoutWindow
+	}
+	d, err := time.ParseDuration(l.Window)
+	if err != nil {
+		return fmt.Errorf("config: invalid auth.lockout.window %q: %w", l.Window, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("config: invalid auth.lockout.window %q: must be > 0", l.Window)
+	}
+	return nil
+}
+
+// validateSecureDefaults rejects weak composed secrets and non-enforcing SSL modes
+// (disable/prefer/allow/empty) unless SHOPANDA_DEV_MODE is truthy and the DB host is local.
+// Production allowlist: require, verify-ca, verify-full.
+func validateSecureDefaults(cfg *Config) error {
+	host, password, sslmode, err := effectiveDatabaseSecurity(cfg)
+	if err != nil {
+		return err
+	}
+	dev := DevModeEnabled()
+
+	if isForbiddenDevSecret(password) && !dev {
+		return fmt.Errorf("config: database.password %q is a forbidden default; set a strong secret or enable SHOPANDA_DEV_MODE=true for local development only", strings.TrimSpace(password))
+	}
+
+	sslmode = strings.ToLower(strings.TrimSpace(sslmode))
+	if sslmode == "" {
+		// Unspecified sslmode is insecure (libpq/pq default is prefer — cleartext fallback).
+		sslmode = "disable"
+	}
+	secureTLS := sslmode == "require" || sslmode == "verify-ca" || sslmode == "verify-full"
+	localDev := dev && isLocalDBHost(host)
+	if !secureTLS && !localDev {
+		return fmt.Errorf("config: database.sslmode=%q is not allowed (use require, verify-ca, or verify-full); disable/prefer/allow only when SHOPANDA_DEV_MODE is truthy and database.host is local (localhost, 127.0.0.1, ::1, or compose service postgres)", sslmode)
+	}
+	return nil
+}
+
+// effectiveDatabaseSecurity returns host/password/sslmode that will actually be used.
+// When DATABASE_URL is set, only that DSN is inspected (URL or libpq keyword form) —
+// YAML/env database.* values are not merged in, because DatabaseDSN returns the raw URL.
+func effectiveDatabaseSecurity(cfg *Config) (host, password, sslmode string, err error) {
+	raw := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if raw == "" {
+		return cfg.Database.Host, cfg.Database.Password, cfg.Database.SSLMode, nil
+	}
+	return parseDATABASEURLSecurity(raw)
+}
+
+func parseDATABASEURLSecurity(raw string) (host, password, sslmode string, err error) {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
+		keywords, err := databaseURLToLibpqKeywords(raw)
+		if err != nil {
+			return "", "", "", err
+		}
+		return parseLibpqKeywordSecurity(keywords)
+	}
+	return parseLibpqKeywordSecurity(raw)
+}
+
+// databaseURLToLibpqKeywords mirrors lib/pq convertURL so validation sees the same
+// keys the driver will apply (including query host=/hostaddr=/sslmode= overrides).
+func databaseURLToLibpqKeywords(raw string) (string, error) {
+	u, err := url.Parse(normalizeDatabaseURL(raw))
+	if err != nil {
+		return "", fmt.Errorf("config: invalid DATABASE_URL: %w", err)
+	}
+	if u == nil {
+		return "", fmt.Errorf("config: invalid DATABASE_URL")
+	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		return "", fmt.Errorf("config: invalid DATABASE_URL scheme %q", u.Scheme)
+	}
+
+	var parts []string
+	add := func(k, v string) {
+		if v == "" {
+			return
+		}
+		parts = append(parts, k+"="+quoteLibpqValue(v))
+	}
+	if u.User != nil {
+		add("user", u.User.Username())
+		if p, ok := u.User.Password(); ok {
+			add("password", p)
+		}
+	}
+	if host, port, err := net.SplitHostPort(u.Host); err != nil {
+		add("host", u.Host)
+	} else {
+		add("host", host)
+		add("port", port)
+	}
+	if u.Path != "" && u.Path != "/" {
+		add("dbname", strings.TrimPrefix(u.Path, "/"))
+	}
+	// Preserve every query value (not only Get's first) so conflicting sslmode/host
+	// can be detected the same way keyword parsing sees repeated keys after convertURL…
+	// lib/pq convertURL uses Get (first value only). Emit first value per key to match
+	// the driver, then still reject when Values contain conflicting duplicates.
+	q := u.Query()
+	for k, vals := range q {
+		key := strings.ToLower(k)
+		if len(vals) == 0 {
+			continue
+		}
+		if key == "sslmode" && conflictingStrings(vals) {
+			return "", fmt.Errorf("config: DATABASE_URL has conflicting sslmode values %v", vals)
+		}
+		if (key == "host" || key == "hostaddr") && conflictingStrings(vals) {
+			return "", fmt.Errorf("config: DATABASE_URL has conflicting %s values %v", key, vals)
+		}
+		// Match lib/pq convertURL: first value wins for the emitted keyword string.
+		add(k, vals[0])
+	}
+	return strings.Join(parts, " "), nil
+}
+
+// quoteLibpqValue wraps v in single quotes and escapes \ and ' (lib/pq convertURL style).
+func quoteLibpqValue(v string) string {
+	escaper := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+	return "'" + escaper.Replace(v) + "'"
+}
+
+// unquoteLibpqValue strips matching quotes and unescapes \' and \\.
+func unquoteLibpqValue(val string) string {
+	val = strings.TrimSpace(val)
+	if len(val) < 2 {
+		return val
+	}
+	q := val[0]
+	if (q != '\'' && q != '"') || val[len(val)-1] != byte(q) {
+		return val
+	}
+	inner := val[1 : len(val)-1]
+	var b strings.Builder
+	b.Grow(len(inner))
+	escape := false
+	for _, r := range inner {
+		if escape {
+			b.WriteRune(r)
+			escape = false
+			continue
+		}
+		if r == '\\' {
+			escape = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if escape {
+		b.WriteByte('\\')
+	}
+	return b.String()
+}
+
+func conflictingStrings(vals []string) bool {
+	if len(vals) < 2 {
+		return false
+	}
+	first := strings.ToLower(strings.TrimSpace(vals[0]))
+	for _, v := range vals[1:] {
+		if strings.ToLower(strings.TrimSpace(v)) != first {
+			return true
+		}
+	}
+	return false
+}
+
+func parseLibpqKeywordSecurity(raw string) (host, password, sslmode string, err error) {
+	// libpq keyword/value DSN: last key wins (same as lib/pq's option map assignment).
+	// Quote-aware scan so password='a b' / host values with spaces are preserved.
+	seen := false
+	var hostName, hostAddr string
+	var sslmodes []string
+	for _, field := range scanLibpqFields(raw) {
+		key, val, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		seen = true
+		key = strings.ToLower(strings.TrimSpace(key))
+		val = unquoteLibpqValue(val)
+		switch key {
+		case "host":
+			hostName = val
+		case "hostaddr":
+			// Dial target for locality (libpq); kept separate from host name.
+			hostAddr = val
+		case "password":
+			password = val
+		case "sslmode":
+			sslmodes = append(sslmodes, val)
+		}
+	}
+	if !seen {
+		return "", "", "", fmt.Errorf("config: DATABASE_URL must be a postgres URL or libpq keyword/value DSN")
+	}
+	if conflictingStrings(sslmodes) {
+		return "", "", "", fmt.Errorf("config: DATABASE_URL has conflicting sslmode values %v", sslmodes)
+	}
+	if len(sslmodes) > 0 {
+		sslmode = sslmodes[len(sslmodes)-1]
+	}
+	// Dial target is hostaddr when set (libpq); host is only a name for auth/TLS verify.
+	host = hostName
+	if hostAddr != "" {
+		host = hostAddr
+	}
+	// Multi-host lists: any non-local entry makes the destination non-local.
+	if strings.Contains(host, ",") {
+		for _, part := range strings.Split(host, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if !isLocalDBHost(part) {
+				host = part
+				break
+			}
+			host = part
+		}
+	}
+	return host, password, sslmode, nil
+}
+
+// scanLibpqFields splits a keyword/value DSN on whitespace while preserving
+// single- or double-quoted values (including spaces), matching lib/pq quoting.
+func scanLibpqFields(raw string) []string {
+	var (
+		fields  []string
+		cur     strings.Builder
+		inQuote rune
+		escape  bool
+	)
+	flush := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		fields = append(fields, cur.String())
+		cur.Reset()
+	}
+	for _, r := range raw {
+		if escape {
+			cur.WriteRune(r)
+			escape = false
+			continue
+		}
+		if inQuote != 0 {
+			if r == '\\' {
+				escape = true
+				cur.WriteRune(r)
+				continue
+			}
+			cur.WriteRune(r)
+			if r == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			inQuote = r
+			cur.WriteRune(r)
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return fields
+}
+
+func validateFullPageCache(c *FullPageCacheConfig) error {
+	if strings.TrimSpace(c.TTL) == "" {
+		c.TTL = DefaultFullPageCacheTTL
+	}
+	d, err := time.ParseDuration(c.TTL)
+	if err != nil {
+		return fmt.Errorf("config: invalid cache.full_page.ttl %q: %w", c.TTL, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("config: invalid cache.full_page.ttl %q: must be > 0", c.TTL)
+	}
+	for route, raw := range c.RouteTTL {
+		rd, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("config: invalid cache.full_page.route_ttl[%q] %q: %w", route, raw, err)
+		}
+		if rd <= 0 {
+			return fmt.Errorf("config: invalid cache.full_page.route_ttl[%q] %q: must be > 0", route, raw)
+		}
+	}
+	return nil
+}
+
+func isForbiddenDevSecret(password string) bool {
+	_, ok := forbiddenDevSecrets[strings.ToLower(strings.TrimSpace(password))]
+	return ok
+}
+
+func isLocalDBHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.Trim(h, "[]")
+	_, ok := localDBHosts[h]
+	return ok
+}

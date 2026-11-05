@@ -1,0 +1,935 @@
+package admin_test
+
+import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/internal/testutil"
+
+	adminapp "github.com/akarso/shopanda/internal/application/admin"
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/pricing"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/domain/translation"
+	"github.com/akarso/shopanda/internal/interfaces/http/admin"
+	"github.com/akarso/shopanda/internal/platform/event"
+	"github.com/akarso/shopanda/internal/platform/logger"
+)
+
+// --- stubs ---
+
+type stubTranslationRepo struct {
+	byEntityLang map[string][]translation.ContentTranslation
+	upserts      []translation.ContentTranslation
+	findErr      error
+	upsertErr    error
+}
+
+func newStubTranslationRepo() *stubTranslationRepo {
+	return &stubTranslationRepo{byEntityLang: make(map[string][]translation.ContentTranslation)}
+}
+
+func (s *stubTranslationRepo) FindByEntityAndLanguage(_ context.Context, entityID, language string) ([]translation.ContentTranslation, error) {
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	out := append([]translation.ContentTranslation{}, s.byEntityLang[entityID+"|"+language]...)
+	return out, nil
+}
+
+func (s *stubTranslationRepo) FindFieldValue(_ context.Context, _, _, _ string) (*translation.ContentTranslation, error) {
+	return nil, nil
+}
+
+func (s *stubTranslationRepo) Upsert(_ context.Context, ct *translation.ContentTranslation) error {
+	if s.upsertErr != nil {
+		return s.upsertErr
+	}
+	s.upserts = append(s.upserts, *ct)
+	key := ct.EntityID + "|" + ct.Language
+	existing := s.byEntityLang[key]
+	for i := range existing {
+		if existing[i].Field == ct.Field {
+			existing[i] = *ct
+			s.byEntityLang[key] = existing
+			return nil
+		}
+	}
+	s.byEntityLang[key] = append(existing, *ct)
+	return nil
+}
+
+func (s *stubTranslationRepo) DeleteByEntity(_ context.Context, _ string) error { return nil }
+
+type scopedPriceRepo struct {
+	prices    map[string]pricing.Price
+	upserts   []pricing.Price
+	findErr   error
+	upsertErr error
+	txBound   bool
+}
+
+func newScopedPriceRepo() *scopedPriceRepo {
+	return &scopedPriceRepo{prices: make(map[string]pricing.Price)}
+}
+
+func priceStubKey(variantID, currency, storeID string) string {
+	return variantID + "|" + currency + "|" + storeID
+}
+
+func (s *scopedPriceRepo) FindByVariantCurrencyAndStore(_ context.Context, variantID, currency, storeID string) (*pricing.Price, error) {
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	if p, ok := s.prices[priceStubKey(variantID, currency, storeID)]; ok {
+		clone := p
+		return &clone, nil
+	}
+	return nil, nil
+}
+
+func (s *scopedPriceRepo) FindByVariantsCurrencyAndStore(ctx context.Context, variantIDs []string, currency, storeID string) (map[string]*pricing.Price, error) {
+	return testutil.FindByVariantsCurrencyAndStoreFromFind(ctx, s.FindByVariantCurrencyAndStore, variantIDs, currency, storeID)
+}
+
+func (s *scopedPriceRepo) ListByVariantID(_ context.Context, _ string) ([]pricing.Price, error) {
+	return nil, nil
+}
+
+func (s *scopedPriceRepo) List(_ context.Context, _, _ int) ([]pricing.Price, error) {
+	return nil, nil
+}
+
+func (s *scopedPriceRepo) WithTx(_ *sql.Tx) pricing.PriceRepository {
+	s.txBound = true
+	return s
+}
+
+// Upsert applies immediately unless the request context carries a priceWriteGate.
+// Postgres PriceRepo.WithTx writes inside the transaction; Rollback drops the row.
+// The gate matches that contract: a staged upsert lands only when Commit runs.
+func (s *scopedPriceRepo) Upsert(ctx context.Context, p *pricing.Price) error {
+	if !s.txBound {
+		return fmt.Errorf("price upsert outside transaction")
+	}
+	if s.upsertErr != nil {
+		return s.upsertErr
+	}
+	apply := func() {
+		s.upserts = append(s.upserts, *p)
+		s.prices[priceStubKey(p.VariantID, p.Amount.Currency(), p.StoreID)] = *p
+	}
+	if gate := priceWriteGateFrom(ctx); gate != nil {
+		gate.stage(apply)
+		return nil
+	}
+	apply()
+	return nil
+}
+
+// stubPriceHistoryRepo records snapshots on the same transaction as the price upsert.
+type stubPriceHistoryRepo struct {
+	records   []pricing.PriceSnapshot
+	recordErr error
+	txBound   bool
+}
+
+func newStubPriceHistory() *stubPriceHistoryRepo {
+	return &stubPriceHistoryRepo{}
+}
+
+func (s *stubPriceHistoryRepo) Record(ctx context.Context, snap *pricing.PriceSnapshot) error {
+	if !s.txBound {
+		return fmt.Errorf("history record outside transaction")
+	}
+	if s.recordErr != nil {
+		return s.recordErr
+	}
+	if snap == nil {
+		return fmt.Errorf("nil snapshot")
+	}
+	apply := func() {
+		s.records = append(s.records, *snap)
+	}
+	if gate := priceWriteGateFrom(ctx); gate != nil {
+		gate.stage(apply)
+		return nil
+	}
+	apply()
+	return nil
+}
+
+func (s *stubPriceHistoryRepo) WithTx(_ *sql.Tx) pricing.PriceHistoryRepository {
+	s.txBound = true
+	return s
+}
+
+func (s *stubPriceHistoryRepo) LowestSince(context.Context, string, string, string, time.Time) (*pricing.PriceSnapshot, error) {
+	return nil, nil
+}
+
+func (s *stubPriceHistoryRepo) LowestSinceByVariants(context.Context, []string, string, string, time.Time) (map[string]*pricing.PriceSnapshot, error) {
+	return nil, nil
+}
+
+// plainPriceHistoryRepo implements PriceHistoryRepository and does not join a transaction.
+type plainPriceHistoryRepo struct{}
+
+var _ pricing.PriceHistoryRepository = plainPriceHistoryRepo{}
+
+func (plainPriceHistoryRepo) Record(context.Context, *pricing.PriceSnapshot) error {
+	return nil
+}
+func (plainPriceHistoryRepo) LowestSince(context.Context, string, string, string, time.Time) (*pricing.PriceSnapshot, error) {
+	return nil, nil
+}
+func (plainPriceHistoryRepo) LowestSinceByVariants(context.Context, []string, string, string, time.Time) (map[string]*pricing.PriceSnapshot, error) {
+	return nil, nil
+}
+
+// priceWriteGate stages price and history writes until the SQL transaction commits.
+// Rollback discards them. That is the WithTx contract used by the postgres repos.
+type priceWriteGateKey struct{}
+
+type priceWriteGate struct {
+	mu         sync.Mutex
+	committed  bool
+	rolledBack bool
+	apply      []func()
+}
+
+func newPriceWriteGate() *priceWriteGate { return &priceWriteGate{} }
+
+func priceWriteGateFrom(ctx context.Context) *priceWriteGate {
+	gate, _ := ctx.Value(priceWriteGateKey{}).(*priceWriteGate)
+	return gate
+}
+
+func (g *priceWriteGate) stage(fn func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.apply = append(g.apply, fn)
+}
+
+func (g *priceWriteGate) commit() {
+	g.mu.Lock()
+	fns := g.apply
+	g.apply = nil
+	g.committed = true
+	g.mu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
+func (g *priceWriteGate) rollback() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.committed {
+		return
+	}
+	g.rolledBack = true
+	g.apply = nil
+}
+
+func (g *priceWriteGate) didCommit() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.committed
+}
+
+func (g *priceWriteGate) didRollback() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.rolledBack
+}
+
+func init() {
+	sql.Register("shopanda-admin-gate-tx", gateTxDriver{})
+}
+
+type gateTxDriver struct{}
+
+func (gateTxDriver) Open(string) (driver.Conn, error) { return gateTxConn{}, nil }
+
+type gateTxConn struct{}
+
+func (gateTxConn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
+func (gateTxConn) Close() error                        { return nil }
+func (gateTxConn) Begin() (driver.Tx, error)           { return gateTx{}, nil }
+func (gateTxConn) BeginTx(ctx context.Context, _ driver.TxOptions) (driver.Tx, error) {
+	return gateTx{gate: priceWriteGateFrom(ctx)}, nil
+}
+
+type gateTx struct{ gate *priceWriteGate }
+
+func (t gateTx) Commit() error {
+	if t.gate != nil {
+		t.gate.commit()
+	}
+	return nil
+}
+
+func (t gateTx) Rollback() error {
+	if t.gate != nil {
+		t.gate.rollback()
+	}
+	return nil
+}
+
+func gateTxDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("shopanda-admin-gate-tx", "")
+	if err != nil {
+		t.Fatalf("open gate tx db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+type stubVariantRepo struct {
+	variants map[string]catalog.Variant
+	findErr  error
+}
+
+func newStubVariantRepo() *stubVariantRepo {
+	return &stubVariantRepo{variants: make(map[string]catalog.Variant)}
+}
+
+func (s *stubVariantRepo) FindByID(_ context.Context, id string) (*catalog.Variant, error) {
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	if v, ok := s.variants[id]; ok {
+		clone := v
+		return &clone, nil
+	}
+	return nil, nil
+}
+
+func (s *stubVariantRepo) FindBySKU(_ context.Context, _ string) (*catalog.Variant, error) {
+	return nil, nil
+}
+func (s *stubVariantRepo) FindBySKUs(_ context.Context, _ []string) (map[string]*catalog.Variant, error) {
+	return map[string]*catalog.Variant{}, nil
+}
+
+func (s *stubVariantRepo) ListByProductID(_ context.Context, _ string, _, _ int) ([]catalog.Variant, error) {
+	return nil, nil
+}
+
+func (s *stubVariantRepo) ListByProductIDs(ctx context.Context, productIDs []string, limitPerProduct int) (map[string][]catalog.Variant, error) {
+	return testutil.ListByProductIDsFromList(ctx, s.ListByProductID, productIDs, limitPerProduct)
+}
+
+func (s *stubVariantRepo) Create(_ context.Context, _ *catalog.Variant) error { return nil }
+func (s *stubVariantRepo) Update(_ context.Context, _ *catalog.Variant) error { return nil }
+
+// --- helpers ---
+
+func withAdminFullScope(req *http.Request, adminID, storeID, language, currency string) *http.Request {
+	ac := &adminapp.AdminContext{AdminID: adminID, StoreID: storeID, Language: language, Currency: currency}
+	return req.WithContext(ac.WithContext(req.Context()))
+}
+
+func newTranslationAdminMux(h *admin.ProductTranslationAdminHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/admin/products/{id}/translations", h.Get())
+	mux.HandleFunc("PUT /api/v1/admin/products/{id}/translations", h.Update())
+	return mux
+}
+
+func newPriceAdminMux(h *admin.ProductPriceAdminHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/admin/products/{id}/variants/{variantId}/price", h.Get())
+	mux.HandleFunc("PUT /api/v1/admin/products/{id}/variants/{variantId}/price", h.Update())
+	return mux
+}
+
+func productExistsRepo(id string) *mockAdminProductRepo {
+	return &mockAdminProductRepo{
+		findByIDFn: func(_ context.Context, pid string) (*catalog.Product, error) {
+			if pid != id {
+				return nil, nil
+			}
+			return &catalog.Product{ID: id, Name: "Widget", Slug: "widget", Status: catalog.StatusActive}, nil
+		},
+	}
+}
+
+func assertScopeTriad(t *testing.T, ctx map[string]interface{}, storeID, language, currency string) {
+	t.Helper()
+	if got := ctx["detail_store_id"]; got != storeID {
+		t.Errorf("detail_store_id = %v, want %q", got, storeID)
+	}
+	if got := ctx["detail_language"]; got != language {
+		t.Errorf("detail_language = %v, want %q", got, language)
+	}
+	if got := ctx["detail_currency"]; got != currency {
+		t.Errorf("detail_currency = %v, want %q", got, currency)
+	}
+}
+
+// --- translation tests ---
+
+func TestProductTranslationAdmin_Get_ReturnsActiveLanguageEntries(t *testing.T) {
+	transRepo := newStubTranslationRepo()
+	ct, _ := translation.NewContentTranslation("p1", "fr", "name", "Bonbon")
+	transRepo.byEntityLang["p1|fr"] = []translation.ContentTranslation{ct}
+	sink := &auditSink{}
+	h := admin.NewProductTranslationAdminHandler(productExistsRepo("p1"), transRepo, adminapp.NewAuditor(sink), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/p1/translations", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "fr", "EUR")
+	newTranslationAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var env struct {
+		Data struct {
+			Entries     map[string]string `json:"entries"`
+			Language    string            `json:"language"`
+			FieldScopes map[string]string `json:"field_scopes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Data.Entries["name"] != "Bonbon" {
+		t.Errorf("entries.name = %q, want %q", env.Data.Entries["name"], "Bonbon")
+	}
+	if env.Data.Entries["description"] != "" {
+		t.Errorf("entries.description = %q, want empty", env.Data.Entries["description"])
+	}
+	if env.Data.Language != "fr" {
+		t.Errorf("language = %q, want fr", env.Data.Language)
+	}
+	if env.Data.FieldScopes["name"] != "translatable" {
+		t.Errorf("field_scopes.name = %q, want translatable", env.Data.FieldScopes["name"])
+	}
+	assertScopeTriad(t, sink.Last(t).context, "store-eu", "fr", "EUR")
+}
+
+func TestProductTranslationAdmin_Get_LanguageRequired(t *testing.T) {
+	h := admin.NewProductTranslationAdminHandler(productExistsRepo("p1"), newStubTranslationRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/p1/translations", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "", "EUR")
+	newTranslationAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+func TestProductTranslationAdmin_Get_ProductNotFound(t *testing.T) {
+	repo := &mockAdminProductRepo{findByIDFn: func(_ context.Context, _ string) (*catalog.Product, error) { return nil, nil }}
+	h := admin.NewProductTranslationAdminHandler(repo, newStubTranslationRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/missing/translations", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "fr", "EUR")
+	newTranslationAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestProductTranslationAdmin_Update_UpsertsActiveLanguage(t *testing.T) {
+	transRepo := newStubTranslationRepo()
+	sink := &auditSink{}
+	h := admin.NewProductTranslationAdminHandler(productExistsRepo("p1"), transRepo, adminapp.NewAuditor(sink), logger.NewWithWriter(io.Discard, "info"))
+
+	body := map[string]interface{}{"entries": map[string]string{"name": "Bonbon", "description": ""}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/translations", jsonBody(t, body))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "fr", "EUR")
+	newTranslationAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(transRepo.upserts) != 1 {
+		t.Fatalf("upserts = %d, want 1 (empty description skipped)", len(transRepo.upserts))
+	}
+	up := transRepo.upserts[0]
+	if up.EntityID != "p1" || up.Language != "fr" || up.Field != "name" || up.Value != "Bonbon" {
+		t.Fatalf("upsert = %+v, want p1/fr/name/Bonbon", up)
+	}
+	assertScopeTriad(t, sink.Last(t).context, "store-eu", "fr", "EUR")
+}
+
+func TestProductTranslationAdmin_Update_InvalidField(t *testing.T) {
+	h := admin.NewProductTranslationAdminHandler(productExistsRepo("p1"), newStubTranslationRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	body := map[string]interface{}{"entries": map[string]string{"slug": "x"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/translations", jsonBody(t, body))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "fr", "EUR")
+	newTranslationAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+// --- price tests ---
+
+func seededVariantRepo() *stubVariantRepo {
+	repo := newStubVariantRepo()
+	repo.variants["v1"] = catalog.Variant{ID: "v1", ProductID: "p1", SKU: "SKU-1"}
+	return repo
+}
+
+func TestProductPriceAdmin_Get_ReturnsStoreScopedPrice(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	money := shared.MustNewMoney(1999, "EUR")
+	p, _ := pricing.NewPrice("price-1", "v1", "store-eu", money)
+	priceRepo.prices[priceStubKey("v1", "EUR", "store-eu")] = p
+	sink := &auditSink{}
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(sink), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/p1/variants/v1/price", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var env struct {
+		Data struct {
+			Price struct {
+				Amount   int64  `json:"amount"`
+				Currency string `json:"currency"`
+				StoreID  string `json:"store_id"`
+			} `json:"price"`
+			PriceScope string `json:"price_scope"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Data.Price.Amount != 1999 || env.Data.Price.Currency != "EUR" || env.Data.Price.StoreID != "store-eu" {
+		t.Fatalf("price = %+v, want 1999/EUR/store-eu", env.Data.Price)
+	}
+	if env.Data.PriceScope != "store" {
+		t.Errorf("price_scope = %q, want store", env.Data.PriceScope)
+	}
+	assertScopeTriad(t, sink.Last(t).context, "store-eu", "en", "EUR")
+}
+
+func TestProductPriceAdmin_Get_ReturnsGlobalFallbackWhenStoreScopedMissing(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	globalMoney := shared.MustNewMoney(1500, "EUR")
+	globalPrice, _ := pricing.NewPrice("price-global", "v1", "", globalMoney)
+	priceRepo.prices[priceStubKey("v1", "EUR", "")] = globalPrice
+	sink := &auditSink{}
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(sink), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/p1/variants/v1/price", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var env struct {
+		Data struct {
+			Price *struct {
+				Amount int64 `json:"amount"`
+			} `json:"price"`
+			GlobalFallback struct {
+				Amount   int64  `json:"amount"`
+				Currency string `json:"currency"`
+				StoreID  string `json:"store_id"`
+			} `json:"global_fallback"`
+			PriceScope string `json:"price_scope"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env.Data.Price != nil {
+		t.Fatalf("price = %+v, want nil", env.Data.Price)
+	}
+	if env.Data.GlobalFallback.Amount != 1500 || env.Data.GlobalFallback.Currency != "EUR" || env.Data.GlobalFallback.StoreID != "" {
+		t.Fatalf("global_fallback = %+v, want 1500/EUR/empty store", env.Data.GlobalFallback)
+	}
+	if env.Data.PriceScope != "unset" {
+		t.Errorf("price_scope = %q, want unset", env.Data.PriceScope)
+	}
+}
+
+func TestProductPriceAdmin_Update_RejectsUnknownFields(t *testing.T) {
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), newScopedPriceRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500, "currency": "EUR"}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+func TestProductPriceAdmin_Get_CurrencyRequired(t *testing.T) {
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), newScopedPriceRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/p1/variants/v1/price", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+func TestProductPriceAdmin_Get_VariantNotFoundForProduct(t *testing.T) {
+	variantRepo := newStubVariantRepo()
+	variantRepo.variants["v1"] = catalog.Variant{ID: "v1", ProductID: "other", SKU: "SKU-1"}
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), variantRepo, newScopedPriceRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/admin/products/p1/variants/v1/price", nil)
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestProductPriceAdmin_Update_RejectsGroupedParent(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	products := &mockAdminProductRepo{
+		findByIDFn: func(_ context.Context, pid string) (*catalog.Product, error) {
+			if pid != "p1" {
+				return nil, nil
+			}
+			return &catalog.Product{ID: "p1", Status: catalog.StatusActive, Type: catalog.TypeGrouped, PricingMode: catalog.PricingModeFixed}, nil
+		},
+	}
+	h := admin.NewProductPriceAdminHandler(products, seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "grouped") {
+		t.Fatalf("body = %s, want grouped", rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 0 {
+		t.Fatalf("upserts = %d, want 0", len(priceRepo.upserts))
+	}
+}
+
+func TestProductPriceAdmin_Update_RejectsDynamicBundle(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	products := &mockAdminProductRepo{
+		findByIDFn: func(_ context.Context, pid string) (*catalog.Product, error) {
+			if pid != "p1" {
+				return nil, nil
+			}
+			return &catalog.Product{ID: "p1", Status: catalog.StatusActive, Type: catalog.TypeBundle, PricingMode: catalog.PricingModeDynamic}, nil
+		},
+	}
+	h := admin.NewProductPriceAdminHandler(products, seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dynamic") {
+		t.Fatalf("body = %s, want dynamic", rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 0 {
+		t.Fatalf("upserts = %d, want 0", len(priceRepo.upserts))
+	}
+}
+
+func TestProductPriceAdmin_Update_UsesLockedTypeAndPricingMode(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	products := &mockAdminProductRepo{
+		lockedType:        catalog.TypeBundle,
+		lockedPricingMode: catalog.PricingModeDynamic,
+		findByIDFn: func(_ context.Context, pid string) (*catalog.Product, error) {
+			return &catalog.Product{
+				ID: pid, Status: catalog.StatusActive,
+				Type: catalog.TypeSimple, PricingMode: catalog.PricingModeFixed,
+			}, nil
+		},
+	}
+	h := admin.NewProductPriceAdminHandler(products, seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "dynamic") {
+		t.Fatalf("body = %s, want locked dynamic rejection", rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 0 {
+		t.Fatalf("upserts = %d, want 0", len(priceRepo.upserts))
+	}
+}
+
+func TestProductPriceAdmin_Update_WritesOnlyActiveStoreScope(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	// Pre-existing global price must remain untouched after a store-scoped write.
+	globalMoney := shared.MustNewMoney(1000, "EUR")
+	globalPrice, _ := pricing.NewPrice("price-global", "v1", "", globalMoney)
+	priceRepo.prices[priceStubKey("v1", "EUR", "")] = globalPrice
+	sink := &auditSink{}
+	history := newStubPriceHistory()
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(sink), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn()).
+		WithHistory(history)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 1 {
+		t.Fatalf("upserts = %d, want 1", len(priceRepo.upserts))
+	}
+	up := priceRepo.upserts[0]
+	if up.StoreID != "store-eu" || up.Amount.Amount() != 2500 || up.Amount.Currency() != "EUR" {
+		t.Fatalf("upsert = store=%q amount=%d cur=%q, want store-eu/2500/EUR", up.StoreID, up.Amount.Amount(), up.Amount.Currency())
+	}
+	if got := priceRepo.prices[priceStubKey("v1", "EUR", "")]; got.Amount.Amount() != 1000 {
+		t.Fatalf("global price amount = %d, want 1000 (untouched)", got.Amount.Amount())
+	}
+	if len(history.records) != 1 || history.records[0].StoreID != "store-eu" {
+		t.Fatalf("snapshots = %+v, want one snap for store-eu", history.records)
+	}
+	for _, snap := range history.records {
+		if snap.StoreID == "" {
+			t.Fatalf("snapshot store = %q, want none for the global scope", snap.StoreID)
+		}
+	}
+	assertScopeTriad(t, sink.Last(t).context, "store-eu", "en", "EUR")
+}
+
+func TestProductPriceAdmin_Update_AllowsZeroAmount(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	history := newStubPriceHistory()
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn()).
+		WithHistory(history)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 0}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 1 {
+		t.Fatalf("upserts = %d, want 1", len(priceRepo.upserts))
+	}
+	if !priceRepo.upserts[0].Amount.IsZero() {
+		t.Fatalf("upsert amount = %d, want 0", priceRepo.upserts[0].Amount.Amount())
+	}
+	if len(history.records) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(history.records))
+	}
+	snap := history.records[0]
+	if snap.VariantID != "v1" || snap.StoreID != "store-eu" || snap.Amount.Amount() != 0 || snap.Amount.Currency() != "EUR" {
+		t.Fatalf("snapshot = variant=%q store=%q amount=%d %s, want v1/store-eu/0 EUR",
+			snap.VariantID, snap.StoreID, snap.Amount.Amount(), snap.Amount.Currency())
+	}
+}
+
+// TestProductPriceAdmin_Update_EmitsPriceUpsertedEvent pins PR-1036's
+// wiring: a successful interactive price Update must publish
+// pricing.EventPriceUpserted so the search index's on-save subscriber
+// picks it up — previously only the bulk price importer published this
+// event, so editing a price through the admin UI never reached the index.
+func TestProductPriceAdmin_Update_EmitsPriceUpsertedEvent(t *testing.T) {
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), newScopedPriceRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn()).
+		WithHistory(newStubPriceHistory())
+	bus := event.NewBus(logger.NewWithWriter(io.Discard, "error"))
+	h.SetBus(bus)
+
+	var captured event.Event
+	bus.On(pricing.EventPriceUpserted, func(_ context.Context, evt event.Event) error {
+		captured = evt
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if captured.Name != pricing.EventPriceUpserted {
+		t.Fatalf("event name = %q, want %q", captured.Name, pricing.EventPriceUpserted)
+	}
+	data, ok := captured.Data.(pricing.PriceUpsertedData)
+	if !ok {
+		t.Fatalf("event data type = %T, want PriceUpsertedData", captured.Data)
+	}
+	if data.ProductID != "p1" || data.VariantID != "v1" || data.StoreID != "store-eu" || data.Currency != "EUR" || data.Amount != 2500 {
+		t.Fatalf("data = %+v, want product_id=p1 variant_id=v1 store_id=store-eu currency=EUR amount=2500", data)
+	}
+}
+
+func TestProductPriceAdmin_Update_RecordsSnapshot(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	history := newStubPriceHistory()
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn()).
+		WithHistory(history)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(history.records) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(history.records))
+	}
+	snap := history.records[0]
+	if snap.VariantID != "v1" || snap.StoreID != "store-eu" || snap.Amount.Amount() != 2500 || snap.Amount.Currency() != "EUR" {
+		t.Fatalf("snapshot = variant=%q store=%q amount=%d %s, want v1/store-eu/2500 EUR",
+			snap.VariantID, snap.StoreID, snap.Amount.Amount(), snap.Amount.Currency())
+	}
+	if snap.ID == "" || snap.RecordedAt.IsZero() {
+		t.Fatalf("snapshot id/recorded_at = %q / %v, want both set", snap.ID, snap.RecordedAt)
+	}
+	if len(priceRepo.upserts) != 1 || priceRepo.upserts[0].VariantID != snap.VariantID || priceRepo.upserts[0].Amount.Amount() != snap.Amount.Amount() {
+		t.Fatalf("upsert = %+v, want the same variant and amount as the snapshot", priceRepo.upserts)
+	}
+}
+
+func TestProductPriceAdmin_Update_FailsClosedWhenHistoryHasNoWithTx(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn()).
+		WithHistory(plainPriceHistoryRepo{})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 0 {
+		t.Fatalf("upserts = %d, want 0 when history cannot join the transaction", len(priceRepo.upserts))
+	}
+}
+
+func TestProductPriceAdmin_Update_RecordErrorDoesNotCommit(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	history := newStubPriceHistory()
+	history.recordErr = errors.New("history record failed")
+	gate := newPriceWriteGate()
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(gateTxDB(t)).
+		WithHistory(history)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	req = req.WithContext(context.WithValue(req.Context(), priceWriteGateKey{}, gate))
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if gate.didCommit() {
+		t.Fatal("Commit was called after history Record failed")
+	}
+	if !gate.didRollback() {
+		t.Fatal("Rollback was not called after history Record failed")
+	}
+	if len(priceRepo.upserts) != 0 {
+		t.Fatalf("upserts = %d, want 0 (WithTx upsert applies on Commit)", len(priceRepo.upserts))
+	}
+	if _, ok := priceRepo.prices[priceStubKey("v1", "EUR", "store-eu")]; ok {
+		t.Fatal("store price applied despite rollback")
+	}
+	if len(history.records) != 0 {
+		t.Fatalf("history records = %d, want 0", len(history.records))
+	}
+}
+
+func TestProductPriceAdmin_Update_FailsClosedWithoutHistory(t *testing.T) {
+	priceRepo := newScopedPriceRepo()
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), priceRepo, adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info")).
+		WithTxStarter(adminFakeTxDBConn())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{"amount": 2500}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if len(priceRepo.upserts) != 0 {
+		t.Fatalf("upserts = %d, want 0 when history is unwired", len(priceRepo.upserts))
+	}
+}
+
+func TestProductPriceAdmin_Update_AmountRequired(t *testing.T) {
+	h := admin.NewProductPriceAdminHandler(productExistsRepo("p1"), seededVariantRepo(), newScopedPriceRepo(), adminapp.NewAuditor(&auditSink{}), logger.NewWithWriter(io.Discard, "info"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/v1/admin/products/p1/variants/v1/price", jsonBody(t, map[string]interface{}{}))
+	req = withAdminFullScope(req, "admin-1", "store-eu", "en", "EUR")
+	newPriceAdminMux(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}

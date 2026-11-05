@@ -1,0 +1,892 @@
+package auth
+
+import (
+	"context"
+	"fmt"
+	"net/mail"
+	"strings"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/customer"
+	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/internal/platform/event"
+	"github.com/akarso/shopanda/internal/platform/id"
+	"github.com/akarso/shopanda/internal/platform/jwt"
+	"github.com/akarso/shopanda/internal/platform/logger"
+	"github.com/akarso/shopanda/internal/platform/password"
+)
+
+// Service orchestrates registration and login use cases.
+type Service struct {
+	customers customer.CustomerRepository
+	resets    customer.PasswordResetRepository
+	jwt       *jwt.Issuer
+	bus       *event.Bus
+	log       logger.Logger
+	resetTTL  time.Duration
+	mfa       MFAClient
+	lockout   LockoutSettings
+	attempts  AttemptStore
+}
+
+// NewService creates an auth application service.
+func NewService(
+	customers customer.CustomerRepository,
+	resets customer.PasswordResetRepository,
+	jwtIssuer *jwt.Issuer,
+	bus *event.Bus,
+	log logger.Logger,
+	resetTTL time.Duration,
+) *Service {
+	if customers == nil {
+		panic("auth: customers must not be nil")
+	}
+	if resets == nil {
+		panic("auth: resets must not be nil")
+	}
+	if jwtIssuer == nil {
+		panic("auth: jwtIssuer must not be nil")
+	}
+	if bus == nil {
+		panic("auth: bus must not be nil")
+	}
+	if log == nil {
+		panic("auth: log must not be nil")
+	}
+	if resetTTL <= 0 {
+		panic("auth: resetTTL must be > 0; non-positive TTL produces already-expired tokens")
+	}
+	return &Service{
+		customers: customers,
+		resets:    resets,
+		jwt:       jwtIssuer,
+		bus:       bus,
+		log:       log,
+		resetTTL:  resetTTL,
+	}
+}
+
+// SetMFAClient wires optional admin MFA login verification.
+func (s *Service) SetMFAClient(mfa MFAClient) {
+	s.mfa = mfa
+}
+
+// SetLockout wires failed-login lockout. When Enabled, store must be non-nil
+// and MaxFailures/Window must be positive.
+func (s *Service) SetLockout(settings LockoutSettings, store AttemptStore) {
+	if settings.Enabled {
+		if store == nil {
+			panic("auth: lockout store must not be nil when enabled")
+		}
+		if settings.MaxFailures <= 0 {
+			panic("auth: lockout MaxFailures must be > 0")
+		}
+		if settings.Window <= 0 {
+			panic("auth: lockout Window must be > 0")
+		}
+	}
+	s.lockout = settings
+	s.attempts = store
+}
+
+// UpdateProfileInput contains editable customer profile fields.
+type UpdateProfileInput struct {
+	CustomerID string
+	FirstName  string
+	LastName   string
+}
+
+// UpdateProfile updates the customer's profile fields.
+func (s *Service) UpdateProfile(ctx context.Context, in UpdateProfileInput) (*customer.Customer, error) {
+	if strings.TrimSpace(in.CustomerID) == "" {
+		return nil, apperror.Validation("customer id is required")
+	}
+
+	c, err := s.customers.FindByID(ctx, in.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("auth service: update profile: %w", err)
+	}
+	if c == nil {
+		return nil, apperror.NotFound("customer not found")
+	}
+
+	c.FirstName = strings.TrimSpace(in.FirstName)
+	c.LastName = strings.TrimSpace(in.LastName)
+	c.UpdatedAt = time.Now().UTC()
+
+	if err := s.customers.Update(ctx, c); err != nil {
+		return nil, fmt.Errorf("auth service: update profile: %w", err)
+	}
+
+	s.log.Info("auth.profile.updated", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+
+	return c, nil
+}
+
+// ChangePasswordInput contains the fields required to change a password.
+type ChangePasswordInput struct {
+	CustomerID      string
+	CurrentPassword string
+	NewPassword     string
+}
+
+// ChangePassword validates the current password, sets the new password, and
+// invalidates previously issued tokens.
+func (s *Service) ChangePassword(ctx context.Context, in ChangePasswordInput) error {
+	if strings.TrimSpace(in.CustomerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+	if in.CurrentPassword == "" {
+		return apperror.Validation("current password is required")
+	}
+	if in.NewPassword == "" {
+		return apperror.Validation("new password is required")
+	}
+	if len(in.NewPassword) < 8 {
+		return apperror.Validation("password must be at least 8 characters")
+	}
+
+	c, err := s.customers.FindByID(ctx, in.CustomerID)
+	if err != nil {
+		return fmt.Errorf("auth service: change password: %w", err)
+	}
+	if c == nil {
+		return apperror.NotFound("customer not found")
+	}
+	if err := password.Compare(c.PasswordHash, in.CurrentPassword); err != nil {
+		return apperror.Unauthorized("current password is incorrect")
+	}
+
+	hash, err := password.Hash(in.NewPassword)
+	if err != nil {
+		return fmt.Errorf("auth service: change password: %w", err)
+	}
+	if err := s.customers.ChangePasswordAndBumpTokenGeneration(ctx, c.ID, hash); err != nil {
+		return fmt.Errorf("auth service: change password: %w", err)
+	}
+
+	s.log.Info("auth.password.changed", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+
+	return nil
+}
+
+// RequestEmailChangeInput contains the fields to request an email change.
+type RequestEmailChangeInput struct {
+	CustomerID string
+	NewEmail   string
+	// Nonce is the latest token nonce; recording it invalidates older links.
+	Nonce string
+	// VerifyURL is the confirmation link delivered to the new address.
+	VerifyURL string
+}
+
+// RequestEmailChange validates a requested new email, records the latest change
+// nonce (invalidating older links), and publishes events to verify the new
+// address and notify the old address. Validation/uniqueness failures return
+// before any state change or email is sent.
+func (s *Service) RequestEmailChange(ctx context.Context, in RequestEmailChangeInput) error {
+	if strings.TrimSpace(in.CustomerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+	if strings.TrimSpace(in.Nonce) == "" {
+		return apperror.Validation("nonce is required")
+	}
+	if strings.TrimSpace(in.VerifyURL) == "" {
+		return apperror.Validation("verify url is required")
+	}
+	newEmail, err := normalizeEmail(in.NewEmail)
+	if err != nil {
+		return err
+	}
+
+	c, err := s.customers.FindByID(ctx, in.CustomerID)
+	if err != nil {
+		return fmt.Errorf("auth service: request email change: %w", err)
+	}
+	if c == nil {
+		return apperror.NotFound("customer not found")
+	}
+	if c.Status != customer.StatusActive {
+		return apperror.Unauthorized("account is not active")
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Email), newEmail) {
+		return apperror.Validation("new email must be different from your current email")
+	}
+
+	existing, err := s.customers.FindByEmail(ctx, newEmail)
+	if err != nil {
+		return fmt.Errorf("auth service: request email change: %w", err)
+	}
+	if existing != nil && existing.ID != c.ID {
+		return apperror.Conflict("email already registered")
+	}
+
+	oldEmail := strings.TrimSpace(c.Email)
+	c.SetPendingEmailNonce(in.Nonce)
+	if err := s.customers.Update(ctx, c); err != nil {
+		return fmt.Errorf("auth service: request email change: %w", err)
+	}
+
+	if err := s.bus.Publish(ctx, event.New(customer.EventEmailChangeRequested, "auth.service", customer.EmailChangeRequestedData{
+		CustomerID: c.ID,
+		NewEmail:   newEmail,
+		VerifyURL:  strings.TrimSpace(in.VerifyURL),
+	})); err != nil {
+		s.log.Warn("auth.event.publish_failed", map[string]interface{}{
+			"event": customer.EventEmailChangeRequested,
+			"error": err.Error(),
+		})
+		return fmt.Errorf("auth service: request email change: %w", err)
+	}
+	if err := s.bus.Publish(ctx, event.New(customer.EventEmailChangeNotified, "auth.service", customer.EmailChangeNotifiedData{
+		CustomerID: c.ID,
+		OldEmail:   oldEmail,
+		NewEmail:   newEmail,
+	})); err != nil {
+		s.log.Warn("auth.event.publish_failed", map[string]interface{}{
+			"event": customer.EventEmailChangeNotified,
+			"error": err.Error(),
+		})
+		return fmt.Errorf("auth service: request email change: %w", err)
+	}
+
+	s.log.Info("auth.email_change.requested", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return nil
+}
+
+// ConfirmEmailChangeInput contains the fields to confirm an email change.
+type ConfirmEmailChangeInput struct {
+	CustomerID string
+	NewEmail   string
+	Nonce      string
+}
+
+// ConfirmEmailChange applies a previously requested email change after verifying
+// the token nonce matches the latest request and that the new address is still
+// free. Existing sessions stay valid (token generation is not bumped).
+func (s *Service) ConfirmEmailChange(ctx context.Context, in ConfirmEmailChangeInput) (*customer.Customer, error) {
+	if strings.TrimSpace(in.CustomerID) == "" || strings.TrimSpace(in.Nonce) == "" {
+		return nil, apperror.Unauthorized("invalid or expired link")
+	}
+	newEmail, err := normalizeEmail(in.NewEmail)
+	if err != nil {
+		return nil, apperror.Unauthorized("invalid or expired link")
+	}
+
+	c, err := s.customers.FindByID(ctx, in.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("auth service: confirm email change: %w", err)
+	}
+	if c == nil {
+		return nil, apperror.Unauthorized("invalid or expired link")
+	}
+	if c.Status != customer.StatusActive {
+		return nil, apperror.Unauthorized("account is not active")
+	}
+	// Reject superseded or already-consumed links.
+	if strings.TrimSpace(c.PendingEmailNonce) == "" || c.PendingEmailNonce != strings.TrimSpace(in.Nonce) {
+		return nil, apperror.Unauthorized("invalid or expired link")
+	}
+
+	existing, err := s.customers.FindByEmail(ctx, newEmail)
+	if err != nil {
+		return nil, fmt.Errorf("auth service: confirm email change: %w", err)
+	}
+	if existing != nil && existing.ID != c.ID {
+		return nil, apperror.Conflict("email already registered")
+	}
+
+	c.ApplyEmailChange(newEmail)
+	if err := s.customers.Update(ctx, c); err != nil {
+		// A concurrent registration may surface here as a unique-violation conflict.
+		if apperror.Is(err, apperror.CodeConflict) {
+			return nil, apperror.Conflict("email already registered")
+		}
+		// A concurrent account deletion makes the link target gone; treat it as an
+		// invalid link (4xx) rather than an internal error.
+		if apperror.Is(err, apperror.CodeNotFound) {
+			return nil, apperror.Unauthorized("invalid or expired link")
+		}
+		return nil, fmt.Errorf("auth service: confirm email change: %w", err)
+	}
+
+	s.log.Info("auth.email_change.confirmed", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return c, nil
+}
+
+// normalizeEmail trims, lowercases, and format-validates an email address.
+func normalizeEmail(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", apperror.Validation("email is required")
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return "", apperror.Validation("email is not valid")
+	}
+	return strings.ToLower(strings.TrimSpace(addr.Address)), nil
+}
+
+// VerifyPassword checks whether the provided password matches the current
+// stored password for the customer.
+func (s *Service) VerifyPassword(ctx context.Context, customerID, passwordText string) error {
+	if strings.TrimSpace(customerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+	if passwordText == "" {
+		return apperror.Validation("password is required")
+	}
+
+	c, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("auth service: verify password: %w", err)
+	}
+	if c == nil {
+		return apperror.NotFound("customer not found")
+	}
+	if c.Status != customer.StatusActive {
+		return apperror.Unauthorized("account is not active")
+	}
+	if err := password.Compare(c.PasswordHash, passwordText); err != nil {
+		return apperror.Unauthorized("password is incorrect")
+	}
+	return nil
+}
+
+// RequestSecurityVerificationLink emits an email-delivery event with a
+// signed storefront verification URL for sensitive account actions.
+func (s *Service) RequestSecurityVerificationLink(ctx context.Context, customerID, verifyURL string) error {
+	if strings.TrimSpace(customerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+	if strings.TrimSpace(verifyURL) == "" {
+		return apperror.Validation("verify url is required")
+	}
+
+	c, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("auth service: request security verification link: %w", err)
+	}
+	if c == nil {
+		return apperror.NotFound("customer not found")
+	}
+	if c.Status != customer.StatusActive {
+		return apperror.Unauthorized("account is not active")
+	}
+
+	if err := s.bus.Publish(ctx, event.New(customer.EventSecurityVerificationRequested, "auth.service", customer.SecurityVerificationRequestedData{
+		CustomerID: c.ID,
+		VerifyURL:  strings.TrimSpace(verifyURL),
+	})); err != nil {
+		s.log.Warn("auth.event.publish_failed", map[string]interface{}{
+			"event": customer.EventSecurityVerificationRequested,
+			"error": err.Error(),
+		})
+		return fmt.Errorf("auth service: request security verification link: %w", err)
+	}
+
+	s.log.Info("auth.security_verification.requested", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return nil
+}
+
+// RequestEmailVerificationLink emits an email-delivery event with a signed
+// storefront verification URL for account email verification.
+func (s *Service) RequestEmailVerificationLink(ctx context.Context, customerID, verifyURL string) error {
+	if strings.TrimSpace(customerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+	if strings.TrimSpace(verifyURL) == "" {
+		return apperror.Validation("verify url is required")
+	}
+
+	c, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("auth service: request email verification link: %w", err)
+	}
+	if c == nil {
+		return apperror.NotFound("customer not found")
+	}
+	if c.Status != customer.StatusActive {
+		return apperror.Unauthorized("account is not active")
+	}
+	if c.EmailVerifiedAt != nil {
+		return nil
+	}
+
+	if err := s.bus.Publish(ctx, event.New(customer.EventEmailVerificationRequested, "auth.service", customer.EmailVerificationRequestedData{
+		CustomerID: c.ID,
+		VerifyURL:  strings.TrimSpace(verifyURL),
+	})); err != nil {
+		s.log.Warn("auth.event.publish_failed", map[string]interface{}{
+			"event": customer.EventEmailVerificationRequested,
+			"error": err.Error(),
+		})
+		return fmt.Errorf("auth service: request email verification link: %w", err)
+	}
+
+	s.log.Info("auth.email_verification.requested", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return nil
+}
+
+// RegisterInput contains the fields for customer registration.
+type RegisterInput struct {
+	Email     string
+	Password  string
+	FirstName string
+	LastName  string
+}
+
+// RegisterOutput is the result of a successful registration.
+type RegisterOutput struct {
+	CustomerID string
+	Token      string
+	ExpiresAt  time.Time
+}
+
+// Register creates a new customer account and returns a JWT.
+func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterOutput, error) {
+	email, err := normalizeEmail(in.Email)
+	if err != nil {
+		return RegisterOutput{}, err
+	}
+	if in.Password == "" {
+		return RegisterOutput{}, apperror.Validation("password is required")
+	}
+	if len(in.Password) < 8 {
+		return RegisterOutput{}, apperror.Validation("password must be at least 8 characters")
+	}
+
+	// Check uniqueness.
+	existing, err := s.customers.FindByEmail(ctx, email)
+	if err != nil {
+		return RegisterOutput{}, fmt.Errorf("auth service: register: %w", err)
+	}
+	if existing != nil {
+		return RegisterOutput{}, apperror.Conflict("email already registered")
+	}
+
+	hash, err := password.Hash(in.Password)
+	if err != nil {
+		return RegisterOutput{}, fmt.Errorf("auth service: hash password: %w", err)
+	}
+
+	c, err := customer.NewCustomer(id.New(), email)
+	if err != nil {
+		return RegisterOutput{}, fmt.Errorf("auth service: new customer: %w", err)
+	}
+	c.FirstName = in.FirstName
+	c.LastName = in.LastName
+	if err := c.SetPassword(hash); err != nil {
+		return RegisterOutput{}, fmt.Errorf("auth service: set password: %w", err)
+	}
+
+	if err := s.customers.Create(ctx, &c); err != nil {
+		return RegisterOutput{}, fmt.Errorf("auth service: create customer: %w", err)
+	}
+
+	token, expiresAt, err := s.jwt.CreateWithDisplayName(c.ID, string(c.Role), c.TokenGeneration, customerDisplayName(&c))
+	if err != nil {
+		return RegisterOutput{}, fmt.Errorf("auth service: create token: %w", err)
+	}
+
+	if err := s.bus.Publish(ctx, event.New(customer.EventCustomerCreated, "auth.service", customer.CustomerCreatedData{
+		CustomerID: c.ID,
+	})); err != nil {
+		s.log.Warn("auth.event.publish_failed", map[string]interface{}{
+			"event": customer.EventCustomerCreated,
+			"error": err.Error(),
+		})
+	}
+
+	s.log.Info("auth.registered", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+
+	return RegisterOutput{
+		CustomerID: c.ID,
+		Token:      token,
+		ExpiresAt:  expiresAt,
+	}, nil
+}
+
+// LoginInput contains the fields for customer login.
+type LoginInput struct {
+	Email    string
+	Password string
+	ClientIP string // optional; used for lockout keying (IP + account)
+}
+
+// LoginOutput is the result of a successful login or MFA challenge.
+type LoginOutput struct {
+	CustomerID       string
+	Token            string
+	ExpiresAt        time.Time
+	MFARequired      bool
+	PendingToken     string
+	PendingExpiresAt time.Time
+}
+
+// Login authenticates a customer and returns a JWT.
+func (s *Service) Login(ctx context.Context, in LoginInput) (LoginOutput, error) {
+	email, err := normalizeEmail(in.Email)
+	if err != nil {
+		return LoginOutput{}, err
+	}
+	if in.Password == "" {
+		return LoginOutput{}, apperror.Validation("password is required")
+	}
+
+	lockKey := LockoutKey(in.ClientIP, email)
+	// Reserve a slot before password work so concurrent guesses for the same
+	// IP+email cannot all pass a pre-check and exceed max_failures.
+	reserved, err := s.reserveLockoutAttempt(ctx, lockKey)
+	if err != nil {
+		return LoginOutput{}, err
+	}
+
+	c, err := s.customers.FindByEmail(ctx, email)
+	if err != nil {
+		return LoginOutput{}, fmt.Errorf("auth service: login: %w", err)
+	}
+	if c == nil {
+		return LoginOutput{}, s.failedLoginAfterReserve(reserved)
+	}
+
+	if c.Status != customer.StatusActive {
+		return LoginOutput{}, s.failedLoginAfterReserve(reserved)
+	}
+
+	if err := password.Compare(c.PasswordHash, in.Password); err != nil {
+		return LoginOutput{}, s.failedLoginAfterReserve(reserved)
+	}
+
+	// Clear lockout best-effort: never block a valid password on cache outage.
+	// Skip Reset entirely when no counter exists (happy path). Includes the
+	// reservation from this attempt.
+	s.clearLockoutBestEffort(ctx, lockKey)
+
+	if s.mfa != nil {
+		required, err := s.mfa.RequiredForLogin(ctx, c)
+		if err != nil {
+			return LoginOutput{}, fmt.Errorf("auth service: login mfa: %w", err)
+		}
+		if required {
+			pendingToken, pendingExpiresAt, err := s.mfa.IssuePendingLogin(c)
+			if err != nil {
+				return LoginOutput{}, fmt.Errorf("auth service: pending login: %w", err)
+			}
+			s.log.Info("auth.login.mfa_required", map[string]interface{}{
+				"customer_id": c.ID,
+			})
+			return LoginOutput{
+				CustomerID:       c.ID,
+				MFARequired:      true,
+				PendingToken:     pendingToken,
+				PendingExpiresAt: pendingExpiresAt,
+			}, nil
+		}
+	}
+
+	token, expiresAt, err := s.jwt.CreateWithDisplayName(c.ID, string(c.Role), c.TokenGeneration, customerDisplayName(c))
+	if err != nil {
+		return LoginOutput{}, fmt.Errorf("auth service: create token: %w", err)
+	}
+
+	s.log.Info("auth.login", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+
+	return LoginOutput{
+		CustomerID: c.ID,
+		Token:      token,
+		ExpiresAt:  expiresAt,
+	}, nil
+}
+
+// reserveLockoutAttempt atomically counts this login toward the lockout budget
+// before password verification. Returns the post-increment count (0 if lockout
+// is off or the store failed open). Returns a rate-limited error when the
+// reserved count already exceeds MaxFailures (no password check).
+func (s *Service) reserveLockoutAttempt(ctx context.Context, key string) (int, error) {
+	if !s.lockout.Enabled || s.attempts == nil {
+		return 0, nil
+	}
+	n, err := s.attempts.Increment(ctx, key, s.lockout.Window)
+	if err != nil {
+		// Fail open: transient cache/store errors must not take down login.
+		s.log.Warn("auth.login.lockout_reserve_failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0, nil
+	}
+	if n > s.lockout.MaxFailures {
+		return 0, apperror.RateLimited("too many login attempts, try again later")
+	}
+	return n, nil
+}
+
+func (s *Service) failedLoginAfterReserve(reserved int) error {
+	unauthorized := apperror.Unauthorized("invalid email or password")
+	if !s.lockout.Enabled || s.attempts == nil {
+		return unauthorized
+	}
+	// reserved == 0 means fail-open (no slot recorded).
+	if reserved >= s.lockout.MaxFailures {
+		return apperror.RateLimited("too many login attempts, try again later")
+	}
+	return unauthorized
+}
+
+func (s *Service) clearLockoutBestEffort(ctx context.Context, key string) {
+	if !s.lockout.Enabled || s.attempts == nil {
+		return
+	}
+	n, err := s.attempts.Failures(ctx, key)
+	if err != nil {
+		// Do not ResetIf without a known count: a blind clear can race with
+		// concurrent Increments on the same IP+account key.
+		s.log.Warn("auth.login.lockout_failures_read_failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+	if n == 0 {
+		return
+	}
+	if err := s.attempts.ResetIf(ctx, key, n); err != nil {
+		s.log.Warn("auth.login.lockout_reset_failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+}
+
+// VerifyLoginMFA completes admin login after TOTP or recovery code verification.
+func (s *Service) VerifyLoginMFA(ctx context.Context, pendingToken, code string) (LoginOutput, error) {
+	if s.mfa == nil {
+		return LoginOutput{}, apperror.Validation("mfa is not enabled")
+	}
+	c, err := s.mfa.CompleteLogin(ctx, pendingToken, code)
+	if err != nil {
+		return LoginOutput{}, err
+	}
+	token, expiresAt, err := s.jwt.CreateWithDisplayName(c.ID, string(c.Role), c.TokenGeneration, customerDisplayName(c))
+	if err != nil {
+		return LoginOutput{}, fmt.Errorf("auth service: create token: %w", err)
+	}
+	s.log.Info("auth.login.mfa_completed", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return LoginOutput{
+		CustomerID: c.ID,
+		Token:      token,
+		ExpiresAt:  expiresAt,
+	}, nil
+}
+
+func customerDisplayName(c *customer.Customer) string {
+	if c == nil {
+		return ""
+	}
+	fullName := strings.TrimSpace(strings.TrimSpace(c.FirstName) + " " + strings.TrimSpace(c.LastName))
+	if fullName != "" {
+		return fullName
+	}
+	return strings.TrimSpace(c.Email)
+}
+
+// MarkEmailVerified records a successful email verification for the customer.
+func (s *Service) MarkEmailVerified(ctx context.Context, customerID string) error {
+	if strings.TrimSpace(customerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+
+	c, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("auth service: mark email verified: %w", err)
+	}
+	if c == nil {
+		return apperror.NotFound("customer not found")
+	}
+	if c.EmailVerifiedAt != nil {
+		return nil
+	}
+
+	c.MarkEmailVerified()
+	if err := s.customers.Update(ctx, c); err != nil {
+		return fmt.Errorf("auth service: mark email verified: %w", err)
+	}
+
+	s.log.Info("auth.email_verified", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return nil
+}
+
+// Me returns the customer for the given authenticated customer ID.
+func (s *Service) Me(ctx context.Context, customerID string) (*customer.Customer, error) {
+	c, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("auth service: me: %w", err)
+	}
+	if c == nil {
+		return nil, apperror.NotFound("customer not found")
+	}
+	return c, nil
+}
+
+// Logout invalidates all tokens for the given customer by bumping
+// their token generation counter.
+func (s *Service) Logout(ctx context.Context, customerID string) error {
+	if err := s.customers.BumpTokenGeneration(ctx, customerID); err != nil {
+		return fmt.Errorf("auth service: logout: %w", err)
+	}
+
+	s.log.Info("auth.logout", map[string]interface{}{
+		"customer_id": customerID,
+	})
+	return nil
+}
+
+// DeleteCustomer removes a customer account by ID.
+func (s *Service) DeleteCustomer(ctx context.Context, customerID string) error {
+	if strings.TrimSpace(customerID) == "" {
+		return apperror.Validation("customer id is required")
+	}
+	if err := s.customers.Delete(ctx, customerID); err != nil {
+		s.log.Warn("auth.customer.delete_failed", map[string]interface{}{
+			"customer_id": customerID,
+			"error":       err.Error(),
+		})
+		return fmt.Errorf("auth service: delete customer: %w", err)
+	}
+	s.log.Info("auth.customer.deleted", map[string]interface{}{
+		"customer_id": customerID,
+	})
+	return nil
+}
+
+// RequestPasswordReset generates a reset token and emits an event
+// for downstream delivery (email plugin). Always returns success to
+// prevent email enumeration.
+func (s *Service) RequestPasswordReset(ctx context.Context, emailRaw string) error {
+	email, err := normalizeEmail(emailRaw)
+	if err != nil {
+		return err
+	}
+
+	c, err := s.customers.FindByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("auth service: request reset: %w", err)
+	}
+	if c == nil {
+		// Do not reveal whether the account exists.
+		return nil
+	}
+
+	rt, plaintext, err := customer.NewPasswordResetToken(id.New(), c.ID, s.resetTTL)
+	if err != nil {
+		return fmt.Errorf("auth service: request reset: %w", err)
+	}
+
+	if err := s.resets.Create(ctx, &rt); err != nil {
+		return fmt.Errorf("auth service: request reset: %w", err)
+	}
+
+	if err := s.bus.Publish(ctx, event.New(customer.EventPasswordResetRequested, "auth.service", customer.PasswordResetRequestedData{
+		CustomerID: c.ID,
+		Token:      plaintext,
+	})); err != nil {
+		s.log.Warn("auth.event.publish_failed", map[string]interface{}{
+			"event": customer.EventPasswordResetRequested,
+			"error": err.Error(),
+		})
+	}
+
+	s.log.Info("auth.password_reset.requested", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return nil
+}
+
+// ConfirmPasswordResetInput contains the fields for password reset confirmation.
+type ConfirmPasswordResetInput struct {
+	Token       string
+	NewPassword string
+}
+
+// ConfirmPasswordReset validates the reset token and sets the new password.
+func (s *Service) ConfirmPasswordReset(ctx context.Context, in ConfirmPasswordResetInput) error {
+	if in.Token == "" {
+		return apperror.Validation("token is required")
+	}
+	if in.NewPassword == "" {
+		return apperror.Validation("new password is required")
+	}
+	if len(in.NewPassword) < 8 {
+		return apperror.Validation("password must be at least 8 characters")
+	}
+
+	hash := customer.HashToken(in.Token)
+	rt, err := s.resets.FindByTokenHash(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+	if rt == nil {
+		return apperror.Unauthorized("invalid or expired token")
+	}
+	if rt.IsExpired() || rt.IsUsed() {
+		return apperror.Unauthorized("invalid or expired token")
+	}
+
+	c, err := s.customers.FindByID(ctx, rt.CustomerID)
+	if err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+	if c == nil {
+		return apperror.Unauthorized("invalid or expired token")
+	}
+
+	pwHash, err := password.Hash(in.NewPassword)
+	if err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+	if err := c.SetPassword(pwHash); err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+
+	// Mark token used before updating customer — if customer update fails,
+	// the token is consumed but the password is unchanged (user can request a new token).
+	// This prevents the worse scenario of password changed but token still reusable.
+	if err := rt.MarkUsed(); err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+	if err := s.resets.MarkUsed(ctx, rt.ID); err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+
+	if err := s.customers.Update(ctx, c); err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+
+	// Atomic DB-level increment, consistent with Logout.
+	if err := s.customers.BumpTokenGeneration(ctx, c.ID); err != nil {
+		return fmt.Errorf("auth service: confirm reset: %w", err)
+	}
+
+	s.log.Info("auth.password_reset.confirmed", map[string]interface{}{
+		"customer_id": c.ID,
+	})
+	return nil
+}

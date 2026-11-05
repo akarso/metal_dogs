@@ -1,0 +1,101 @@
+package auth_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/internal/application/auth"
+	"github.com/akarso/shopanda/internal/domain/customer"
+	"github.com/akarso/shopanda/internal/domain/identity"
+	"github.com/akarso/shopanda/internal/platform/jwt"
+	"github.com/akarso/shopanda/internal/platform/jwt/jwttest"
+)
+
+func TestValidatingTokenParser_Parse(t *testing.T) {
+	issuer, _ := jwt.NewIssuer(jwttest.TestSecret, time.Hour)
+	repo := newMockRepo()
+	parser := auth.NewValidatingTokenParser(issuer, repo, 0)
+
+	// Create a customer in the repo.
+	c, _ := customer.NewCustomer("user-1", "alice@example.com")
+	_ = repo.Create(context.Background(), &c)
+
+	token, _, _ := issuer.Create("user-1", "customer", 0)
+	id, err := parser.Parse(context.Background(), token)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if id.UserID != "user-1" {
+		t.Errorf("UserID = %q, want user-1", id.UserID)
+	}
+	if id.Role != identity.RoleCustomer {
+		t.Errorf("Role = %q, want customer", id.Role)
+	}
+}
+
+func TestValidatingTokenParser_Parse_DisplayName(t *testing.T) {
+	issuer, _ := jwt.NewIssuer(jwttest.TestSecret, time.Hour)
+	repo := newMockRepo()
+	parser := auth.NewValidatingTokenParser(issuer, repo, 0)
+
+	c, _ := customer.NewCustomer("user-1", "alice@example.com")
+	_ = repo.Create(context.Background(), &c)
+
+	token, _, _ := issuer.CreateWithDisplayName("user-1", "customer", 0, "Alice Example")
+	claims, err := issuer.Parse(token)
+	if err != nil {
+		t.Fatalf("Parse token claims: %v", err)
+	}
+	expectedAuthenticatedAt := time.Unix(claims.Iat, 0).UTC()
+	id, err := parser.Parse(context.Background(), token)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if id.DisplayName != "Alice Example" {
+		t.Fatalf("DisplayName = %q, want %q", id.DisplayName, "Alice Example")
+	}
+	if !id.AuthenticatedAt.Equal(expectedAuthenticatedAt) {
+		t.Fatalf("AuthenticatedAt = %v, want %v", id.AuthenticatedAt, expectedAuthenticatedAt)
+	}
+}
+
+func TestValidatingTokenParser_Parse_InvalidToken(t *testing.T) {
+	issuer, _ := jwt.NewIssuer(jwttest.TestSecret, time.Hour)
+	repo := newMockRepo()
+	parser := auth.NewValidatingTokenParser(issuer, repo, 0)
+
+	_, err := parser.Parse(context.Background(), "garbage")
+	if err == nil {
+		t.Fatal("expected error for invalid token")
+	}
+}
+
+func TestValidatingTokenParser_Parse_CustomerNotFound(t *testing.T) {
+	issuer, _ := jwt.NewIssuer(jwttest.TestSecret, time.Hour)
+	repo := newMockRepo()
+	parser := auth.NewValidatingTokenParser(issuer, repo, 0)
+
+	token, _, _ := issuer.Create("nonexistent", "customer", 0)
+	_, err := parser.Parse(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected error for non-existent customer")
+	}
+}
+
+func TestValidatingTokenParser_Parse_GenerationMismatch(t *testing.T) {
+	issuer, _ := jwt.NewIssuer(jwttest.TestSecret, time.Hour)
+	repo := newMockRepo()
+	parser := auth.NewValidatingTokenParser(issuer, repo, 0)
+
+	c, _ := customer.NewCustomer("user-1", "alice@example.com")
+	c.BumpTokenGeneration() // gen = 1
+	_ = repo.Create(context.Background(), &c)
+
+	// Token with gen=0 (stale).
+	token, _, _ := issuer.Create("user-1", "customer", 0)
+	_, err := parser.Parse(context.Background(), token)
+	if err == nil {
+		t.Fatal("expected error for generation mismatch")
+	}
+}

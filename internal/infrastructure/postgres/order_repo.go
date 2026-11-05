@@ -1,0 +1,602 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/order"
+	"github.com/akarso/shopanda/internal/domain/shared"
+)
+
+// Compile-time check that OrderRepo implements order.OrderRepository.
+var _ order.OrderRepository = (*OrderRepo)(nil)
+
+const orderSelectColumns = `id, customer_id, contact_email, status, currency,
+	total_amount, total_currency, destination_country, tax_amount, store_credit_amount, created_at, updated_at`
+
+// OrderRepo implements order.OrderRepository using PostgreSQL.
+// WithTx is adapter-only so checkout can save the order and write
+// ProductAssignment rows on the same transaction (PR-1070).
+type OrderRepo struct {
+	db *sql.DB
+	tx *sql.Tx
+}
+
+type orderExecer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
+}
+
+// NewOrderRepo returns a new OrderRepo backed by db.
+func NewOrderRepo(db *sql.DB) (*OrderRepo, error) {
+	if db == nil {
+		return nil, fmt.Errorf("NewOrderRepo: nil *sql.DB")
+	}
+	return &OrderRepo{db: db}, nil
+}
+
+// WithTx returns a repo bound to the given transaction.
+// This method is postgres-only; callers type-assert the concrete adapter.
+func (r *OrderRepo) WithTx(tx *sql.Tx) order.OrderRepository {
+	return &OrderRepo{db: r.db, tx: tx}
+}
+
+// orderScanner abstracts *sql.Row and *sql.Rows for shared hydration logic.
+type orderScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// hydrateOrder reads an order header from any scanner.
+func (r *OrderRepo) hydrateOrder(s orderScanner) (*order.Order, error) {
+	var o order.Order
+	var status string
+	var contactEmail sql.NullString
+	var destinationCountry sql.NullString
+	var totalAmount int64
+	var totalCurrency string
+	var taxAmount sql.NullInt64
+	var storeCreditAmount int64
+	err := s.Scan(&o.ID, &o.CustomerID, &contactEmail, &status, &o.Currency,
+		&totalAmount, &totalCurrency, &destinationCountry, &taxAmount, &storeCreditAmount, &o.CreatedAt, &o.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	o.ContactEmail = strings.TrimSpace(contactEmail.String)
+	o.DestinationCountry = strings.TrimSpace(destinationCountry.String)
+	if err := o.SetStatusFromDB(status); err != nil {
+		return nil, err
+	}
+	total, err := shared.NewMoney(totalAmount, totalCurrency)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: total money: %w", err)
+	}
+	o.TotalAmount = total
+	if taxAmount.Valid {
+		tax, err := shared.NewMoney(taxAmount.Int64, totalCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: tax money: %w", err)
+		}
+		o.TaxAmount = tax
+	} else {
+		zero, err := shared.Zero(totalCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: zero tax money: %w", err)
+		}
+		o.TaxAmount = zero
+	}
+	storeCredit, err := shared.NewMoney(storeCreditAmount, totalCurrency)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: store credit money: %w", err)
+	}
+	o.StoreCreditApplied = storeCredit
+	return &o, nil
+}
+
+// FindByID returns an order with its items by ID.
+// Returns (nil, nil) when not found.
+func (r *OrderRepo) FindByID(ctx context.Context, id string) (*order.Order, error) {
+	if id == "" {
+		return nil, fmt.Errorf("order_repo: find: empty id")
+	}
+	const q = `SELECT ` + orderSelectColumns + `
+		FROM orders WHERE id = $1`
+	o, err := r.hydrateOrder(r.db.QueryRowContext(ctx, q, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		if mapped := invalidUUIDError(err, "invalid order id"); mapped != nil {
+			return nil, mapped
+		}
+		return nil, fmt.Errorf("order_repo: find by id: %w", err)
+	}
+	items, err := r.loadItems(ctx, o.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.SetItemsFromDB(items); err != nil {
+		return nil, fmt.Errorf("order_repo: set items: %w", err)
+	}
+	return o, nil
+}
+
+// FindByIDs returns orders with their items keyed by ID. Missing ids are
+// omitted. An empty ids slice returns an empty map and does not query.
+func (r *OrderRepo) FindByIDs(ctx context.Context, ids []string) (map[string]*order.Order, error) {
+	unique := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return map[string]*order.Order{}, nil
+	}
+	const q = `SELECT ` + orderSelectColumns + `
+		FROM orders WHERE id = ANY($1)`
+	rows, err := r.db.QueryContext(ctx, q, unique)
+	if err != nil {
+		if mapped := invalidUUIDError(err, "invalid order id"); mapped != nil {
+			return nil, mapped
+		}
+		return nil, fmt.Errorf("order_repo: find by ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]*order.Order, len(unique))
+	loaded := make([]string, 0, len(unique))
+	for rows.Next() {
+		o, err := r.hydrateOrder(rows)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: find by ids scan: %w", err)
+		}
+		out[o.ID] = o
+		loaded = append(loaded, o.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: find by ids rows: %w", err)
+	}
+	if len(loaded) == 0 {
+		return out, nil
+	}
+	itemMap, err := r.loadItemsBatch(ctx, loaded)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range loaded {
+		if err := out[id].SetItemsFromDB(itemMap[id]); err != nil {
+			return nil, fmt.Errorf("order_repo: set items: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// FindByCustomerID returns all orders for a customer, newest first.
+func (r *OrderRepo) FindByCustomerID(ctx context.Context, customerID string) ([]order.Order, error) {
+	if customerID == "" {
+		return nil, fmt.Errorf("order_repo: find by customer: empty customer id")
+	}
+	const q = `SELECT ` + orderSelectColumns + `
+		FROM orders WHERE customer_id = $1
+		ORDER BY created_at DESC`
+	rows, err := r.db.QueryContext(ctx, q, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: find by customer: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []order.Order
+	var ids []string
+	for rows.Next() {
+		o, err := r.hydrateOrder(rows)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: scan order: %w", err)
+		}
+		orders = append(orders, *o)
+		ids = append(ids, o.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: rows: %w", err)
+	}
+	if len(orders) == 0 {
+		return orders, nil
+	}
+
+	itemMap, err := r.loadItemsBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range orders {
+		if err := orders[i].SetItemsFromDB(itemMap[orders[i].ID]); err != nil {
+			return nil, fmt.Errorf("order_repo: set items: %w", err)
+		}
+	}
+	return orders, nil
+}
+
+// FindByContactEmail returns all orders with a matching contact email, newest first.
+// Used for guest order discovery. Returns empty slice if none found.
+func (r *OrderRepo) FindByContactEmail(ctx context.Context, contactEmail string) ([]order.Order, error) {
+	trimmed := strings.TrimSpace(contactEmail)
+	if trimmed == "" {
+		return nil, fmt.Errorf("order_repo: find by contact email: empty email")
+	}
+	contactEmail = strings.ToLower(trimmed)
+	const q = `SELECT ` + orderSelectColumns + `
+		FROM orders WHERE LOWER(contact_email) = $1 AND customer_id = ''
+		ORDER BY created_at DESC`
+	rows, err := r.db.QueryContext(ctx, q, contactEmail)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: find by contact email: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []order.Order
+	var ids []string
+	for rows.Next() {
+		o, err := r.hydrateOrder(rows)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: scan order: %w", err)
+		}
+		orders = append(orders, *o)
+		ids = append(ids, o.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: rows: %w", err)
+	}
+	if len(orders) == 0 {
+		return orders, nil
+	}
+
+	itemMap, err := r.loadItemsBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range orders {
+		if err := orders[i].SetItemsFromDB(itemMap[orders[i].ID]); err != nil {
+			return nil, fmt.Errorf("order_repo: set items: %w", err)
+		}
+	}
+	return orders, nil
+}
+
+// List returns a page of orders, newest first.
+func (r *OrderRepo) List(ctx context.Context, offset, limit int) ([]order.Order, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("order_repo: list: offset must be >= 0")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("order_repo: list: limit must be > 0")
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	const q = `SELECT ` + orderSelectColumns + `
+		FROM orders ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+	rows, err := r.db.QueryContext(ctx, q, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: list: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []order.Order
+	var ids []string
+	for rows.Next() {
+		o, err := r.hydrateOrder(rows)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: list scan: %w", err)
+		}
+		orders = append(orders, *o)
+		ids = append(ids, o.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: list rows: %w", err)
+	}
+	if len(orders) == 0 {
+		return orders, nil
+	}
+
+	itemMap, err := r.loadItemsBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range orders {
+		if err := orders[i].SetItemsFromDB(itemMap[orders[i].ID]); err != nil {
+			return nil, fmt.Errorf("order_repo: set items: %w", err)
+		}
+	}
+	return orders, nil
+}
+
+// ListPaidTaxSnapshots returns paid orders with destination country in [from, to).
+func (r *OrderRepo) ListPaidTaxSnapshots(ctx context.Context, from, to time.Time) ([]order.TaxSnapshotRow, error) {
+	if !to.After(from) {
+		return nil, fmt.Errorf("order_repo: list tax snapshots: to must be after from")
+	}
+	const q = `SELECT id, created_at, destination_country, currency, total_amount, COALESCE(tax_amount, 0)
+		FROM orders
+		WHERE status = 'paid'
+		  AND destination_country IS NOT NULL
+		  AND created_at >= $1 AND created_at < $2
+		ORDER BY created_at, id`
+	rows, err := r.db.QueryContext(ctx, q, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: list tax snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var result []order.TaxSnapshotRow
+	for rows.Next() {
+		var row order.TaxSnapshotRow
+		if err := rows.Scan(&row.OrderID, &row.CreatedAt, &row.DestinationCountry, &row.Currency, &row.SubtotalAmount, &row.TaxAmount); err != nil {
+			return nil, fmt.Errorf("order_repo: scan tax snapshot: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: tax snapshot rows: %w", err)
+	}
+	return result, nil
+}
+
+// Save persists an order and its items (insert-only).
+func (r *OrderRepo) Save(ctx context.Context, o *order.Order) error {
+	if o == nil {
+		return fmt.Errorf("order_repo: save: order must not be nil")
+	}
+	if r.tx != nil {
+		return r.saveOn(ctx, r.tx, o)
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("order_repo: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	if err := r.saveOn(ctx, tx, o); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("order_repo: commit: %w", err)
+	}
+	return nil
+}
+
+func (r *OrderRepo) saveOn(ctx context.Context, exec orderExecer, o *order.Order) error {
+	const insertOrder = `INSERT INTO orders (id, customer_id, contact_email, status, currency,
+		total_amount, total_currency, destination_country, tax_amount, store_credit_amount, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+	var destinationCountry interface{}
+	if strings.TrimSpace(o.DestinationCountry) != "" {
+		destinationCountry = strings.ToUpper(strings.TrimSpace(o.DestinationCountry))
+	}
+	var taxAmount interface{}
+	if strings.TrimSpace(o.DestinationCountry) != "" {
+		taxAmount = o.TaxAmount.Amount()
+	}
+	_, err := exec.ExecContext(ctx, insertOrder,
+		o.ID, o.CustomerID, strings.TrimSpace(o.ContactEmail), string(o.Status()), o.Currency,
+		o.TotalAmount.Amount(), o.TotalAmount.Currency(),
+		destinationCountry, taxAmount, o.StoreCreditApplied.Amount(),
+		o.CreatedAt, o.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("order_repo: insert order: %w", err)
+	}
+
+	items := o.Items()
+	if len(items) == 0 {
+		return nil
+	}
+	const insertItem = `INSERT INTO order_items (order_id, variant_id, sku, name, quantity, unit_price, currency, restockable, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	stmt, err := exec.PrepareContext(ctx, insertItem)
+	if err != nil {
+		return fmt.Errorf("order_repo: prepare item insert: %w", err)
+	}
+	defer stmt.Close()
+	for i := range items {
+		item := &items[i]
+		_, err = stmt.ExecContext(ctx,
+			o.ID, item.VariantID, item.SKU, item.Name, item.Quantity,
+			item.UnitPrice.Amount(), item.UnitPrice.Currency(), item.Restockable,
+			item.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("order_repo: insert item %q: %w", item.VariantID, err)
+		}
+	}
+	return nil
+}
+
+// UpdateStatus updates only the status and updated_at of an existing order.
+// FailIfPending sets status to failed only when the stored row is still
+// pending. Returns true when this call made the transition.
+func (r *OrderRepo) FailIfPending(ctx context.Context, orderID string) (bool, error) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return false, fmt.Errorf("order_repo: fail if pending: order id must not be empty")
+	}
+	const q = `UPDATE orders SET status = $1, updated_at = $2 WHERE id = $3 AND status = $4`
+	res, err := r.db.ExecContext(ctx, q, string(order.OrderStatusFailed), time.Now().UTC(), orderID, string(order.OrderStatusPending))
+	if err != nil {
+		return false, fmt.Errorf("order_repo: fail if pending: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("order_repo: fail if pending rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (r *OrderRepo) UpdateStatus(ctx context.Context, o *order.Order) error {
+	if o == nil {
+		return fmt.Errorf("order_repo: update status: order must not be nil")
+	}
+	const q = `UPDATE orders SET status = $1, updated_at = $2 WHERE id = $3`
+	res, err := r.db.ExecContext(ctx, q, string(o.Status()), o.UpdatedAt, o.ID)
+	if err != nil {
+		return fmt.Errorf("order_repo: update status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("order_repo: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("order_repo: update status: order not found")
+	}
+	return nil
+}
+
+// LinkToCustomer persists customer ownership for a previously guest order.
+// The WHERE guard (customer_id = ”) ensures an already-linked order is never
+// silently reassigned to another customer.
+func (r *OrderRepo) LinkToCustomer(ctx context.Context, o *order.Order) error {
+	if o == nil {
+		return fmt.Errorf("order_repo: link to customer: order must not be nil")
+	}
+	customerID := strings.TrimSpace(o.CustomerID)
+	if customerID == "" {
+		return fmt.Errorf("order_repo: link to customer: empty customer id")
+	}
+	const q = `UPDATE orders SET customer_id = $1, updated_at = $2 WHERE id = $3 AND customer_id = ''`
+	res, err := r.db.ExecContext(ctx, q, customerID, o.UpdatedAt, o.ID)
+	if err != nil {
+		return fmt.Errorf("order_repo: link to customer: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("order_repo: link to customer rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("order_repo: link to customer: order not found or already linked")
+	}
+	return nil
+}
+
+// LinkToCustomerByContactEmail atomically links every unclaimed guest order
+// carrying the contact email to the customer. A single UPDATE statement keeps
+// the multi-order claim all-or-nothing.
+func (r *OrderRepo) LinkToCustomerByContactEmail(ctx context.Context, contactEmail, customerID string, updatedAt time.Time) (int64, error) {
+	email := strings.ToLower(strings.TrimSpace(contactEmail))
+	if email == "" {
+		return 0, fmt.Errorf("order_repo: link by contact email: empty email")
+	}
+	customerID = strings.TrimSpace(customerID)
+	if customerID == "" {
+		return 0, fmt.Errorf("order_repo: link by contact email: empty customer id")
+	}
+	const q = `UPDATE orders SET customer_id = $1, updated_at = $2 WHERE LOWER(contact_email) = $3 AND customer_id = ''`
+	res, err := r.db.ExecContext(ctx, q, customerID, updatedAt, email)
+	if err != nil {
+		return 0, fmt.Errorf("order_repo: link by contact email: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("order_repo: link by contact email rows affected: %w", err)
+	}
+	return n, nil
+}
+
+// loadItems fetches all items for a single order, ordered by created_at.
+func (r *OrderRepo) loadItems(ctx context.Context, orderID string) ([]order.Item, error) {
+	const q = `SELECT variant_id, sku, name, quantity, unit_price, currency, restockable, created_at
+		FROM order_items WHERE order_id = $1
+		ORDER BY created_at`
+	rows, err := r.db.QueryContext(ctx, q, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: load items: %w", err)
+	}
+	defer rows.Close()
+	return r.scanItems(rows)
+}
+
+// loadItemsBatch fetches items for multiple orders in a single query.
+func (r *OrderRepo) loadItemsBatch(ctx context.Context, orderIDs []string) (map[string][]order.Item, error) {
+	const q = `SELECT order_id, variant_id, sku, name, quantity, unit_price, currency, restockable, created_at
+		FROM order_items WHERE order_id = ANY($1)
+		ORDER BY order_id, created_at`
+	rows, err := r.db.QueryContext(ctx, q, orderIDs)
+	if err != nil {
+		return nil, fmt.Errorf("order_repo: load items batch: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]order.Item)
+	for rows.Next() {
+		var orderID, variantID, sku, name string
+		var quantity int
+		var priceAmount int64
+		var priceCurrency string
+		var restockable bool
+		var createdAt time.Time
+		if err := rows.Scan(&orderID, &variantID, &sku, &name, &quantity, &priceAmount, &priceCurrency, &restockable, &createdAt); err != nil {
+			return nil, fmt.Errorf("order_repo: scan batch item: %w", err)
+		}
+		unitPrice, err := shared.NewMoney(priceAmount, priceCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: batch item money: %w", err)
+		}
+		// Construct Item directly (bypassing NewItem) because DB data was
+		// validated on write and we must preserve the stored CreatedAt.
+		// SetItemsFromDB validates the total on the caller side.
+		result[orderID] = append(result[orderID], order.Item{
+			VariantID:   variantID,
+			SKU:         sku,
+			Name:        name,
+			Quantity:    quantity,
+			UnitPrice:   unitPrice,
+			Restockable: restockable,
+			CreatedAt:   createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: batch items rows: %w", err)
+	}
+	return result, nil
+}
+
+// scanItems reads item rows into a slice.
+func (r *OrderRepo) scanItems(rows *sql.Rows) ([]order.Item, error) {
+	var items []order.Item
+	for rows.Next() {
+		var variantID, sku, name string
+		var quantity int
+		var priceAmount int64
+		var priceCurrency string
+		var restockable bool
+		var createdAt time.Time
+		if err := rows.Scan(&variantID, &sku, &name, &quantity, &priceAmount, &priceCurrency, &restockable, &createdAt); err != nil {
+			return nil, fmt.Errorf("order_repo: scan item: %w", err)
+		}
+		unitPrice, err := shared.NewMoney(priceAmount, priceCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("order_repo: item money: %w", err)
+		}
+		// Construct Item directly — see loadItemsBatch comment for rationale.
+		items = append(items, order.Item{
+			VariantID:   variantID,
+			SKU:         sku,
+			Name:        name,
+			Quantity:    quantity,
+			UnitPrice:   unitPrice,
+			Restockable: restockable,
+			CreatedAt:   createdAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order_repo: items rows: %w", err)
+	}
+	return items, nil
+}

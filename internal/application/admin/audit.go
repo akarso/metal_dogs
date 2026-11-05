@@ -1,0 +1,389 @@
+package admin
+
+import (
+	"context"
+	"fmt"
+
+	domainadmin "github.com/akarso/shopanda/internal/domain/admin"
+	"github.com/akarso/shopanda/internal/platform/logger"
+)
+
+// AuditAction represents an admin action that should be logged for compliance and security.
+type AuditAction string
+
+const (
+	// Order operations
+	AuditOrderList         AuditAction = "order.list"
+	AuditOrderRead         AuditAction = "order.read"
+	AuditOrderUpdate       AuditAction = "order.update"
+	AuditOrderStatusChange AuditAction = "order.status_change"
+	AuditShipmentRead      AuditAction = "shipment.read"
+	AuditShipmentUpdate    AuditAction = "shipment.update"
+
+	// Future actions (for extensibility)
+	AuditProductCreate AuditAction = "product.create"
+	AuditProductRead   AuditAction = "product.read"
+	AuditProductUpdate AuditAction = "product.update"
+
+	// Bundle and grouped composition (PR-1066)
+	AuditBundleComponentList   AuditAction = "product.bundle_component.list"
+	AuditBundleComponentAdd    AuditAction = "product.bundle_component.add"
+	AuditBundleComponentRemove AuditAction = "product.bundle_component.remove"
+	AuditGroupedMemberList     AuditAction = "product.grouped_member.list"
+	AuditGroupedMemberAdd      AuditAction = "product.grouped_member.add"
+	AuditGroupedMemberRemove   AuditAction = "product.grouped_member.remove"
+
+	// Linked-product eligibility (PR-1073)
+	AuditLinkedEligibleParentList     AuditAction = "product.linked_eligible_parent.list"
+	AuditLinkedEligibleParentAdd      AuditAction = "product.linked_eligible_parent.add"
+	AuditLinkedEligibleParentRemove   AuditAction = "product.linked_eligible_parent.remove"
+	AuditLinkedEligibleCategoryList   AuditAction = "product.linked_eligible_category.list"
+	AuditLinkedEligibleCategoryAdd    AuditAction = "product.linked_eligible_category.add"
+	AuditLinkedEligibleCategoryRemove AuditAction = "product.linked_eligible_category.remove"
+
+	// Scoped catalog editing (PR-E catalog slice)
+	AuditProductTranslationRead   AuditAction = "product.translation.read"
+	AuditProductTranslationUpdate AuditAction = "product.translation.update"
+	AuditPriceRead                AuditAction = "price.read"
+	AuditPriceUpdate              AuditAction = "price.update"
+
+	// Scoped content editing (PR-E content slice)
+	AuditPageRead   AuditAction = "page.read"
+	AuditPageCreate AuditAction = "page.create"
+	AuditPageUpdate AuditAction = "page.update"
+	AuditPageDelete AuditAction = "page.delete"
+
+	AuditMenuRead   AuditAction = "menu.read"
+	AuditMenuUpdate AuditAction = "menu.update"
+
+	AuditContentBlockRead   AuditAction = "content_block.read"
+	AuditContentBlockCreate AuditAction = "content_block.create"
+	AuditContentBlockUpdate AuditAction = "content_block.update"
+	AuditContentBlockDelete AuditAction = "content_block.delete"
+
+	// Category operations
+	AuditCategoryCreate          AuditAction = "category.create"
+	AuditCategoryUpdate          AuditAction = "category.update"
+	AuditCategoryDelete          AuditAction = "category.delete"
+	AuditCategoryProductAssign   AuditAction = "category.product_assign"
+	AuditCategoryProductUnassign AuditAction = "category.product_unassign"
+
+	// Store operations
+	AuditStoreCreate AuditAction = "store.create"
+	AuditStoreUpdate AuditAction = "store.update"
+
+	// Media operations
+	AuditMediaUpload AuditAction = "media.upload"
+	AuditMediaDelete AuditAction = "media.delete"
+
+	AuditStatsRead      AuditAction = "stats.read"
+	AuditCustomerDelete AuditAction = "customer.delete"
+	AuditCustomerRead   AuditAction = "customer.read"
+	AuditCustomerRevoke AuditAction = "customer.revoke_sessions"
+	AuditSettingsRead   AuditAction = "settings.read"
+	AuditSettingsChange AuditAction = "settings.change"
+
+	// Coupon operations
+	AuditCouponRead   AuditAction = "coupon.read"
+	AuditCouponCreate AuditAction = "coupon.create"
+	AuditCouponUpdate AuditAction = "coupon.update"
+	AuditCouponDelete AuditAction = "coupon.delete"
+
+	// Promotion operations
+	AuditPromotionRead   AuditAction = "promotion.read"
+	AuditPromotionCreate AuditAction = "promotion.create"
+	AuditPromotionUpdate AuditAction = "promotion.update"
+	AuditPromotionDelete AuditAction = "promotion.delete"
+
+	// Stock operations
+	AuditStockRead   AuditAction = "stock.read"
+	AuditStockUpdate AuditAction = "stock.update"
+
+	// Attribute operations
+	AuditAttributeRead   AuditAction = "attribute.read"
+	AuditAttributeCreate AuditAction = "attribute.create"
+	AuditAttributeUpdate AuditAction = "attribute.update"
+	AuditAttributeDelete AuditAction = "attribute.delete"
+
+	// Attribute group operations
+	AuditAttributeGroupRead   AuditAction = "attribute_group.read"
+	AuditAttributeGroupCreate AuditAction = "attribute_group.create"
+	AuditAttributeGroupUpdate AuditAction = "attribute_group.update"
+	AuditAttributeGroupDelete AuditAction = "attribute_group.delete"
+
+	// Extension field operations
+	AuditExtensionFieldRead   AuditAction = "extension_field.read"
+	AuditExtensionFieldCreate AuditAction = "extension_field.create"
+	AuditExtensionFieldUpdate AuditAction = "extension_field.update"
+	AuditExtensionFieldDelete AuditAction = "extension_field.delete"
+
+	// Extension value operations
+	AuditExtensionValueRead   AuditAction = "extension_value.read"
+	AuditExtensionValueUpdate AuditAction = "extension_value.update"
+	AuditExtensionValueDelete AuditAction = "extension_value.delete"
+
+	AuditReturnList    AuditAction = "return.list"
+	AuditReturnRead    AuditAction = "return.read"
+	AuditReturnApprove AuditAction = "return.approve"
+	AuditReturnReject  AuditAction = "return.reject"
+	AuditReturnReceive AuditAction = "return.receive"
+	AuditReturnRefund  AuditAction = "return.refund"
+
+	AuditReviewList    AuditAction = "review.list"
+	AuditReviewRead    AuditAction = "review.read"
+	AuditReviewApprove AuditAction = "review.approve"
+	AuditReviewReject  AuditAction = "review.reject"
+
+	AuditAdminUserList          AuditAction = "admin_user.list"
+	AuditAdminUserRead          AuditAction = "admin_user.read"
+	AuditAdminUserCreate        AuditAction = "admin_user.create"
+	AuditAdminUserUpdate        AuditAction = "admin_user.update"
+	AuditAdminUserResetPassword AuditAction = "admin_user.reset_password"
+
+	AuditPermissionCatalogRead AuditAction = "permission.catalog_read"
+	AuditRoleList              AuditAction = "role.list"
+	AuditRoleRead              AuditAction = "role.read"
+	AuditRoleUpdate            AuditAction = "role.update"
+
+	AuditPaymentList AuditAction = "payment.list"
+	AuditPaymentRead AuditAction = "payment.read"
+
+	// Store credit operations
+	AuditStoreCreditRead  AuditAction = "store_credit.read"
+	AuditStoreCreditIssue AuditAction = "store_credit.issue"
+
+	AuditLogList   AuditAction = "audit.list"
+	AuditLogExport AuditAction = "audit.export"
+
+	// Product assignment admin operations (PR-1071)
+	AuditAssignmentCreate AuditAction = "assignment.create"
+	AuditAssignmentRevoke AuditAction = "assignment.revoke"
+
+	// Downloadable file attachments (PR-1078)
+	AuditDownloadableFileList    AuditAction = "product.downloadable_file.list"
+	AuditDownloadableFileAttach  AuditAction = "product.downloadable_file.attach"
+	AuditDownloadableFileReplace AuditAction = "product.downloadable_file.replace"
+	AuditDownloadableFileRemove  AuditAction = "product.downloadable_file.remove"
+	AuditDownloadableSettingsGet AuditAction = "product.downloadable_grant_settings.get"
+	AuditDownloadableSettingsPut AuditAction = "product.downloadable_grant_settings.put"
+	AuditDownloadableSettingsDel AuditAction = "product.downloadable_grant_settings.delete"
+
+	// Download grant admin operations (PR-1078)
+	AuditDownloadGrantList    AuditAction = "download_grant.list"
+	AuditDownloadGrantRevoke  AuditAction = "download_grant.revoke"
+	AuditDownloadGrantReissue AuditAction = "download_grant.reissue"
+
+	// Job admin operations (PR-1029)
+	AuditJobList   AuditAction = "job.list"
+	AuditJobRead   AuditAction = "job.read"
+	AuditJobRetry  AuditAction = "job.retry"
+	AuditJobCancel AuditAction = "job.cancel"
+
+	// Scheduler admin operations (PR-1030)
+	AuditScheduleList    AuditAction = "schedule.list"
+	AuditScheduleTrigger AuditAction = "schedule.trigger"
+	AuditScheduleEnable  AuditAction = "schedule.enable"
+	AuditScheduleDisable AuditAction = "schedule.disable"
+
+	// Search reindex run reconciliation (PR-1048)
+	AuditSearchReindexRunReconcile AuditAction = "search_reindex_run.reconcile"
+
+	// Search reindex admin API (PR-1035)
+	AuditSearchReindexTrigger AuditAction = "search_reindex.trigger"
+	AuditSearchReindexRead    AuditAction = "search_reindex.read"
+	AuditSearchReindexList    AuditAction = "search_reindex.list"
+
+	// Cache admin operations (PR-1042)
+	AuditCacheStats    AuditAction = "cache.stats"
+	AuditCacheClear    AuditAction = "cache.clear"
+	AuditCachePurgeURL AuditAction = "cache.purge_url"
+)
+
+// AuditEntry represents a single admin audit log entry.
+type AuditEntry struct {
+	AdminID      string                 `json:"admin_id"`
+	Action       AuditAction            `json:"action"`
+	ResourceType string                 `json:"resource_type"`
+	ResourceID   string                 `json:"resource_id"`
+	Details      map[string]interface{} `json:"details,omitempty"`
+	Result       string                 `json:"result"` // "success" or "error"
+	Error        string                 `json:"error,omitempty"`
+}
+
+// Auditor logs admin actions with context.
+type Auditor struct {
+	log  logger.Logger
+	repo domainadmin.AuditLogRepository
+}
+
+// NewAuditor creates an Auditor that logs to the provided logger.
+func NewAuditor(log logger.Logger) *Auditor {
+	if log == nil {
+		panic("auditor: logger must not be nil")
+	}
+	return &Auditor{log: log}
+}
+
+// SetAuditLogRepository enables best-effort persistence of audit entries.
+func (a *Auditor) SetAuditLogRepository(repo domainadmin.AuditLogRepository) {
+	if a == nil {
+		return
+	}
+	a.repo = repo
+}
+
+// Warn logs an operational warning. It is not an audit result.
+func (a *Auditor) Warn(event string, fields map[string]interface{}) {
+	if a == nil || a.log == nil || event == "" {
+		return
+	}
+	a.log.Warn(event, fields)
+}
+
+// LogAction records an admin action to the audit log.
+func (a *Auditor) LogAction(ctx context.Context, entry AuditEntry) {
+	adminID := entry.AdminID
+	if adminID == "" {
+		adminID = "unknown"
+	}
+	result := entry.Result
+	if result == "" {
+		result = "unknown"
+	}
+
+	// Always include the action context and results in logs.
+	// In the future, this can be extended to write to a dedicated audit table.
+	logFields := map[string]interface{}{
+		"admin_id":      adminID,
+		"action":        entry.Action,
+		"resource_type": entry.ResourceType,
+		"resource_id":   entry.ResourceID,
+		"result":        result,
+	}
+	if entry.Error != "" {
+		logFields["error"] = entry.Error
+	}
+	details := make(map[string]interface{}, len(entry.Details))
+	for k, v := range entry.Details {
+		details[k] = v
+	}
+	for k, v := range details {
+		logFields["detail_"+k] = v
+	}
+
+	// Log sensitive operations as warnings for immediate alertability.
+	if result == "error" {
+		a.log.Warn("admin.action.failed", logFields)
+	} else {
+		a.log.Info("admin.action", logFields)
+	}
+
+	a.persistEntry(ctx, entry)
+}
+
+func (a *Auditor) persistEntry(ctx context.Context, entry AuditEntry) {
+	if a == nil || a.repo == nil {
+		return
+	}
+	record := auditRecordFromEntry(entry)
+	if err := a.repo.Insert(ctx, record); err != nil {
+		a.log.Warn("admin.audit.persist_failed", map[string]interface{}{
+			"admin_id":      record.AdminID,
+			"action":        record.Action,
+			"resource_type": record.ResourceType,
+			"resource_id":   record.ResourceID,
+			"error":         err.Error(),
+		})
+	}
+}
+
+func auditRecordFromEntry(entry AuditEntry) domainadmin.AuditLogRecord {
+	adminID := entry.AdminID
+	if adminID == "" {
+		adminID = "unknown"
+	}
+	result := entry.Result
+	if result == "" {
+		result = "unknown"
+	}
+
+	metadata := make(map[string]interface{})
+	storeID, language, currency := "", "", ""
+	for k, v := range entry.Details {
+		switch k {
+		case "store_id":
+			storeID = fmt.Sprint(v)
+		case "language":
+			language = fmt.Sprint(v)
+		case "currency":
+			currency = fmt.Sprint(v)
+		default:
+			metadata[k] = v
+		}
+	}
+
+	return domainadmin.AuditLogRecord{
+		AdminID:      adminID,
+		Action:       string(entry.Action),
+		ResourceType: entry.ResourceType,
+		ResourceID:   entry.ResourceID,
+		Result:       result,
+		ErrorMessage: entry.Error,
+		StoreID:      storeID,
+		Language:     language,
+		Currency:     currency,
+		Metadata:     metadata,
+	}
+}
+
+// LogOrderRead logs a read access to an order (for audit trail).
+func (a *Auditor) LogOrderRead(ctx context.Context, adminID, orderID string) {
+	a.LogAction(ctx, AuditEntry{
+		AdminID:      adminID,
+		Action:       AuditOrderRead,
+		ResourceType: "order",
+		ResourceID:   orderID,
+		Result:       "success",
+	})
+}
+
+// LogOrderListAccess logs a list operation on orders (for audit trail).
+func (a *Auditor) LogOrderListAccess(ctx context.Context, adminID string, offset, limit int) {
+	a.LogAction(ctx, AuditEntry{
+		AdminID:      adminID,
+		Action:       AuditOrderList,
+		ResourceType: "orders",
+		Result:       "success",
+		Details: map[string]interface{}{
+			"offset": offset,
+			"limit":  limit,
+		},
+	})
+}
+
+// LogOrderUpdate logs an order update operation (for audit trail and compliance).
+func (a *Auditor) LogOrderUpdate(ctx context.Context, adminID, orderID string, oldStatus, newStatus string) {
+	a.LogAction(ctx, AuditEntry{
+		AdminID:      adminID,
+		Action:       AuditOrderStatusChange,
+		ResourceType: "order",
+		ResourceID:   orderID,
+		Result:       "success",
+		Details: map[string]interface{}{
+			"old_status": oldStatus,
+			"new_status": newStatus,
+		},
+	})
+}
+
+// LogOrderUpdateError logs a failed order update attempt (for security audit).
+func (a *Auditor) LogOrderUpdateError(ctx context.Context, adminID, orderID string, errMsg string) {
+	a.LogAction(ctx, AuditEntry{
+		AdminID:      adminID,
+		Action:       AuditOrderUpdate,
+		ResourceType: "order",
+		ResourceID:   orderID,
+		Result:       "error",
+		Error:        errMsg,
+	})
+}

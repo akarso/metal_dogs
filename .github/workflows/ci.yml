@@ -1,0 +1,215 @@
+# Unit + integration + govuln CI.
+#
+# Checks reported:
+#   - CI / unit
+#   - CI / integration
+#   - CI / govuln
+#   - CI / docs-policy (product-doc relative-link check + promote replay fixture)
+#   - CI / docs-main (main / PRs to main / merge queue to main — forbids docs/phase-*)
+#
+# Require on main AND dev: CI / unit, CI / integration, CI / govuln, CI / docs-policy.
+# Require on main ONLY: CI / docs-main. Do not require docs-main on dev — the job
+# is skipped there, and a skipped required check blocks merges.
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+  push:
+    branches:
+      - main
+      - dev
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+  # Pin govulncheck (PR-1012). Bump deliberately with Dependabot/gomod review.
+  GOVULNCHECK_VERSION: v1.7.0
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        # Pin to full SHA (tag v4.4.0) — mutable tags can be retargeted.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        # Pin to full SHA (tag v7.0.0) — mutable tags can be retargeted.
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set up Node
+        # Pin to full SHA (tag v7.0.0) — mutable tags can be retargeted.
+        # TestCacheAdminUI_Node runs `node --test` as part of go test ./...
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: go mod verify
+        run: go mod verify
+
+      - name: gofmt
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "gofmt needed on:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        # Same digest as docker-compose.yml postgres:17-alpine pin.
+        image: postgres:17-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
+        env:
+          POSTGRES_USER: shopanda
+          POSTGRES_PASSWORD: shopanda
+          POSTGRES_DB: shopanda_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shopanda -d shopanda_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SHOPANDA_TEST_DSN: postgres://shopanda:shopanda@localhost:5432/shopanda_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Wait for Postgres readiness
+        run: |
+          set -euo pipefail
+          echo "Waiting for Postgres at localhost:5432 (max 60s)..."
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U shopanda -d shopanda_test; then
+              echo "Postgres is ready (attempt $i)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: Postgres did not become ready within 60s" >&2
+          exit 1
+
+      - name: DSN-gated integration tests
+        # -json + jq: detect Action=skip (default go test text hides skip reasons).
+        # -p 1: serialize packages so concurrent migrate.Run on one DB cannot race.
+        run: bash .github/scripts/run-integration-tests.sh
+
+  govuln:
+    name: govuln
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Cache govulncheck binary
+        # Pin to full SHA (tag v4.3.0).
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/govulncheck
+          key: govulncheck-${{ runner.os }}-${{ env.GOVULNCHECK_VERSION }}
+
+      - name: Install pinned govulncheck
+        run: |
+          set -euo pipefail
+          if [[ ! -x "${HOME}/go/bin/govulncheck" ]]; then
+            go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          fi
+          echo "${HOME}/go/bin" >> "${GITHUB_PATH}"
+          govulncheck -version
+
+      - name: govulncheck (fail-closed + baseline)
+        run: bash .github/scripts/run-govulncheck.sh
+
+  docs-policy:
+    name: docs-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Product docs must not relative-link into docs/phase-*
+        run: bash .github/scripts/check-product-docs-links.sh
+
+      - name: Promote script replays (second run, overwrite, FORCE, two-parent merge)
+        run: bash scripts/promote-dev-to-main_test.sh
+
+  docs-main:
+    name: docs-main
+    # Working history is stripped on promote. Fail closed on main only.
+    if: >
+      github.base_ref == 'main' ||
+      github.ref == 'refs/heads/main' ||
+      github.event.merge_group.base_ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Forbid working-history docs on main
+        run: |
+          set -euo pipefail
+          leftover="$(git ls-files -- 'docs/phase-*')"
+          if [[ -n "${leftover}" ]]; then
+            echo "ERROR: docs/phase-* must not exist on main (working history stays on dev)." >&2
+            echo "Promote with scripts/promote-dev-to-main.sh; do not raw-merge dev." >&2
+            printf '%s\n' "${leftover}" >&2
+            exit 1
+          fi

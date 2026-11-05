@@ -1,0 +1,261 @@
+package customer_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/customer"
+)
+
+func TestStatusIsValid(t *testing.T) {
+	tests := []struct {
+		status customer.Status
+		want   bool
+	}{
+		{customer.StatusActive, true},
+		{customer.StatusDisabled, true},
+		{"unknown", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := tt.status.IsValid(); got != tt.want {
+			t.Errorf("Status(%q).IsValid() = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestNewCustomer(t *testing.T) {
+	c, err := customer.NewCustomer("cust-1", "alice@example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.ID != "cust-1" {
+		t.Errorf("ID = %q, want cust-1", c.ID)
+	}
+	if c.Email != "alice@example.com" {
+		t.Errorf("Email = %q, want alice@example.com", c.Email)
+	}
+	if c.Status != customer.StatusActive {
+		t.Errorf("Status = %q, want active", c.Status)
+	}
+	if c.CreatedAt.IsZero() {
+		t.Error("CreatedAt should not be zero")
+	}
+	if c.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt should not be zero")
+	}
+}
+
+func TestNewCustomer_EmptyID(t *testing.T) {
+	_, err := customer.NewCustomer("", "alice@example.com")
+	if err == nil {
+		t.Fatal("expected error for empty id")
+	}
+}
+
+func TestNewCustomer_EmptyEmail(t *testing.T) {
+	_, err := customer.NewCustomer("cust-1", "")
+	if err == nil {
+		t.Fatal("expected error for empty email")
+	}
+}
+
+func TestCustomer_Disable(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	if err := c.Disable(); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if c.Status != customer.StatusDisabled {
+		t.Errorf("Status = %q, want disabled", c.Status)
+	}
+}
+
+func TestCustomer_Disable_AlreadyDisabled(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	_ = c.Disable()
+	if err := c.Disable(); err == nil {
+		t.Fatal("expected error when disabling already disabled customer")
+	}
+}
+
+func TestCustomer_Enable(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	_ = c.Disable()
+	if err := c.Enable(); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if c.Status != customer.StatusActive {
+		t.Errorf("Status = %q, want active", c.Status)
+	}
+}
+
+func TestCustomer_Enable_AlreadyActive(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	if err := c.Enable(); err == nil {
+		t.Fatal("expected error when enabling already active customer")
+	}
+}
+
+func TestCustomer_SetPassword(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	if err := c.SetPassword("hashed-pw"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if c.PasswordHash != "hashed-pw" {
+		t.Errorf("PasswordHash = %q, want hashed-pw", c.PasswordHash)
+	}
+}
+
+func TestCustomer_SetPassword_Empty(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	if err := c.SetPassword(""); err == nil {
+		t.Fatal("expected error for empty password hash")
+	}
+}
+
+func TestCustomer_Disable_UpdatesTimestamp(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	before := c.UpdatedAt
+	time.Sleep(time.Millisecond)
+	if err := c.Disable(); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if !c.UpdatedAt.After(before) {
+		t.Error("expected UpdatedAt to advance after Disable")
+	}
+}
+
+func TestCustomer_Enable_UpdatesTimestamp(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	_ = c.Disable()
+	before := c.UpdatedAt
+	time.Sleep(time.Millisecond)
+	if err := c.Enable(); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if !c.UpdatedAt.After(before) {
+		t.Error("expected UpdatedAt to advance after Enable")
+	}
+}
+
+func TestCustomer_SetPassword_UpdatesTimestamp(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	before := c.UpdatedAt
+	time.Sleep(time.Millisecond)
+	if err := c.SetPassword("hashed-pw"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if !c.UpdatedAt.After(before) {
+		t.Error("expected UpdatedAt to advance after SetPassword")
+	}
+}
+
+func TestNewCustomer_TokenGeneration_Zero(t *testing.T) {
+	c, err := customer.NewCustomer("cust-1", "alice@example.com")
+	if err != nil {
+		t.Fatalf("NewCustomer: %v", err)
+	}
+	if c.TokenGeneration != 0 {
+		t.Errorf("TokenGeneration = %d, want 0", c.TokenGeneration)
+	}
+}
+
+func TestCustomer_BumpTokenGeneration(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	before := c.UpdatedAt
+	time.Sleep(time.Millisecond)
+
+	c.BumpTokenGeneration()
+
+	if c.TokenGeneration != 1 {
+		t.Errorf("TokenGeneration = %d, want 1", c.TokenGeneration)
+	}
+	if !c.UpdatedAt.After(before) {
+		t.Error("expected UpdatedAt to advance after BumpTokenGeneration")
+	}
+}
+
+func TestCustomer_MarkEmailVerified(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	before := c.UpdatedAt
+	time.Sleep(time.Millisecond)
+
+	c.MarkEmailVerified()
+
+	if c.EmailVerifiedAt == nil {
+		t.Fatal("expected EmailVerifiedAt to be set")
+	}
+	if c.EmailVerifiedAt.IsZero() {
+		t.Fatal("expected EmailVerifiedAt to be non-zero")
+	}
+	if !c.UpdatedAt.After(before) {
+		t.Error("expected UpdatedAt to advance after MarkEmailVerified")
+	}
+}
+
+func TestCustomer_MarkEmailVerified_Idempotent(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	c.MarkEmailVerified()
+	verifiedAt := c.EmailVerifiedAt
+	updatedAt := c.UpdatedAt
+	time.Sleep(time.Millisecond)
+
+	c.MarkEmailVerified()
+
+	if c.EmailVerifiedAt == nil || verifiedAt == nil {
+		t.Fatal("expected EmailVerifiedAt to remain set")
+	}
+	if !c.EmailVerifiedAt.Equal(*verifiedAt) {
+		t.Fatalf("EmailVerifiedAt changed from %v to %v", *verifiedAt, *c.EmailVerifiedAt)
+	}
+	if !c.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt changed from %v to %v", updatedAt, c.UpdatedAt)
+	}
+}
+
+func TestCustomer_BumpTokenGeneration_Increments(t *testing.T) {
+	c, _ := customer.NewCustomer("cust-1", "alice@example.com")
+	c.BumpTokenGeneration()
+	c.BumpTokenGeneration()
+	c.BumpTokenGeneration()
+
+	if c.TokenGeneration != 3 {
+		t.Errorf("TokenGeneration = %d, want 3", c.TokenGeneration)
+	}
+}
+
+func TestRoleIsValid(t *testing.T) {
+	tests := []struct {
+		role customer.Role
+		want bool
+	}{
+		{customer.RoleCustomer, true},
+		{customer.RoleAdmin, true},
+		{"unknown", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := tt.role.IsValid(); got != tt.want {
+			t.Errorf("Role(%q).IsValid() = %v, want %v", tt.role, got, tt.want)
+		}
+	}
+}
+
+func TestIsAdminRole(t *testing.T) {
+	if !customer.IsAdminRole(customer.RoleManager) {
+		t.Fatal("manager should be admin role")
+	}
+	if customer.IsAdminRole(customer.RoleCustomer) {
+		t.Fatal("customer should not be admin role")
+	}
+}
+
+func TestNewCustomer_DefaultsToCustomerRole(t *testing.T) {
+	c, err := customer.NewCustomer("cust-1", "alice@example.com")
+	if err != nil {
+		t.Fatalf("NewCustomer: %v", err)
+	}
+	if c.Role != customer.RoleCustomer {
+		t.Errorf("Role = %q, want %q", c.Role, customer.RoleCustomer)
+	}
+}

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ template "title" . }} · {{ .Layout.SiteName }}</title>
+    <link rel="stylesheet" href="{{ .Layout.StyleCSSURL }}">
+    <link rel="stylesheet" href="{{ .Layout.CustomCSSURL }}">
+    {{ range .Layout.Assets.HeadCSS }}<link rel="stylesheet" href="{{ .URL }}">{{ end }}
+    {{ if or .Layout.EnableCart .Layout.EnableSearchSuggest }}<script src="{{ .Layout.HtmxJSURL }}" defer></script>{{ end }}
+    {{ range .Layout.Assets.HeadJS }}<script src="{{ .URL }}"{{ if $.Layout.CSPEnabled }} nonce="{{ $.Layout.CSPNonce }}"{{ end }} defer></script>{{ end }}
+    {{slot . "layout.head" "append"}}
+</head>
+<body>
+    {{slot . "layout.body_start" "append"}}
+    <a class="skip-link" href="#content">Skip to content</a>
+
+    {{ template "_header.html" . }}
+
+    {{slot_container "layout.main"}}
+    <main id="content" class="site-shell site-main">
+        {{ template "content" . }}
+    </main>
+    {{/slot_container}}
+
+    {{ template "_footer.html" . }}
+    {{ range .Layout.Assets.FooterJS }}<script src="{{ .URL }}"{{ if $.Layout.CSPEnabled }} nonce="{{ $.Layout.CSPNonce }}"{{ end }} defer></script>{{ end }}
+    {{slot . "layout.body_end" "append"}}
+</body>
+</html>
+
+{{ define "nav-items" }}
+{{ range . }}
+<li>
+    <a href="{{ .URL }}">{{ .Label }}</a>
+    {{ if .Children }}
+    <ul>
+        {{ template "nav-items" .Children }}
+    </ul>
+    {{ end }}
+</li>
+{{ end }}
+{{ end }}
+
+{{ define "content-blocks" }}
+{{ range . }}
+{{ if eq .Type "hero" }}
+<section class="hero-panel content-block content-block--hero">
+    <div>
+        {{ if .Subheadline }}<p class="eyebrow">{{ .Subheadline }}</p>{{ end }}
+        <h1>{{ .Headline }}</h1>
+    </div>
+    <div class="hero-panel__card">
+        {{ if .ImageURL }}<img src="{{ .ImageURL }}" alt="{{ .Headline }}">{{ end }}
+        {{ if and .CTALabel .CTAURL }}<a class="button-link" href="{{ .CTAURL }}">{{ .CTALabel }}</a>{{ end }}
+    </div>
+</section>
+{{ else if eq .Type "rich_text" }}
+<section class="page-content content-block content-block--rich-text">
+    <div class="rich-text">{{ .Body }}</div>
+</section>
+{{ else if eq .Type "product_carousel" }}
+<section class="content-block content-block--carousel" aria-label="{{ .CarouselTitle }}">
+    {{ if .CarouselTitle }}<h2>{{ .CarouselTitle }}</h2>{{ end }}
+    {{ if .Products }}
+    <div class="product-listing product-listing--grid">
+        {{ range .Products }}
+        <article class="product-card">
+            <a class="product-card__media" href="/products/{{ .Slug }}">
+                {{ if .ImageURL }}<img src="{{ .ImageURL }}" alt="{{ .Name }}">{{ else }}<span>{{ .Name }}</span>{{ end }}
+            </a>
+            <div class="product-card__body">
+                <h3><a href="/products/{{ .Slug }}">{{ .Name }}</a></h3>
+                {{ if .Description }}<p>{{ .Description }}</p>{{ end }}
+            </div>
+        </article>
+        {{ end }}
+    </div>
+    {{ end }}
+</section>
+{{ end }}
+{{ end }}
+{{ end }}

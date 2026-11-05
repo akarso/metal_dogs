@@ -1,0 +1,657 @@
+package meili
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/akarso/shopanda/internal/domain/search"
+)
+
+// --- mock meiliAPI ---
+
+type mockAPI struct {
+	addDocs   [][]map[string]interface{}
+	addErr    error
+	deleteIDs []string
+	deleteErr error
+
+	searchReq  searchRequest
+	searchResp searchResponse
+	searchErr  error
+
+	settingsReq indexSettings
+	settingsErr error
+
+	// taskUID is returned by write methods; taskStatus is returned by getTask.
+	taskUID    int64
+	taskStatus string
+	taskErr    error
+}
+
+func (m *mockAPI) addDocuments(_ context.Context, docs []map[string]interface{}) (int64, error) {
+	if m.addErr != nil {
+		return 0, m.addErr
+	}
+	m.addDocs = append(m.addDocs, docs)
+	return m.taskUID, nil
+}
+
+func (m *mockAPI) deleteDocument(_ context.Context, id string) (int64, error) {
+	if m.deleteErr != nil {
+		return 0, m.deleteErr
+	}
+	m.deleteIDs = append(m.deleteIDs, id)
+	return m.taskUID, nil
+}
+
+func (m *mockAPI) search(_ context.Context, req searchRequest) (searchResponse, error) {
+	m.searchReq = req
+	if m.searchErr != nil {
+		return searchResponse{}, m.searchErr
+	}
+	return m.searchResp, nil
+}
+
+func (m *mockAPI) updateSettings(_ context.Context, s indexSettings) (int64, error) {
+	m.settingsReq = s
+	return m.taskUID, m.settingsErr
+}
+
+func (m *mockAPI) getTask(_ context.Context, _ int64) (taskInfo, error) {
+	if m.taskErr != nil {
+		return taskInfo{}, m.taskErr
+	}
+	status := m.taskStatus
+	if status == "" {
+		status = "succeeded"
+	}
+	return taskInfo{TaskUID: m.taskUID, Status: status}, nil
+}
+
+// --- tests ---
+
+// TestNew_Validation covers New's config checks that fail before any HTTP
+// call is made (empty Host/Index/CategoriesIndex, and CategoriesIndex ==
+// Index) — the only part of New testable without a real Meilisearch
+// server, since everything past validation makes live HTTP calls.
+func TestNew_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{"empty host", Config{Index: "products", CategoriesIndex: "categories"}, "empty host"},
+		{"empty index", Config{Host: "http://localhost:7700", CategoriesIndex: "categories"}, "empty index"},
+		{"empty categories index", Config{Host: "http://localhost:7700", Index: "products"}, "empty categories index"},
+		{
+			"categories index equals product index",
+			Config{Host: "http://localhost:7700", Index: "products", CategoriesIndex: "products"},
+			"must differ from the product index",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(tt.cfg)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestName(t *testing.T) {
+	e := newWithAPI(&mockAPI{}, "products")
+	if e.Name() != "meilisearch" {
+		t.Errorf("Name() = %q, want meilisearch", e.Name())
+	}
+}
+
+func TestIndexProduct(t *testing.T) {
+	mock := &mockAPI{}
+	e := newWithAPI(mock, "products")
+
+	p := search.Product{ID: "p-1", Name: "Shoes", Slug: "shoes", Description: "Running shoes"}
+	if err := e.IndexProduct(context.Background(), p); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.addDocs) != 1 || len(mock.addDocs[0]) != 1 {
+		t.Fatalf("expected 1 doc batch, got %d", len(mock.addDocs))
+	}
+	doc := mock.addDocs[0][0]
+	if doc["id"] != "p-1" || doc["name"] != "Shoes" || doc["slug"] != "shoes" {
+		t.Errorf("doc = %+v, want id=p-1 name=Shoes slug=shoes", doc)
+	}
+}
+
+func TestIndexProduct_Error(t *testing.T) {
+	mock := &mockAPI{addErr: errors.New("connection refused")}
+	e := newWithAPI(mock, "products")
+
+	err := e.IndexProduct(context.Background(), search.Product{ID: "p-1"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("error = %q, want 'connection refused'", err.Error())
+	}
+}
+
+func TestRemoveProduct(t *testing.T) {
+	mock := &mockAPI{}
+	e := newWithAPI(mock, "products")
+
+	if err := e.RemoveProduct(context.Background(), "p-42"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mock.deleteIDs) != 1 || mock.deleteIDs[0] != "p-42" {
+		t.Errorf("deleteIDs = %v, want [p-42]", mock.deleteIDs)
+	}
+}
+
+func TestRemoveProduct_Error(t *testing.T) {
+	mock := &mockAPI{deleteErr: errors.New("not found")}
+	e := newWithAPI(mock, "products")
+
+	err := e.RemoveProduct(context.Background(), "p-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want 'not found'", err.Error())
+	}
+}
+
+func TestIndexCategory(t *testing.T) {
+	catMock := &mockAPI{}
+	e := newWithAPIAndCategories(&mockAPI{}, "products", catMock, "categories")
+
+	c := search.Category{ID: "cat-1", Name: "Shoes", Slug: "shoes", ParentID: "cat-root", ProductCount: 3}
+	if err := e.IndexCategory(context.Background(), c); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(catMock.addDocs) != 1 || len(catMock.addDocs[0]) != 1 {
+		t.Fatalf("expected 1 doc batch on categories index, got %d", len(catMock.addDocs))
+	}
+	doc := catMock.addDocs[0][0]
+	if doc["id"] != "cat-1" || doc["name"] != "Shoes" || doc["slug"] != "shoes" {
+		t.Errorf("doc = %+v, want id=cat-1 name=Shoes slug=shoes", doc)
+	}
+	if doc["parent_id"] != "cat-root" {
+		t.Errorf("parent_id = %v, want cat-root", doc["parent_id"])
+	}
+	if doc["product_count"] != 3 {
+		t.Errorf("product_count = %v, want 3", doc["product_count"])
+	}
+}
+
+func TestIndexCategory_Error(t *testing.T) {
+	catMock := &mockAPI{addErr: errors.New("connection refused")}
+	e := newWithAPIAndCategories(&mockAPI{}, "products", catMock, "categories")
+
+	err := e.IndexCategory(context.Background(), search.Category{ID: "cat-1"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("error = %q, want 'connection refused'", err.Error())
+	}
+}
+
+func TestRemoveCategory(t *testing.T) {
+	catMock := &mockAPI{}
+	e := newWithAPIAndCategories(&mockAPI{}, "products", catMock, "categories")
+
+	if err := e.RemoveCategory(context.Background(), "cat-42"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(catMock.deleteIDs) != 1 || catMock.deleteIDs[0] != "cat-42" {
+		t.Errorf("deleteIDs = %v, want [cat-42]", catMock.deleteIDs)
+	}
+}
+
+func TestRemoveCategory_Error(t *testing.T) {
+	catMock := &mockAPI{deleteErr: errors.New("not found")}
+	e := newWithAPIAndCategories(&mockAPI{}, "products", catMock, "categories")
+
+	err := e.RemoveCategory(context.Background(), "cat-1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want 'not found'", err.Error())
+	}
+}
+
+func TestSearch(t *testing.T) {
+	hit, _ := json.Marshal(document{ID: "p-1", Name: "Sneakers", Slug: "sneakers", Description: "White sneakers"})
+	mock := &mockAPI{
+		searchResp: searchResponse{
+			Hits:               []json.RawMessage{hit},
+			EstimatedTotalHits: 42,
+			FacetDistribution: map[string]map[string]int{
+				"category_ids": {"cat-1": 10, "cat-2": 5},
+			},
+		},
+	}
+	e := newWithAPI(mock, "products")
+
+	result, err := e.Search(context.Background(), search.SearchQuery{Text: "sneak", Limit: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify request forwarding.
+	if mock.searchReq.Q != "sneak" {
+		t.Errorf("searchReq.Q = %q, want sneak", mock.searchReq.Q)
+	}
+	if mock.searchReq.Limit != 10 {
+		t.Errorf("searchReq.Limit = %d, want 10", mock.searchReq.Limit)
+	}
+
+	// Verify result mapping.
+	if result.Total != 42 {
+		t.Errorf("Total = %d, want 42", result.Total)
+	}
+	if len(result.Products) != 1 || result.Products[0].ID != "p-1" {
+		t.Errorf("Products = %+v, want 1 product with id=p-1", result.Products)
+	}
+	if len(result.Facets["category_ids"]) != 2 {
+		t.Errorf("Facets[category_ids] = %+v, want 2 values", result.Facets["category_ids"])
+	}
+}
+
+func TestSearch_Error(t *testing.T) {
+	mock := &mockAPI{searchErr: errors.New("timeout")}
+	e := newWithAPI(mock, "products")
+
+	_, err := e.Search(context.Background(), search.SearchQuery{Text: "test"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error = %q, want 'timeout'", err.Error())
+	}
+}
+
+func TestSearch_InvalidQuery(t *testing.T) {
+	mock := &mockAPI{}
+	e := newWithAPI(mock, "products")
+
+	_, err := e.Search(context.Background(), search.SearchQuery{Offset: -1})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestBuildSearchRequest_Filters(t *testing.T) {
+	q := search.SearchQuery{
+		Text: "shoes",
+		Filters: map[string]interface{}{
+			"category":                   "cat-1",
+			"price_min":                  2000,
+			"price_max":                  5000,
+			search.FilterVisibleInSearch: true,
+			search.FilterType:            "simple",
+		},
+		Sort:  "-price",
+		Limit: 20,
+	}
+
+	req := buildSearchRequest(q)
+
+	if req.Q != "shoes" {
+		t.Errorf("Q = %q, want shoes", req.Q)
+	}
+	if !strings.Contains(req.Filter, "category_ids = ") {
+		t.Errorf("Filter = %q, want category filter", req.Filter)
+	}
+	if !strings.Contains(req.Filter, "price >= 2000") {
+		t.Errorf("Filter = %q, want price_min filter", req.Filter)
+	}
+	if !strings.Contains(req.Filter, "price <= 5000") {
+		t.Errorf("Filter = %q, want price_max filter", req.Filter)
+	}
+	if !strings.Contains(req.Filter, `status = "active" OR status NOT EXISTS`) {
+		t.Errorf("Filter = %q, want fail-open status=active", req.Filter)
+	}
+	if !strings.Contains(req.Filter, "visible_in_search = true OR visible_in_search NOT EXISTS") {
+		t.Errorf("Filter = %q, want fail-open visible_in_search", req.Filter)
+	}
+	if !strings.Contains(req.Filter, `type = "simple"`) {
+		t.Errorf("Filter = %q, want type filter", req.Filter)
+	}
+	if len(req.Sort) != 1 || req.Sort[0] != "price:desc" {
+		t.Errorf("Sort = %v, want [price:desc]", req.Sort)
+	}
+}
+
+func TestBuildSearchRequest_SortAsc(t *testing.T) {
+	req := buildSearchRequest(search.SearchQuery{Sort: "name", Limit: 10})
+	if len(req.Sort) != 1 || req.Sort[0] != "name:asc" {
+		t.Errorf("Sort = %v, want [name:asc]", req.Sort)
+	}
+}
+
+func TestBuildSearchRequest_NoSort(t *testing.T) {
+	req := buildSearchRequest(search.SearchQuery{Limit: 10})
+	if len(req.Sort) != 0 {
+		t.Errorf("Sort = %v, want empty", req.Sort)
+	}
+}
+
+func TestMapSearchResponse_Empty(t *testing.T) {
+	resp := searchResponse{
+		Hits:               nil,
+		EstimatedTotalHits: 0,
+	}
+	result := mapSearchResponse(resp)
+	if len(result.Products) != 0 {
+		t.Errorf("Products = %+v, want empty", result.Products)
+	}
+	if result.Total != 0 {
+		t.Errorf("Total = %d, want 0", result.Total)
+	}
+}
+
+func TestBuildSearchRequest_AttributeFilter(t *testing.T) {
+	q := search.SearchQuery{
+		Text: "shoes",
+		Filters: map[string]interface{}{
+			"attr_color": "red",
+		},
+		FacetAttributes: []string{"color", "brand"},
+		Limit:           20,
+	}
+
+	req := buildSearchRequest(q)
+
+	if !strings.Contains(req.Filter, `attr_color = "red"`) {
+		t.Errorf("Filter = %q, want attr_color filter", req.Filter)
+	}
+	if len(req.Facets) != 3 {
+		t.Fatalf("Facets = %v, want [category_ids attr_color attr_brand]", req.Facets)
+	}
+	if req.Facets[1] != "attr_color" || req.Facets[2] != "attr_brand" {
+		t.Errorf("Facets = %v, want attr_color and attr_brand", req.Facets)
+	}
+}
+
+func TestMapSearchResponse_AttributeFacetKeys(t *testing.T) {
+	resp := searchResponse{
+		FacetDistribution: map[string]map[string]int{
+			"attr_color": {"red": 2},
+		},
+	}
+	result := mapSearchResponse(resp)
+	if len(result.Facets["color"]) != 1 || result.Facets["color"][0].Value != "red" {
+		t.Fatalf("Facets[color] = %+v, want red facet", result.Facets["color"])
+	}
+}
+
+func TestConfigureAttributeFacets(t *testing.T) {
+	mock := &mockAPI{}
+	e := newWithAPI(mock, "products")
+
+	if err := e.ConfigureAttributeFacets(context.Background(), []string{"color", "brand"}); err != nil {
+		t.Fatalf("ConfigureAttributeFacets: %v", err)
+	}
+	want := []string{
+		"category_ids", "price", "in_stock",
+		"type", "status",
+		"visible_in_catalog", "visible_in_search", "visible_individually", "purchasable",
+		"attr_color", "attr_brand",
+	}
+	if len(mock.settingsReq.FilterableAttributes) != len(want) {
+		t.Fatalf("FilterableAttributes = %v, want %v", mock.settingsReq.FilterableAttributes, want)
+	}
+	for i, field := range want {
+		if mock.settingsReq.FilterableAttributes[i] != field {
+			t.Fatalf("FilterableAttributes[%d] = %q, want %q", i, mock.settingsReq.FilterableAttributes[i], field)
+		}
+	}
+}
+
+func TestProductToDocMap_FlattensAttributes(t *testing.T) {
+	p := search.Product{
+		ID:         "p-99",
+		Attributes: map[string]interface{}{"color": "red", "brand": "acme"},
+	}
+	doc := productToDocMap(p)
+	if doc["attr_color"] != "red" {
+		t.Fatalf("attr_color = %v, want red", doc["attr_color"])
+	}
+	if doc["attr_brand"] != "acme" {
+		t.Fatalf("attr_brand = %v, want acme", doc["attr_brand"])
+	}
+}
+
+func TestProductToDoc(t *testing.T) {
+	p := search.Product{
+		ID:                  "p-99",
+		Name:                "Hat",
+		Slug:                "hat",
+		Description:         "A nice hat",
+		Type:                "simple",
+		CategoryIDs:         []string{"cat-5"},
+		Price:               1999,
+		InStock:             true,
+		Attributes:          map[string]interface{}{"color": "red"},
+		VisibleInCatalog:    true,
+		VisibleInSearch:     true,
+		VisibleIndividually: false,
+		Purchasable:         true,
+	}
+	doc := productToDocMap(p)
+	if doc["id"] != "p-99" || doc["name"] != "Hat" || doc["slug"] != "hat" {
+		t.Errorf("doc = %+v", doc)
+	}
+	if doc["type"] != "simple" {
+		t.Errorf("type = %v, want simple", doc["type"])
+	}
+	if v, ok := doc["category_ids"].([]string); !ok || len(v) != 1 || v[0] != "cat-5" {
+		t.Errorf("CategoryIDs = %v, want [cat-5]", doc["category_ids"])
+	}
+	if doc["price"] != int64(1999) {
+		t.Errorf("Price = %v, want 1999", doc["price"])
+	}
+	if doc["in_stock"] != true {
+		t.Error("InStock = false, want true")
+	}
+	if doc["attr_color"] != "red" {
+		t.Errorf("attr_color = %v, want red", doc["attr_color"])
+	}
+	if doc["visible_in_catalog"] != true || doc["visible_in_search"] != true {
+		t.Errorf("visibility catalog/search = %v/%v", doc["visible_in_catalog"], doc["visible_in_search"])
+	}
+	if doc["visible_individually"] != false || doc["purchasable"] != true {
+		t.Errorf("visibility individually/purchasable = %v/%v", doc["visible_individually"], doc["purchasable"])
+	}
+}
+
+func TestWaitForTask_Failed(t *testing.T) {
+	mock := &mockAPI{taskStatus: "failed"}
+	e := newWithAPI(mock, "products")
+	err := e.waitForTask(context.Background(), 42)
+	if err == nil {
+		t.Fatal("expected error for failed task")
+	}
+	if !strings.Contains(err.Error(), "failed") {
+		t.Errorf("error = %q, want 'failed'", err.Error())
+	}
+}
+
+func TestWaitForTask_Succeeded(t *testing.T) {
+	mock := &mockAPI{taskStatus: "succeeded"}
+	e := newWithAPI(mock, "products")
+	if err := e.waitForTask(context.Background(), 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDefaultSettings(t *testing.T) {
+	s := defaultSettings()
+	if len(s.SearchableAttributes) == 0 {
+		t.Error("SearchableAttributes is empty")
+	}
+	if len(s.FilterableAttributes) == 0 {
+		t.Error("FilterableAttributes is empty")
+	}
+	for _, want := range []string{
+		"type", "status", "visible_in_catalog", "visible_in_search", "visible_individually", "purchasable",
+	} {
+		found := false
+		for _, got := range s.FilterableAttributes {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("FilterableAttributes missing %q: %v", want, s.FilterableAttributes)
+		}
+	}
+	if len(s.SortableAttributes) == 0 {
+		t.Error("SortableAttributes is empty")
+	}
+	if len(s.DisplayedAttributes) != 1 || s.DisplayedAttributes[0] != "*" {
+		t.Errorf("DisplayedAttributes = %v, want [*]", s.DisplayedAttributes)
+	}
+}
+
+func TestSuggest(t *testing.T) {
+	hit, _ := json.Marshal(document{ID: "p-1", Name: "Sneakers", Slug: "sneakers"})
+	mock := &mockAPI{
+		searchResp: searchResponse{
+			Hits:               []json.RawMessage{hit},
+			EstimatedTotalHits: 1,
+		},
+	}
+	e := newWithAPI(mock, "products")
+
+	suggestions, err := e.Suggest(context.Background(), search.SuggestQuery{Prefix: "sne", Limit: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(suggestions) != 1 {
+		t.Fatalf("got %d suggestions, want 1", len(suggestions))
+	}
+	if suggestions[0].Text != "Sneakers" {
+		t.Errorf("Text = %q, want Sneakers", suggestions[0].Text)
+	}
+	if suggestions[0].Type != "product" {
+		t.Errorf("Type = %q, want product", suggestions[0].Type)
+	}
+	if suggestions[0].URL != "/products/sneakers" {
+		t.Errorf("URL = %q, want /products/sneakers", suggestions[0].URL)
+	}
+	if suggestions[0].ProductID != "p-1" {
+		t.Errorf("ProductID = %q, want p-1", suggestions[0].ProductID)
+	}
+	// Unfiltered Suggest still ANDs fail-open status=active (defense in depth);
+	// no visible_in_search unless the caller passes Filters (PR-1079 review).
+	if mock.searchReq.Limit != 5 {
+		t.Errorf("searchReq.Limit = %d, want 5", mock.searchReq.Limit)
+	}
+	wantFilter := `(status = "active" OR status NOT EXISTS)`
+	if mock.searchReq.Filter != wantFilter {
+		t.Errorf("searchReq.Filter = %q, want %q", mock.searchReq.Filter, wantFilter)
+	}
+}
+
+func TestSuggest_EmptyPrefix(t *testing.T) {
+	mock := &mockAPI{}
+	e := newWithAPI(mock, "products")
+
+	suggestions, err := e.Suggest(context.Background(), search.SuggestQuery{Prefix: "", Limit: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if suggestions != nil {
+		t.Errorf("expected nil for empty prefix, got %v", suggestions)
+	}
+}
+
+func TestSuggest_GracefulDegradation(t *testing.T) {
+	mock := &mockAPI{searchErr: errors.New("connection refused")}
+	e := newWithAPI(mock, "products")
+
+	suggestions, err := e.Suggest(context.Background(), search.SuggestQuery{Prefix: "sne", Limit: 5})
+	if err != nil {
+		t.Fatalf("expected nil error on degradation, got %v", err)
+	}
+	if suggestions != nil {
+		t.Errorf("expected nil suggestions on degradation, got %v", suggestions)
+	}
+}
+
+func TestSuggest_WithCategoryFilter(t *testing.T) {
+	mock := &mockAPI{searchResp: searchResponse{}}
+	e := newWithAPI(mock, "products")
+	_, err := e.Suggest(context.Background(), search.SuggestQuery{
+		Prefix:  "sne",
+		Limit:   5,
+		Filters: map[string]interface{}{"category": "cat-1"},
+	})
+	if err != nil {
+		t.Fatalf("Suggest: %v", err)
+	}
+	if !strings.Contains(mock.searchReq.Filter, `category_ids = "cat-1"`) {
+		t.Errorf("Filter = %q, want category_ids = \"cat-1\"", mock.searchReq.Filter)
+	}
+	if !strings.Contains(mock.searchReq.Filter, `status = "active" OR status NOT EXISTS`) {
+		t.Errorf("Filter = %q, want fail-open status=active", mock.searchReq.Filter)
+	}
+}
+
+func TestSuggest_WithVisibilityFilter(t *testing.T) {
+	mock := &mockAPI{searchResp: searchResponse{}}
+	e := newWithAPI(mock, "products")
+	_, err := e.Suggest(context.Background(), search.SuggestQuery{
+		Prefix:  "sne",
+		Limit:   5,
+		Filters: map[string]interface{}{search.FilterVisibleInSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("Suggest: %v", err)
+	}
+	if !strings.Contains(mock.searchReq.Filter, `status = "active" OR status NOT EXISTS`) {
+		t.Errorf("Filter = %q, want fail-open status=active", mock.searchReq.Filter)
+	}
+	if !strings.Contains(mock.searchReq.Filter, "visible_in_search = true OR visible_in_search NOT EXISTS") {
+		t.Errorf("Filter = %q, want fail-open visible_in_search", mock.searchReq.Filter)
+	}
+}
+
+func TestProductToDocMap_StatusOmitsEmpty(t *testing.T) {
+	doc := productToDocMap(search.Product{ID: "p1", Name: "X"})
+	if _, ok := doc["status"]; ok {
+		t.Fatalf("status = %v, want omitted when empty", doc["status"])
+	}
+	doc = productToDocMap(search.Product{ID: "p2", Status: "draft"})
+	if doc["status"] != "draft" {
+		t.Fatalf("status = %v, want draft", doc["status"])
+	}
+	doc = productToDocMap(search.Product{ID: "p3", Status: search.StatusActive})
+	if doc["status"] != search.StatusActive {
+		t.Fatalf("status = %v, want active", doc["status"])
+	}
+}
+
+func TestBuildSearchRequest_MissingVisibilityAttrsFailOpen(t *testing.T) {
+	req := buildSearchRequest(search.SearchQuery{
+		Filters: map[string]interface{}{search.FilterVisibleInSearch: true},
+		Limit:   10,
+	})
+	if !strings.Contains(req.Filter, "NOT EXISTS") {
+		t.Fatalf("Filter = %q, want NOT EXISTS fail-open for unreindexed Meili docs", req.Filter)
+	}
+	if !strings.Contains(req.Filter, `status = "active" OR status NOT EXISTS`) {
+		t.Fatalf("Filter = %q, want fail-open status predicate", req.Filter)
+	}
+}

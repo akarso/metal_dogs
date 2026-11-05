@@ -1,0 +1,236 @@
+package catalog
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+// Status represents the lifecycle state of a product.
+type Status string
+
+const (
+	StatusDraft    Status = "draft"
+	StatusActive   Status = "active"
+	StatusArchived Status = "archived"
+)
+
+// IsValid returns true if s is a recognised product status.
+func (s Status) IsValid() bool {
+	switch s {
+	case StatusDraft, StatusActive, StatusArchived:
+		return true
+	}
+	return false
+}
+
+// InvalidStatusMessage is the canonical validation text for an unknown status.
+func InvalidStatusMessage(s Status) string {
+	return fmt.Sprintf("invalid product status %q", s)
+}
+
+// Type is the product taxonomy (simple, virtual, bundle, …).
+// It is a typed string for package separation, not compile-time enum
+// exhaustiveness — callers must reject unknown values via IsValid /
+// Product.Validate (application and persistence layers), matching Status.
+// Shipping requirement is derived via RequiresPhysicalShipping (PR-1050);
+// other type-specific behavior (composition, downloadable fulfillment, …)
+// lands in later Phase 12 PRs.
+type Type string
+
+const (
+	TypeSimple       Type = "simple"
+	TypeVirtual      Type = "virtual"
+	TypeBundle       Type = "bundle"
+	TypeGrouped      Type = "grouped"
+	TypeConfigurable Type = "configurable"
+	TypeDownloadable Type = "downloadable"
+)
+
+// AllTypes returns every recognised product type in stable order.
+// Keep migrations/083_add_products_type.sql CHECK in sync (see product_type_test).
+func AllTypes() []Type {
+	return []Type{
+		TypeSimple,
+		TypeVirtual,
+		TypeBundle,
+		TypeGrouped,
+		TypeConfigurable,
+		TypeDownloadable,
+	}
+}
+
+// IsValid returns true if t is a recognised product type.
+func (t Type) IsValid() bool {
+	for _, allowed := range AllTypes() {
+		if t == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// InvalidTypeMessage is the canonical validation text for an unknown type.
+// Used by Product.Validate, admin handlers, and ProductRepo.List so messages stay in sync.
+func InvalidTypeMessage(t Type) string {
+	return fmt.Sprintf("invalid product type %q", t)
+}
+
+// RequiresPhysicalShipping reports whether a product of this type needs a
+// shipping method at checkout. virtual and downloadable never do; every
+// other value (including unknown/empty) does — composites stay true until
+// Track C adds child rollup. Unknown/empty defaults to true as a fail-safe.
+func (t Type) RequiresPhysicalShipping() bool {
+	switch t {
+	case TypeVirtual, TypeDownloadable:
+		return false
+	default:
+		return true
+	}
+}
+
+// AnyRequiresPhysicalShipping is true when at least one type in types needs
+// a shipping method. An empty slice returns true (fail closed — nothing was
+// resolved yet; callers must not treat "no types" as digital-only).
+func AnyRequiresPhysicalShipping(types []Type) bool {
+	if len(types) == 0 {
+		return true
+	}
+	for _, t := range types {
+		if t.RequiresPhysicalShipping() {
+			return true
+		}
+	}
+	return false
+}
+
+// Product represents a logical product in the catalog.
+type Product struct {
+	ID          string
+	Name        string
+	Slug        string
+	Description string
+	Status      Status
+	Type        Type
+	// PricingMode is fixed for every non-bundle. A bundle may be dynamic:
+	// the unit price is the sum of required components at resolution time
+	// and is not written to prices. An explicit dynamic token on any other
+	// type is rejected. Grouped parents are not purchasable; price writes
+	// on a grouped parent or a dynamic bundle are rejected (PR-1062).
+	PricingMode PricingMode
+	// StockMode is fixed for every non-bundle. A bundle may be dynamic:
+	// available quantity is the minimum of floor(component stock / required
+	// quantity) across required components and is not written to stock.
+	// Virtual and downloadable required leaves do not gate that minimum.
+	// An explicit dynamic token on any other type is rejected. Grouped
+	// parents have no parent stock (PR-1063).
+	StockMode StockMode
+	// ExplodeOrderLines is false for every non-bundle. A bundle may set it
+	// only when both PricingMode and StockMode are dynamic: checkout then
+	// writes one order line per required leaf instead of the parent variant.
+	// An omitted flag is coerced to false when the product is no longer allowed
+	// to explode: a type change off bundle, or a mode change off dynamic
+	// pricing or dynamic stock (PR-1064).
+	ExplodeOrderLines bool
+	// RequiresLinkedParent, when true, forces the purchasable axis false
+	// until the request assignment context is non-empty (PR-1068). It is
+	// not derived from linked-eligibility rules (HasRules / IsEligible) and
+	// is valid on every product type. Display axes are unchanged. The zero
+	// value is false.
+	RequiresLinkedParent bool
+	// VisibilityModes are per-axis overrides (PR-1055). Effective flags come
+	// from Visibility(inputs, opts); enforcement is PR-1056/1057.
+	VisibilityModes VisibilityAxes
+	Attributes      map[string]interface{}
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// NewProduct creates a Product with the required fields.
+// ID must be generated by the caller (e.g. id.New()).
+// Type defaults to TypeSimple; PricingMode and StockMode default to fixed;
+// ExplodeOrderLines and RequiresLinkedParent default to false; VisibilityModes
+// default to all auto. Hand-built Product{} literals must set Type,
+// PricingMode, StockMode, and VisibilityModes (or call Validate) before
+// persist — INSERT binds them explicitly and does not rely on DB DEFAULTs.
+// Prefer DefaultVisibilityAxes() for modes. ExplodeOrderLines and
+// RequiresLinkedParent zero values are the default false.
+func NewProduct(id, name, slug string) (Product, error) {
+	if id == "" {
+		return Product{}, errors.New("product id must not be empty")
+	}
+	if name == "" {
+		return Product{}, errors.New("product name must not be empty")
+	}
+	if slug == "" {
+		return Product{}, errors.New("product slug must not be empty")
+	}
+	now := time.Now().UTC()
+	return Product{
+		ID:                   id,
+		Name:                 name,
+		Slug:                 slug,
+		Status:               StatusDraft,
+		Type:                 TypeSimple,
+		PricingMode:          PricingModeFixed,
+		StockMode:            StockModeFixed,
+		ExplodeOrderLines:    false,
+		RequiresLinkedParent: false,
+		VisibilityModes:      DefaultVisibilityAxes(),
+		Attributes:           make(map[string]interface{}),
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}, nil
+}
+
+// Visibility resolves the four visibility axes for this product.
+// Status always comes from p.Status (callers cannot override lifecycle via inputs).
+// RequiresLinkedParent is copied from the product onto inputs before resolve
+// so a caller-supplied input flag cannot disagree with the product.
+func (p Product) Visibility(in VisibilityInputs, opts VisibilityOptions) Visibility {
+	in.RequiresLinkedParent = p.RequiresLinkedParent
+	return p.VisibilityModes.Resolve(p.Status, in, opts)
+}
+
+// RequiresPhysicalShipping reports whether this product needs a shipping
+// method at checkout. See Type.RequiresPhysicalShipping.
+func (p Product) RequiresPhysicalShipping() bool {
+	return p.Type.RequiresPhysicalShipping()
+}
+
+// Validate checks fields that must be valid before persist.
+// Currently nil, Type, PricingMode, StockMode, ExplodeOrderLines, and
+// VisibilityModes. It does not check Status/Name/Slug: NewProduct defaults
+// Status to draft; admin request validation and product-CSV import consensus
+// reject unknown status tokens before create. dynamic is allowed only when
+// Type is bundle. ExplodeOrderLines may be true only for a bundle with both
+// modes dynamic. Adapter-agnostic: call from handlers and every
+// ProductRepository. Admin create/update set Type, PricingMode, StockMode,
+// and ExplodeOrderLines from the request before Validate.
+func (p *Product) Validate() error {
+	if p == nil {
+		return errors.New("product must not be nil")
+	}
+	if !p.Type.IsValid() {
+		return errors.New(InvalidTypeMessage(p.Type))
+	}
+	if !p.PricingMode.IsValid() {
+		return errors.New(InvalidPricingModeMessage(p.PricingMode))
+	}
+	if p.PricingMode == PricingModeDynamic && p.Type != TypeBundle {
+		return errors.New(DynamicPricingModeBundleOnlyMessage)
+	}
+	if !p.StockMode.IsValid() {
+		return errors.New(InvalidStockModeMessage(p.StockMode))
+	}
+	if p.StockMode == StockModeDynamic && p.Type != TypeBundle {
+		return errors.New(DynamicStockModeBundleOnlyMessage)
+	}
+	if p.ExplodeOrderLines && !p.explodeOrderLinesAllowed() {
+		return errors.New(ExplodeOrderLinesRequiresDynamicMessage)
+	}
+	if err := p.VisibilityModes.Validate(); err != nil {
+		return err
+	}
+	return nil
+}

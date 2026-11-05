@@ -1,0 +1,193 @@
+package storefront
+
+import (
+	"context"
+	"net/http"
+
+	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
+
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/internal/platform/id"
+)
+
+// CategoryHandler serves category read endpoints.
+type CategoryHandler struct {
+	categories      catalog.CategoryRepository
+	products        catalog.ProductRepository
+	visibilityFacts catalog.VisibilityFactsSource
+	visibilityOpts  catalog.VisibilityOptions
+}
+
+// NewCategoryHandler creates a CategoryHandler with the given dependencies.
+func NewCategoryHandler(
+	categories catalog.CategoryRepository,
+	products catalog.ProductRepository,
+) *CategoryHandler {
+	if categories == nil {
+		panic("CategoryHandler: categories repository must not be nil")
+	}
+	if products == nil {
+		panic("CategoryHandler: products repository must not be nil")
+	}
+	return &CategoryHandler{categories: categories, products: products}
+}
+
+// WithVisibilityFacts enables four-axis visibility gating (PR-1057).
+func (h *CategoryHandler) WithVisibilityFacts(facts catalog.VisibilityFactsSource) *CategoryHandler {
+	h.visibilityFacts = facts
+	return h
+}
+
+// categoryNode is the JSON shape for a category in the tree response.
+type categoryNode struct {
+	ID       string                 `json:"id"`
+	ParentID *string                `json:"parent_id,omitempty"`
+	Name     string                 `json:"name"`
+	Slug     string                 `json:"slug"`
+	Position int                    `json:"position"`
+	Meta     map[string]interface{} `json:"meta"`
+	Children []*categoryNode        `json:"children"`
+}
+
+// Tree handles GET /api/v1/categories.
+func (h *CategoryHandler) Tree() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		all, err := h.categories.FindAll(r.Context())
+		if err != nil {
+			httpshared.JSONError(w, err)
+			return
+		}
+
+		httpshared.JSON(w, http.StatusOK, map[string]interface{}{
+			"categories": buildTree(all),
+		})
+	}
+}
+
+// Get handles GET /api/v1/categories/{id}.
+func (h *CategoryHandler) Get() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			httpshared.JSONError(w, apperror.Validation("category id is required"))
+			return
+		}
+
+		cat, err := findCategoryByIDOrSlug(r.Context(), h.categories, id)
+		if err != nil {
+			httpshared.JSONError(w, err)
+			return
+		}
+		if cat == nil {
+			httpshared.JSONError(w, apperror.NotFound("category not found"))
+			return
+		}
+
+		writeCatalogJSON(w, http.StatusOK, map[string]interface{}{
+			"category": categoryJSON(cat, wantSnakeFieldNames(r)),
+		})
+	}
+}
+
+// Products handles GET /api/v1/categories/{id}/products.
+func (h *CategoryHandler) Products() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			httpshared.JSONError(w, apperror.Validation("category id is required"))
+			return
+		}
+
+		// Verify category exists.
+		cat, err := findCategoryByIDOrSlug(r.Context(), h.categories, id)
+		if err != nil {
+			httpshared.JSONError(w, err)
+			return
+		}
+		if cat == nil {
+			httpshared.JSONError(w, apperror.NotFound("category not found"))
+			return
+		}
+
+		offset, limit, afterOff, afterSkip, afterSet, err := parseListingPagination(r)
+		if err != nil {
+			httpshared.JSONError(w, err)
+			return
+		}
+
+		page, err := catalog.ListVisiblePage(
+			r.Context(),
+			func(ctx context.Context, dbOffset, dbLimit int) ([]catalog.Product, error) {
+				return h.products.FindByCategoryID(ctx, cat.ID, dbOffset, dbLimit)
+			},
+			catalog.VisibilitySurfaceCatalog,
+			h.visibilityFacts,
+			h.visibilityOpts,
+			catalog.ListVisiblePageParams{
+				AfterSet:    afterSet,
+				AfterOffset: afterOff,
+				AfterSkip:   afterSkip,
+				VisibleSkip: offset,
+				Limit:       limit,
+			},
+		)
+		if err != nil {
+			httpshared.JSONError(w, err)
+			return
+		}
+
+		writeCatalogJSON(w, http.StatusOK, map[string]interface{}{
+			"products": productsValuePublicJSON(page.Products, wantSnakeFieldNames(r)),
+			"meta":     visibilityListMeta(page),
+		})
+	}
+}
+
+func findCategoryByIDOrSlug(ctx context.Context, repo catalog.CategoryRepository, key string) (*catalog.Category, error) {
+	if id.IsUUID(key) {
+		c, err := repo.FindByID(ctx, key)
+		if err != nil || c != nil {
+			return c, err
+		}
+	}
+	return repo.FindBySlug(ctx, key)
+}
+
+// buildTree assembles a flat slice of categories into a nested tree.
+func buildTree(all []catalog.Category) []*categoryNode {
+	nodes := make(map[string]*categoryNode, len(all))
+	var roots []string
+
+	// First pass: create nodes.
+	for _, c := range all {
+		nodes[c.ID] = &categoryNode{
+			ID:       c.ID,
+			ParentID: c.ParentID,
+			Name:     c.Name,
+			Slug:     c.Slug,
+			Position: c.Position,
+			Meta:     c.Meta,
+			Children: []*categoryNode{},
+		}
+		if c.ParentID == nil {
+			roots = append(roots, c.ID)
+		}
+	}
+
+	// Second pass: attach children to parents.
+	for _, c := range all {
+		if c.ParentID != nil {
+			if parent, ok := nodes[*c.ParentID]; ok {
+				parent.Children = append(parent.Children, nodes[c.ID])
+			}
+		}
+	}
+
+	// Collect root nodes.
+	tree := make([]*categoryNode, 0, len(roots))
+	for _, id := range roots {
+		tree = append(tree, nodes[id])
+	}
+	return tree
+}

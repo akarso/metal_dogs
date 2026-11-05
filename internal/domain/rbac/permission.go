@@ -1,0 +1,85 @@
+package rbac
+
+// Permission represents a named action that can be guarded.
+type Permission string
+
+// Permissions used by the core system. Plugins may define additional
+// permissions and register them at startup (see PR-103).
+const (
+	ProductsRead  Permission = "products.read"
+	ProductsWrite Permission = "products.write"
+
+	// AssignmentsRead/AssignmentsWrite gate the operator assignment API
+	// (PR-1071). Separate from products.* so Support can correct a binding
+	// without catalog write, and Editor (catalog write) cannot.
+	AssignmentsRead  Permission = "assignments.read"
+	AssignmentsWrite Permission = "assignments.write"
+
+	// DownloadsRead/DownloadsWrite gate admin DownloadGrant list/revoke/
+	// re-issue (PR-1078). Separate from products.* so Support can restore
+	// a customer's download without catalog write, and Editor cannot.
+	// File attach/settings stay on products.write.
+	DownloadsRead  Permission = "downloads.read"
+	DownloadsWrite Permission = "downloads.write"
+
+	OrdersRead  Permission = "orders.read"
+	OrdersWrite Permission = "orders.write"
+
+	CategoriesRead  Permission = "categories.read"
+	CategoriesWrite Permission = "categories.write"
+
+	CustomersRead  Permission = "customers.read"
+	CustomersWrite Permission = "customers.write"
+
+	// StoreCreditWrite gates issuing store credit — kept distinct from
+	// CustomersWrite so a role granted customer-profile editing for CRM
+	// purposes does not implicitly gain the ability to mint store credit.
+	StoreCreditWrite Permission = "customers.store_credit.write"
+
+	InvoicesRead Permission = "invoices.read"
+
+	MediaRead  Permission = "media.read"
+	MediaWrite Permission = "media.write"
+
+	ContentRead  Permission = "content.read"
+	ContentWrite Permission = "content.write"
+
+	SettingsRead  Permission = "settings.read"
+	SettingsWrite Permission = "settings.write"
+
+	ShippingRead  Permission = "shipping.read"
+	ShippingWrite Permission = "shipping.write"
+
+	AuditRead Permission = "audit.read"
+
+	ExtensionsRead        Permission = "extensions.read"
+	ExtensionsWrite       Permission = "extensions.write"
+	ExtensionsPrivateRead Permission = "extensions.private.read"
+
+	// JobsRead/JobsWrite gate background-job introspection and admin
+	// corrections (list/detail vs. retry/cancel) — operational visibility
+	// into the job queue, not a merchant-facing resource, so these are
+	// admin-only (see rolePermissions) the same way AuditRead is.
+	JobsRead  Permission = "jobs.read"
+	JobsWrite Permission = "jobs.write"
+
+	// SearchReindex gates triggering a reindex and reading its progress
+	// (PR-1035). Deliberately not JobsWrite: reindexing is a
+	// catalog-adjacent operation an operator might grant separately from
+	// general job control (retry/cancel of arbitrary job types).
+	SearchReindex Permission = "search.reindex"
+
+	// CacheRead/CacheWrite/CacheClearAll gate cache admin (PR-1042).
+	// Stats is CacheRead; targeted clear (prefix/tag/key) is CacheWrite;
+	// FlushAll is CacheClearAll — a full flush is a bigger blast radius
+	// (every cache consumer pays a cold-cache penalty at once) than a
+	// targeted clear, so it is a distinct permission. Admin-only, same
+	// as AuditRead / JobsRead.
+	// CachePurgeURL (PR-1046) is the full-page-cache escape hatch that
+	// deletes concrete vary keys for one storefront path — distinct from
+	// general cache.write so FPC ops can be granted without broad clears.
+	CacheRead     Permission = "cache.read"
+	CacheWrite    Permission = "cache.write"
+	CacheClearAll Permission = "cache.clear_all"
+	CachePurgeURL Permission = "cache.purge_url"
+)

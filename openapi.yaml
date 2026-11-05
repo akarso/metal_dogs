@@ -1,0 +1,4569 @@
+openapi: "3.0.3"
+info:
+  title: Shopanda API
+  description: >
+    RESTful API for the Shopanda e-commerce platform.
+    All JSON responses use a standard envelope: `{"data": ..., "error": ...}`.
+    Monetary amounts are integers in the smallest currency unit (e.g. cents).
+    Timestamps use RFC 3339 / UTC.
+  version: "1.0.0"
+  license:
+    name: MIT
+
+servers:
+  - url: /
+    description: Current host
+
+tags:
+  - name: Health
+    description: Liveness probe
+  - name: Auth
+    description: Registration, login, password reset
+  - name: Products
+    description: Public product catalog
+  - name: Variants
+    description: Product variants (public read, admin write)
+  - name: Categories
+    description: Category tree and products by category
+  - name: Search
+    description: Full-text product search
+  - name: Pages
+    description: Public CMS pages
+  - name: Cart
+    description: Shopping cart management
+  - name: Checkout
+    description: Cart-to-order workflow
+  - name: Orders
+    description: Customer order history
+  - name: Account
+    description: GDPR consent, data access, account deletion
+  - name: Shipping
+    description: Shipping rate quotes
+  - name: Payments
+    description: Payment provider webhooks
+  - name: "Admin: Products"
+    description: Product CRUD (admin)
+  - name: "Admin: Orders"
+    description: Order management (admin)
+  - name: "Admin: Media"
+    description: Media uploads (admin)
+  - name: "Admin: Pages"
+    description: CMS page management (admin)
+  - name: "Admin: Stores"
+    description: Store management (admin)
+  - name: "Admin: Schemas"
+    description: Form and grid schema registry (admin)
+  - name: SEO
+    description: Sitemap and robots.txt
+
+paths:
+  # ── Health ──────────────────────────────────────────────
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [Health]
+      summary: Liveness probe (process up; no DB check)
+      responses:
+        "200":
+          description: Process is up
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+    head:
+      operationId: healthCheckHead
+      tags: [Health]
+      summary: Liveness probe (HEAD; empty body)
+      responses:
+        "200":
+          description: Process is up
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+  /readyz:
+    get:
+      operationId: readinessCheck
+      tags: [Health]
+      summary: Readiness probe (bounded database ping)
+      description: |
+        Returns 200 when the database responds to Ping within ~2s.
+        Returns 503 when the DB is unreachable, times out, or is not configured.
+        Served outside store/auth middleware so a hung DB cannot block the probe.
+        Responses always include Cache-Control: no-store.
+        Per-IP rate limited (defaults match rate_limit.default) to protect the DB pool.
+        Body uses the standard API Envelope with HealthResponse in data.
+      responses:
+        "200":
+          description: Ready for traffic
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: ok
+                error: null
+        "429":
+          description: Ready-probe rate limit exceeded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        "503":
+          description: Not ready (DB down or ping timeout)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: unavailable
+                error: null
+    head:
+      operationId: readinessCheckHead
+      tags: [Health]
+      summary: Readiness probe (HEAD; empty body)
+      description: |
+        Same status codes as GET /readyz without a response body.
+        Cache-Control: no-store; per-IP rate limited.
+      responses:
+        "200":
+          description: Ready for traffic
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        "429":
+          description: Ready-probe rate limit exceeded
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        "503":
+          description: Not ready (DB down or ping timeout)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+
+  # ── Auth ────────────────────────────────────────────────
+  /api/v1/auth/register:
+    post:
+      operationId: register
+      tags: [Auth]
+      summary: Register a new customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  customer_id: "c1"
+                  token: "eyJ..."
+                  expires_at: "2026-04-15T00:00:00Z"
+                error: null
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      tags: [Auth]
+      summary: Log in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  customer_id: "c1"
+                  token: "eyJ..."
+                  expires_at: "2026-04-15T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [Auth]
+      summary: Log out
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  message: logged out
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/me:
+    get:
+      operationId: me
+      tags: [Auth]
+      summary: Current user profile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  id: "c1"
+                  email: "user@example.com"
+                  first_name: Jane
+                  last_name: Doe
+                  status: active
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/password-reset/request:
+    post:
+      operationId: requestPasswordReset
+      tags: [Auth]
+      summary: Request a password reset email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  message: "if the email exists, a reset link has been sent"
+                error: null
+
+  /api/v1/auth/password-reset/confirm:
+    post:
+      operationId: confirmPasswordReset
+      tags: [Auth]
+      summary: Confirm password reset with token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token:
+                  type: string
+                new_password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  message: "password has been reset"
+                error: null
+
+  # ── Products (public) ──────────────────────────────────
+  /api/v1/products:
+    get:
+      operationId: listProducts
+      tags: [Products]
+      summary: List products (paginated, via composition pipeline)
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/VisibilityAfter"
+        - $ref: "#/components/parameters/StorefrontFieldNames"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  products:
+                    - ID: "p1"
+                      Name: Widget
+                      Slug: widget
+                      Description: A fine widget
+                      Status: active
+                      Attributes: {}
+                      CreatedAt: "2026-01-01T00:00:00Z"
+                      UpdatedAt: "2026-01-01T00:00:00Z"
+                  blocks: []
+                  filters: {}
+                  meta:
+                    truncated: false
+                    has_more: true
+                    depth_limited: false
+                    next_after: "eyJvIjoxMH0"
+                error: null
+
+  /api/v1/products/{id}:
+    get:
+      operationId: getProduct
+      tags: [Products]
+      summary: Get product detail (PDP composition pipeline)
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - $ref: "#/components/parameters/StorefrontFieldNames"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  product:
+                    ID: "p1"
+                    Name: Widget
+                    Slug: widget
+                    Description: A fine widget
+                    Status: active
+                    Attributes: {}
+                    CreatedAt: "2026-01-01T00:00:00Z"
+                    UpdatedAt: "2026-01-01T00:00:00Z"
+                  blocks: []
+                  meta: {}
+                error: null
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Variants ───────────────────────────────────────────
+  /api/v1/products/{id}/variants:
+    get:
+      operationId: listVariants
+      tags: [Variants]
+      summary: List variants for a product
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - $ref: "#/components/parameters/Offset"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  variants:
+                    - id: "v1"
+                      product_id: "p1"
+                      sku: WDG-RED
+                      name: Red Widget
+                      attributes: {}
+                  offset: 0
+                  limit: 50
+                error: null
+
+  /api/v1/products/{id}/variants/{variantId}:
+    get:
+      operationId: getVariant
+      tags: [Variants]
+      summary: Get a single variant
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - $ref: "#/components/parameters/VariantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  variant:
+                    id: "v1"
+                    product_id: "p1"
+                    sku: WDG-RED
+                    name: Red Widget
+                    attributes: {}
+                error: null
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Categories ─────────────────────────────────────────
+  /api/v1/categories:
+    get:
+      operationId: categoryTree
+      tags: [Categories]
+      summary: Get the full category tree
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  categories:
+                    - id: "cat1"
+                      name: Electronics
+                      slug: electronics
+                      position: 1
+                      meta: {}
+                      children: []
+                error: null
+
+  /api/v1/categories/{id}:
+    get:
+      operationId: getCategory
+      tags: [Categories]
+      summary: Get a single category
+      parameters:
+        - $ref: "#/components/parameters/CategoryId"
+        - $ref: "#/components/parameters/StorefrontFieldNames"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  category:
+                    ID: "cat1"
+                    Name: Electronics
+                    Slug: electronics
+                    Position: 1
+                    Meta: {}
+                    CreatedAt: "2026-01-01T00:00:00Z"
+                    UpdatedAt: "2026-01-01T00:00:00Z"
+                error: null
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/categories/{id}/products:
+    get:
+      operationId: categoryProducts
+      tags: [Categories]
+      summary: List products in a category
+      parameters:
+        - $ref: "#/components/parameters/CategoryId"
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/VisibilityAfter"
+        - $ref: "#/components/parameters/StorefrontFieldNames"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  products:
+                    - id: "p1"
+                      name: Widget
+                      slug: widget
+                  meta:
+                    truncated: false
+                    has_more: false
+                    depth_limited: false
+                error: null
+
+  # ── Search ─────────────────────────────────────────────
+  /api/v1/search:
+    get:
+      operationId: searchProducts
+      tags: [Search]
+      summary: Full-text product search
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: sort
+          in: query
+          schema:
+            type: string
+        - name: category
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  products:
+                    - id: "p1"
+                      name: Widget
+                      slug: widget
+                      description: A fine widget
+                      attributes: {}
+                  total: 1
+                  facets: {}
+                error: null
+
+  # ── Pages (public) ─────────────────────────────────────
+  /api/v1/pages/{slug}:
+    get:
+      operationId: getPage
+      tags: [Pages]
+      summary: Get a CMS page by slug
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  page:
+                    id: "pg1"
+                    slug: about
+                    title: About Us
+                    content: "<p>Welcome</p>"
+                error: null
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Cart ───────────────────────────────────────────────
+  /api/v1/carts:
+    post:
+      operationId: createCart
+      tags: [Cart]
+      summary: Create a new cart
+      description: Guest clients may create carts without authentication. Authenticated customers bind the cart to their account.
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currency]
+              properties:
+                currency:
+                  type: string
+                  description: ISO 4217 currency code
+                  example: USD
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/carts/{cartId}:
+    get:
+      operationId: getCart
+      tags: [Cart]
+      summary: Get a cart
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/carts/{cartId}/items:
+    post:
+      operationId: addCartItem
+      tags: [Cart]
+      summary: Add an item to the cart
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [variant_id, quantity]
+              properties:
+                variant_id:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                assignment_parent_product_id:
+                  type: string
+                  description: Catalog parent product selected at cart time (PR-1070)
+                assignment_parent_unit_id:
+                  type: string
+                  description: Owned parent instance unit id (orderID/variantID)
+                assignment_deferred:
+                  type: boolean
+                  description: Purchase now, assign the instance after purchase
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/carts/{cartId}/items/{variantId}:
+    put:
+      operationId: updateCartItem
+      tags: [Cart]
+      summary: Update item quantity
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+        - $ref: "#/components/parameters/VariantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    delete:
+      operationId: removeCartItem
+      tags: [Cart]
+      summary: Remove an item from the cart
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+        - $ref: "#/components/parameters/VariantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/carts/{cartId}/coupon:
+    post:
+      operationId: applyCoupon
+      tags: [Cart]
+      summary: Apply a coupon code
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+    delete:
+      operationId: removeCoupon
+      tags: [Cart]
+      summary: Remove the applied coupon
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ── Checkout ───────────────────────────────────────────
+  /api/v1/checkout:
+    post:
+      operationId: startCheckout
+      tags: [Checkout]
+      summary: Run checkout workflow (cart to order)
+      description: Guest checkout is supported without authentication when the cart has no customer and contact_email is provided.
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cart_id, address]
+              properties:
+                cart_id:
+                  type: string
+                contact_email:
+                  type: string
+                  format: email
+                  description: Required for guest checkout when the caller is unauthenticated.
+                address:
+                  type: object
+                  required: [first_name, last_name, street, city, postcode, country]
+                  properties:
+                    first_name:
+                      type: string
+                    last_name:
+                      type: string
+                    street:
+                      type: string
+                    city:
+                      type: string
+                    postcode:
+                      type: string
+                    country:
+                      type: string
+                      description: ISO 3166-1 alpha-2 country code
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  order:
+                    id: "o1"
+                    customer_id: ""
+                    status: pending
+                    currency: USD
+                    items:
+                      - variant_id: "v1"
+                        sku: WDG-RED
+                        name: Red Widget
+                        quantity: 2
+                        unit_price: 999
+                        currency: USD
+                    total_amount: 1998
+                    created_at: "2026-01-01T00:00:00Z"
+                error: null
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  # ── Orders (customer) ─────────────────────────────────
+  /api/v1/orders:
+    get:
+      operationId: listOrders
+      tags: [Orders]
+      summary: List the authenticated customer's orders
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  orders:
+                    - id: "o1"
+                      customer_id: "c1"
+                      status: paid
+                      currency: USD
+                      items: []
+                      total_amount: 1998
+                      created_at: "2026-01-01T00:00:00Z"
+                      updated_at: "2026-01-02T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/orders/claim-search:
+    post:
+      operationId: claimOrderSearch
+      tags: [Orders]
+      summary: Request a guest-order claim email (always available, SSR not required)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contact_email]
+              properties:
+                contact_email:
+                  type: string
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [contact_email]
+              properties:
+                contact_email:
+                  type: string
+      responses:
+        "200":
+          description: Generic acknowledgement (does not reveal whether orders exist)
+
+  /api/v1/orders/claim-register:
+    post:
+      operationId: claimOrderRegister
+      tags: [Orders]
+      summary: Register a new account and link one claimed guest order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimRegisterRequest"
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/ClaimRegisterRequest"
+      responses:
+        "200":
+          description: Account created and order linked; response includes a JWT
+
+  /api/v1/orders/{orderId}:
+    get:
+      operationId: getOrder
+      tags: [Orders]
+      summary: Get one of the customer's orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  order:
+                    id: "o1"
+                    customer_id: "c1"
+                    status: paid
+                    currency: USD
+                    items:
+                      - variant_id: "v1"
+                        sku: WDG-RED
+                        name: Red Widget
+                        quantity: 2
+                        unit_price: 999
+                        currency: USD
+                    total_amount: 1998
+                    created_at: "2026-01-01T00:00:00Z"
+                    updated_at: "2026-01-02T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Account / GDPR ────────────────────────────────────
+  /api/v1/account/assignment-parents:
+    get:
+      operationId: listAccountAssignmentParents
+      tags: [Account]
+      summary: List owned parent instances eligible for a child product
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: child_product_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/account/assignments:
+    get:
+      operationId: getAccountAssignment
+      tags: [Account]
+      summary: Get the current assignment for an owned child unit
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: child_unit_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/Validation"
+    post:
+      operationId: assignAccountAssignment
+      tags: [Account]
+      summary: Assign an unassigned owned child unit to an owned parent unit
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [child_unit_id, parent_unit_id]
+              properties:
+                child_unit_id:
+                  type: string
+                parent_unit_id:
+                  type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/account/downloads/{grantID}:
+    post:
+      operationId: deliverAccountDownload
+      tags: [Account]
+      summary: Deliver a downloadable file for an owned DownloadGrant
+      description: |
+        Auth-gated, state-changing delivery for a post-purchase DownloadGrant
+        (PR-1077). POST (not GET) so probes/metadata clients do not burn a
+        download slot. Checks ownership, expiry, and download limit; proves
+        the blob exists (S3 HeadObject / local Read) and prepares a short-lived
+        signed URL or stream **before** atomically incrementing download_count.
+        Permanent public media URLs are never returned. Signed redirects set
+        response Cache-Control: private, no-store and Content-Disposition
+        attachment. Expired or exhausted grants return validation (422).
+
+        Auth: same as other `/api/v1/account/*` routes — Bearer token and/or
+        session cookie accepted by RequireAuth (cookie-only browser clients
+        use the storefront session; CSRF is not required on `/api/v1/*`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: grantID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: File bytes streamed (local / ReadableStorage backends)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "302":
+          description: Redirect to a short-lived signed object URL (S3)
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Cache-Control:
+              schema:
+                type: string
+                example: private, no-store
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Validation"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/account/consent:
+    get:
+      operationId: getConsent
+      tags: [Account]
+      summary: Get cookie / consent preferences
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  consent:
+                    necessary: true
+                    analytics: false
+                    marketing: false
+                    updated_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    put:
+      operationId: updateConsent
+      tags: [Account]
+      summary: Update consent preferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [analytics, marketing]
+              properties:
+                analytics:
+                  type: boolean
+                marketing:
+                  type: boolean
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  consent:
+                    necessary: true
+                    analytics: true
+                    marketing: false
+                    updated_at: "2026-04-14T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/account/data:
+    get:
+      operationId: getAccountData
+      tags: [Account]
+      summary: GDPR data access
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  account:
+                    customer:
+                      id: "c1"
+                      email: "user@example.com"
+                      first_name: Jane
+                      last_name: Doe
+                      created_at: "2026-01-01T00:00:00Z"
+                    orders: []
+                    consent:
+                      necessary: true
+                      analytics: false
+                      marketing: false
+                      updated_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/account/export:
+    get:
+      operationId: exportAccountData
+      tags: [Account]
+      summary: GDPR data export (downloadable JSON)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: 'attachment; filename="account-data.json"'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/account:
+    delete:
+      operationId: deleteAccount
+      tags: [Account]
+      summary: Delete account (GDPR right to be forgotten)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  message: account deleted
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/account/addresses:
+    get:
+      operationId: listAccountAddresses
+      tags: [Account]
+      summary: List saved customer addresses
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  addresses:
+                    - id: "a1"
+                      customer_id: "c1"
+                      label: Home
+                      recipient: Ada Lovelace
+                      street: 1 Main St
+                      city: Paris
+                      postcode: "75001"
+                      country: FR
+                      is_default: true
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createAccountAddress
+      tags: [Account]
+      summary: Create a saved address
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipient, street, city, postcode, country]
+              properties:
+                label: { type: string }
+                recipient: { type: string }
+                street: { type: string }
+                city: { type: string }
+                postcode: { type: string }
+                country: { type: string }
+                is_default: { type: boolean }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/account/addresses/{addressId}:
+    put:
+      operationId: updateAccountAddress
+      tags: [Account]
+      summary: Update a saved address
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: addressId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipient, street, city, postcode, country]
+              properties:
+                label: { type: string }
+                recipient: { type: string }
+                street: { type: string }
+                city: { type: string }
+                postcode: { type: string }
+                country: { type: string }
+                is_default:
+                  type: boolean
+                  description: When omitted, the current default flag is left unchanged.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteAccountAddress
+      tags: [Account]
+      summary: Delete a saved address
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: addressId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/account/addresses/{addressId}/default:
+    post:
+      operationId: setDefaultAccountAddress
+      tags: [Account]
+      summary: Mark a saved address as default
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: addressId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Shipping ───────────────────────────────────────────
+  /api/v1/shipping/rates:
+    get:
+      operationId: listShippingRates
+      tags: [Shipping]
+      summary: Get shipping rate quotes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: order_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: currency
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: item_count
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  rates:
+                    - method: flat_rate
+                      provider_ref: "flat"
+                      cost: 500
+                      currency: USD
+                      label: Standard Shipping
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Payment Webhook ────────────────────────────────────
+  /api/v1/payments/webhook/{provider}:
+    post:
+      operationId: paymentWebhook
+      tags: [Payments]
+      summary: Payment provider callback
+      description: >
+        Called by external payment providers. Requires HMAC signature
+        in the X-Webhook-Signature header. Body limited to 1 MB.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+          example: stripe
+        - name: X-Webhook-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_id, provider_ref, success]
+              properties:
+                payment_id:
+                  type: string
+                provider_ref:
+                  type: string
+                success:
+                  type: boolean
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: accepted
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Admin: Products ────────────────────────────────────
+  /api/v1/admin/products:
+    get:
+      operationId: adminListProducts
+      tags: ["Admin: Products"]
+      summary: List products (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/ProductType"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  products:
+                    - ID: "p1"
+                      Name: Widget
+                      Slug: widget
+                      Description: A fine widget
+                      Status: active
+                      Type: simple
+                      Attributes: {}
+                      CreatedAt: "2026-01-01T00:00:00Z"
+                      UpdatedAt: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+    post:
+      operationId: adminCreateProduct
+      tags: ["Admin: Products"]
+      summary: Create a product
+      description: >-
+        Optional `type` defaults to `simple`. Product responses already include
+        exported field `Type` (Go JSON name) from PR-1049.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  product:
+                    ID: "p1"
+                    Name: Widget
+                    Slug: widget
+                    Description: A fine widget
+                    Status: draft
+                    Type: simple
+                    VisibilityModes:
+                      Catalog: auto
+                      Search: auto
+                      Individually: auto
+                      Purchasable: auto
+                    Attributes: {}
+                    CreatedAt: "2026-01-01T00:00:00Z"
+                    UpdatedAt: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}:
+    get:
+      operationId: adminGetProduct
+      tags: ["Admin: Products"]
+      summary: Get a product (admin)
+      description: >-
+        Includes `category_ids` and, when the server has
+        `ProductAdminHandler.WithVisibilityFacts` wired (PR-1059 CR — true in
+        this deployment), a `visibility` object explaining the four
+        VisibilityAxes against AutoBasis facts (status/stock/price/store/
+        category). `visibility` is omitted only when facts are not wired at
+        all (`WithVisibilityFacts` not called). Both a transient facts-load
+        error and a missing snapshot (`VisibilityFactsRepo`'s facts query
+        joins live product/variant/stock/price rows — there is no
+        asynchronous "first refresh" step, so the only way `FindByID` above
+        finds the product but the facts query does not is a concurrent
+        delete between the two reads) instead set `visibility_error` and
+        still return the product with a 200 — this endpoint never 500s
+        because the informational visibility explanation failed to load.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminProductGetResponse"
+              example:
+                data:
+                  product:
+                    ID: "p1"
+                    Name: Widget
+                    Slug: widget
+                    Description: A fine widget
+                    Status: draft
+                    Type: simple
+                    VisibilityModes:
+                      Catalog: visible
+                      Search: auto
+                      Individually: auto
+                      Purchasable: auto
+                    Attributes: {}
+                    CreatedAt: "2026-01-01T00:00:00Z"
+                    UpdatedAt: "2026-01-01T00:00:00Z"
+                  category_ids: []
+                  visibility:
+                    enforced: true
+                    status: draft
+                    auto_basis: false
+                    failure_codes: [status_inactive]
+                    input_failure_codes: []
+                    axes:
+                      catalog:
+                        mode: visible
+                        override: true
+                        resolved: true
+                        effective: false
+                        failure_codes: []
+                      search:
+                        mode: auto
+                        override: false
+                        resolved: false
+                        effective: false
+                        failure_codes: [status_inactive]
+                      individually:
+                        mode: auto
+                        override: false
+                        resolved: false
+                        effective: false
+                        failure_codes: [status_inactive]
+                      purchasable:
+                        mode: auto
+                        override: false
+                        resolved: false
+                        effective: false
+                        failure_codes: [status_inactive]
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: adminUpdateProduct
+      tags: ["Admin: Products"]
+      summary: Update a product
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProductRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  # ── Admin: Bundle / grouped composition ───────────────
+  /api/v1/admin/products/{id}/bundle-components:
+    get:
+      operationId: adminListBundleComponents
+      tags: ["Admin: Products"]
+      summary: List bundle components
+      description: >-
+        422 when the product is not type bundle. Each row includes the child
+        product name, slug, and type.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  components:
+                    - component_product_id: "c1"
+                      quantity: 2
+                      required: true
+                      name: "Leaf"
+                      slug: "leaf"
+                      type: simple
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+    post:
+      operationId: adminAddBundleComponent
+      tags: ["Admin: Products"]
+      summary: Add or update a bundle component
+      description: >-
+        Upserts quantity and required for the component product. Omitted
+        `required` defaults to true. 422 when the parent is not a bundle or
+        the component is not simple, virtual, or downloadable.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddBundleComponentRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}/bundle-components/{componentId}:
+    delete:
+      operationId: adminRemoveBundleComponent
+      tags: ["Admin: Products"]
+      summary: Remove a bundle component
+      description: >-
+        `componentId` is the component product id. 422 when the parent is not
+        a bundle. 404 when the link does not exist.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - name: componentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}/grouped-members:
+    get:
+      operationId: adminListGroupedMembers
+      tags: ["Admin: Products"]
+      summary: List grouped members
+      description: >-
+        422 when the product is not type grouped. Each row includes the member
+        product name, slug, and type.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+    post:
+      operationId: adminAddGroupedMember
+      tags: ["Admin: Products"]
+      summary: Add a grouped member
+      description: >-
+        Insert-ignore. A duplicate link succeeds without changing the member.
+        422 when the parent is not grouped or the member is not a leaf type.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddGroupedMemberRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}/grouped-members/{memberId}:
+    delete:
+      operationId: adminRemoveGroupedMember
+      tags: ["Admin: Products"]
+      summary: Remove a grouped member
+      description: >-
+        `memberId` is the member product id. 422 when the parent is not
+        grouped. 404 when the link does not exist.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - name: memberId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  # ── Admin: Product assignments ─────────────────────────
+  /api/v1/admin/products/{id}/linked-eligible-parents:
+    get:
+      operationId: adminListLinkedEligibleParents
+      tags: ["Admin: Products"]
+      summary: List linked-eligible parent products for a child
+      description: >-
+        Explicit parent allowlist rows for the child product (PR-1073).
+        `products.read`. Enrichment of name/slug/type is best-effort.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: adminAddLinkedEligibleParent
+      tags: ["Admin: Products"]
+      summary: Add a linked-eligible parent product
+      description: >-
+        Insert-ignore an allowlist row. `products.write`. Body
+        `{parent_product_id}`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddLinkedEligibleParentRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+  /api/v1/admin/products/{id}/linked-eligible-parents/{parentId}:
+    delete:
+      operationId: adminRemoveLinkedEligibleParent
+      tags: ["Admin: Products"]
+      summary: Remove a linked-eligible parent product
+      description: >-
+        `parentId` is the parent product id. 404 when the link does not exist.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - name: parentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/admin/products/{id}/linked-eligible-categories:
+    get:
+      operationId: adminListLinkedEligibleCategories
+      tags: ["Admin: Products"]
+      summary: List linked-eligible categories for a child
+      description: >-
+        Category eligibility rules for the child product (PR-1073).
+        `products.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: adminAddLinkedEligibleCategory
+      tags: ["Admin: Products"]
+      summary: Add a linked-eligible category
+      description: >-
+        Insert-ignore a category rule. `products.write`. Body `{category_id}`.
+        Concurrent category delete maps FK 23503 to "category not found".
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddLinkedEligibleCategoryRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+  /api/v1/admin/products/{id}/linked-eligible-categories/{categoryId}:
+    delete:
+      operationId: adminRemoveLinkedEligibleCategory
+      tags: ["Admin: Products"]
+      summary: Remove a linked-eligible category
+      description: >-
+        `categoryId` is the category id. 404 when the rule does not exist.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - name: categoryId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/products/{id}/downloadable-files:
+    get:
+      operationId: adminListDownloadableFiles
+      tags: ["Admin: Products"]
+      summary: List downloadable file attachments
+      description: >-
+        Returns join rows for the product (any type). Asset filename/path are
+        enriched when readable. Requires `products.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: adminAttachDownloadableFile
+      tags: ["Admin: Products"]
+      summary: Attach or update a downloadable file
+      description: >-
+        Upserts `(product_id, asset_id)`. Asset path must be under
+        `private/downloads/`. Product type must be downloadable.
+        Requires `products.write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachDownloadableFileRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+    put:
+      operationId: adminReplaceDownloadableFile
+      tags: ["Admin: Products"]
+      summary: Replace a downloadable file attachment
+      description: >-
+        Swaps `old_asset_id` for `asset_id` in one transaction and retargets
+        DownloadGrant rows by asset id (live and expired; not product-scoped).
+        Without `global_retarget`, a shared asset (other products still attach
+        `old_asset_id`) returns 422 — this is not a this-product-only rewrite.
+        With `global_retarget=true`, every grant on the blob moves. UNIQUE
+        conflict revokes the live old grant; expired old rows deleted to free
+        UNIQUE vanish (grant ids are not reissued). Response includes
+        `grants_moved` / `grants_revoked`. Omitted `position`/`label` preserve
+        the old join values. New asset must be under `private/downloads/`.
+        Requires `products.write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceDownloadableFileRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}/downloadable-files/{assetId}:
+    delete:
+      operationId: adminRemoveDownloadableFile
+      tags: ["Admin: Products"]
+      summary: Remove a downloadable file attachment
+      description: >-
+        422 when removing the last file from an Active downloadable product.
+        Requires `products.write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - name: assetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}/downloadable-grant-settings:
+    get:
+      operationId: adminGetDownloadableGrantSettings
+      tags: ["Admin: Products"]
+      summary: Get per-product download grant overrides
+      description: >-
+        Missing override returns null expiry/limit (global defaults apply).
+        404 when the product does not exist. Requires `products.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: adminPutDownloadableGrantSettings
+      tags: ["Admin: Products"]
+      summary: Upsert per-product download grant overrides
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutDownloadableGrantSettingsRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+    delete:
+      operationId: adminDeleteDownloadableGrantSettings
+      tags: ["Admin: Products"]
+      summary: Clear per-product download grant overrides
+      description: >-
+        Idempotent when no override row exists. Requires `products.write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/download-grants:
+    get:
+      operationId: adminListDownloadGrants
+      tags: ["Admin: Orders"]
+      summary: List download grants by customer or order item
+      description: >-
+        Require `customer_id` or `order_item_id` (`orderID/variantID`).
+        Requires `downloads.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+        - name: order_item_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/download-grants/{id}/revoke:
+    post:
+      operationId: adminRevokeDownloadGrant
+      tags: ["Admin: Orders"]
+      summary: Revoke a download grant
+      description: >-
+        Sets `expires_at` to now. Idempotent when already expired. `reason`
+        is required for audit. Requires `downloads.write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeDownloadGrantRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/download-grants/{id}/reissue:
+    post:
+      operationId: adminReissueDownloadGrant
+      tags: ["Admin: Orders"]
+      summary: Re-issue a download grant
+      description: >-
+        Extends expiry (`expires_at` or `expiry_days` from now), optionally
+        updates `download_limit`, and by default resets `download_count`.
+        `reason` is required. Requires `downloads.write`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReissueDownloadGrantRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/orders/{orderId}/download-grants:
+    get:
+      operationId: adminListOrderDownloadGrants
+      tags: ["Admin: Orders"]
+      summary: List download grants for an order
+      description: >-
+        Walks order lines and returns grants keyed by `orderID/variantID`.
+        Requires `downloads.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/assignments:
+    get:
+      operationId: adminListAssignmentsByParent
+      tags: ["Admin: Products"]
+      summary: List assignments for a parent unit (admin)
+      description: >-
+        Returns one page of assignments whose parent is `parent_unit_id`,
+        newest first. `status`, `limit`, and `offset` are applied in SQL.
+        `status` defaults to `assigned` (the card view). `revoked` and `all`
+        are the other values. Unassigned rows have no parent and are omitted.
+        `limit` defaults to 100 and is capped at 100. `offset` skips matches
+        after the status filter. `has_more` is true when another row exists
+        past this page. Each row includes live parent and child order facts
+        and whether the bind was forced. If that fact read fails, the rows
+        are still returned with empty fact fields. Unit ids are
+        `orderID/variantID` and contain `/`, so the id is a query parameter.
+        The order UUID is matched in lowercase. Requires `assignments.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: parent_unit_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [assigned, revoked, all]
+            default: assigned
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  assignments:
+                    - id: "a1"
+                      parent_order_item_id: "order-1/card-var"
+                      child_order_item_id: "order-2/ticket-var"
+                      status: assigned
+                      created_at: "2026-01-01T00:00:00Z"
+                      forced: false
+                      child_customer_id: "cust-1"
+                      child_order_status: pending
+                      child_payment_status: ""
+                      parent_customer_id: "other"
+                      parent_order_status: pending
+                      parent_payment_status: ""
+                  has_more: false
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+    post:
+      operationId: adminCreateAssignment
+      tags: ["Admin: Products"]
+      summary: Assign a child unit to a parent unit (admin)
+      description: >-
+        Operator assign. The child product must require a linked parent
+        (or a required linked leaf), unless a current unassigned row is
+        being assigned. Catalog eligibility still has to match. A live
+        assigned row is 409. Cancelled, failed, or unpaid parent or child
+        orders are 422 unless `force` is true and `reason` is non-empty.
+        `reason` is at most 500 characters when `force` is true. A longer
+        reason with `force` false is not stored and is not a 422. That
+        override is stored as
+        `forced_at` and `forced_reason` only when a side is not bindable,
+        and returned as `reason` (not a second `forced_reason` field) on
+        this response and on later list, current, and revoke reads.
+        `force` on an already-bindable pair is 422 `force not applicable`.
+        The reason is also written to the audit entry. Customer ids are
+        not an ownership check. Support may force-bind an unpaid or
+        cancelled unit; `assignments.write` includes that override. A new
+        row is 201. Updating an unassigned row is 200. Requires
+        `assignments.write` (Admin, Manager, and Support; not Editor).
+        Audited as `assignment.create`. A failed create audits the
+        attempted child unit id.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [child_unit_id, parent_unit_id]
+              properties:
+                child_unit_id:
+                  type: string
+                parent_unit_id:
+                  type: string
+                force:
+                  type: boolean
+                  default: false
+                reason:
+                  type: string
+                  description: >-
+                    Required when `force` is true. At most 500 characters
+                    when `force` is true; a longer reason with `force`
+                    false is ignored and is not 422. Stored in
+                    `forced_reason` only when a side is not bindable.
+                    Returned as `reason` only when the row was force-bound.
+      responses:
+        "200":
+          description: Existing unassigned row assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "201":
+          description: New assigned row created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/assignments/current:
+    get:
+      operationId: adminGetCurrentAssignment
+      tags: ["Admin: Products"]
+      summary: Get the current assignment for a child unit (admin)
+      description: >-
+        Returns the live unassigned or assigned row for `child_unit_id`,
+        or `assignment: null` when the child has none. The order UUID is
+        matched in lowercase. The body includes live parent and child
+        order facts and whether the bind was forced. If that fact read
+        fails, the assignment is still returned with empty fact fields.
+        Requires `assignments.read`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: child_unit_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  assignment: null
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/assignments/{id}/revoke:
+    post:
+      operationId: adminRevokeAssignment
+      tags: ["Admin: Products"]
+      summary: Revoke an assignment (admin)
+      description: >-
+        Transitions an unassigned or assigned row to revoked. The row is
+        kept, including `forced_at` and `forced_reason` when set. The body
+        includes the same live parent and child order facts as list and
+        current, and `reason` when the row was force-bound. If that fact
+        read fails after the revoke is stored, the response is still 200
+        with the assignment and empty fact fields. An
+        already-revoked row returns 200 with that same body and is not
+        audited again. Requires `assignments.write`. A first revoke is
+        audited as `assignment.revoke`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  # ── Admin: Variants ────────────────────────────────────
+  /api/v1/admin/products/{id}/variants:
+    post:
+      operationId: adminCreateVariant
+      tags: [Variants]
+      summary: Create a variant (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVariantRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/products/{id}/variants/{variantId}:
+    put:
+      operationId: adminUpdateVariant
+      tags: [Variants]
+      summary: Update a variant (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+        - $ref: "#/components/parameters/VariantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVariantRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Orders ──────────────────────────────────────
+  /api/v1/admin/orders:
+    get:
+      operationId: adminListOrders
+      tags: ["Admin: Orders"]
+      summary: List all orders (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/orders/{orderId}:
+    get:
+      operationId: adminGetOrder
+      tags: ["Admin: Orders"]
+      summary: Get any order (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Media ───────────────────────────────────────
+  /api/v1/admin/media/upload:
+    post:
+      operationId: adminUploadMedia
+      tags: ["Admin: Media"]
+      summary: Upload a media file (10 MB max)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  id: "m1"
+                  path: "uploads/m1.jpg"
+                  filename: "photo.jpg"
+                  mime_type: "image/jpeg"
+                  size: 102400
+                  url: "/uploads/m1.jpg"
+                  created_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ── Admin: Schemas ─────────────────────────────────────
+  /api/v1/admin/forms/{name}:
+    get:
+      operationId: adminGetForm
+      tags: ["Admin: Schemas"]
+      summary: Get an admin form schema
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  form:
+                    name: product
+                    fields:
+                      - name: name
+                        type: text
+                        label: Name
+                        required: true
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/grids/{name}:
+    get:
+      operationId: adminGetGrid
+      tags: ["Admin: Schemas"]
+      summary: Get an admin grid schema
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  grid:
+                    name: products
+                    columns:
+                      - name: name
+                        label: Name
+                    actions:
+                      - name: edit
+                        label: Edit
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Pages ───────────────────────────────────────
+  /api/v1/admin/pages:
+    get:
+      operationId: adminListPages
+      tags: ["Admin: Pages"]
+      summary: List CMS pages (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  pages:
+                    - id: "pg1"
+                      slug: about
+                      title: About Us
+                      content: "<p>Welcome</p>"
+                      is_active: true
+                      created_at: "2026-01-01T00:00:00Z"
+                      updated_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: adminCreatePage
+      tags: ["Admin: Pages"]
+      summary: Create a CMS page
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePageRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/pages/{id}:
+    put:
+      operationId: adminUpdatePage
+      tags: ["Admin: Pages"]
+      summary: Update a CMS page
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePageRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: adminDeletePage
+      tags: ["Admin: Pages"]
+      summary: Delete a CMS page
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  deleted: true
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Stores ──────────────────────────────────────
+  /api/v1/admin/stores:
+    get:
+      operationId: adminListStores
+      tags: ["Admin: Stores"]
+      summary: List stores
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  stores:
+                    - id: "s1"
+                      code: default
+                      name: Default Store
+                      currency: USD
+                      country: US
+                      language: en
+                      domain: "shop.example.com"
+                      is_default: true
+                      created_at: "2026-01-01T00:00:00Z"
+                      updated_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: adminCreateStore
+      tags: ["Admin: Stores"]
+      summary: Create a store
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStoreRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/stores/{id}:
+    put:
+      operationId: adminUpdateStore
+      tags: ["Admin: Stores"]
+      summary: Update a store
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateStoreRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Jobs ────────────────────────────────────────
+  /api/v1/admin/jobs:
+    get:
+      operationId: adminListJobs
+      tags: ["Admin: Jobs"]
+      summary: List background jobs (admin)
+      description: Filter by type/status; paginated most-recently-created first.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, processing, done, failed, cancelled]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  jobs:
+                    - id: "job-1"
+                      type: webhook.deliver
+                      status: failed
+                      attempts: 3
+                      max_retries: 5
+                      run_at: "2026-01-01T00:00:00Z"
+                      created_at: "2026-01-01T00:00:00Z"
+                      updated_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/jobs/{id}:
+    get:
+      operationId: adminGetJob
+      tags: ["Admin: Jobs"]
+      summary: Get a job's full detail (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  id: "job-1"
+                  type: webhook.deliver
+                  status: failed
+                  attempts: 3
+                  max_retries: 5
+                  run_at: "2026-01-01T00:00:00Z"
+                  created_at: "2026-01-01T00:00:00Z"
+                  updated_at: "2026-01-01T00:00:00Z"
+                  payload: {}
+                  last_error: "connection refused"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/jobs/{id}/retry:
+    post:
+      operationId: adminRetryJob
+      tags: ["Admin: Jobs"]
+      summary: Retry a failed job
+      description: >-
+        Resets a failed job back to pending (attempts reset to 0, run_at set
+        to now) so the worker picks it up again. Only valid on a job
+        currently in the `failed` status.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: pending
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/admin/jobs/{id}/cancel:
+    post:
+      operationId: adminCancelJob
+      tags: ["Admin: Jobs"]
+      summary: Cancel a pending job
+      description: >-
+        Marks a pending job cancelled so it will never be dequeued. There is
+        no in-flight cancellation: a job currently `processing` cannot be
+        cancelled.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/GenericId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: cancelled
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  # ── Admin: Cache ───────────────────────────────────────
+  /api/v1/admin/cache/stats:
+    get:
+      operationId: adminCacheStats
+      tags: ["Admin: Cache"]
+      summary: Cache occupancy stats (admin)
+      description: >-
+        Approximate per-tier occupancy. L2 is the configured cache.Cache
+        backend (Postgres `COUNT(*)` of `cache` / `cache_tags` with a
+        1.5s cap, then `pg_class.reltuples`; Redis `DBSIZE` of the
+        configured database plus `INFO memory` when available). When
+        Postgres used the `reltuples` fallback, `l2.approximate` is
+        true. L1 is this process's in-memory stores (permission
+        catalog, storefront category nav) with hit/miss counters. L2
+        hit/miss is not tracked here. When full-page cache observability
+        is wired, `fpc` carries this process's hit/miss/bypass-by-route
+        counters (hit_rate = hits/(hits+misses)), pages_stored estimate,
+        backend_get_errors, and keys-deleted purge counts (PR-1047).
+        Successful HTTP stats calls are not audit-logged (the endpoint
+        is polled); failures are.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  l2:
+                    backend: postgres
+                    keys: 42
+                    tag_rows: 10
+                    approximate: true
+                  l1:
+                    - name: rbac.catalog
+                      entries: 1
+                      hits: 100
+                      misses: 2
+                    - name: storefront.category_nav
+                      entries: 1
+                      hits: 50
+                      misses: 1
+                  fpc:
+                    pages_stored: 12
+                    backend_get_errors: 0
+                    purges:
+                      tag_invalidation: 3
+                      manual_url: 1
+                    routes:
+                      - route: /products/{slug}
+                        hits: 80
+                        misses: 20
+                        bypasses: 2
+                        hit_rate: 0.8
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/cache/clear:
+    post:
+      operationId: adminCacheClear
+      tags: ["Admin: Cache"]
+      summary: Clear cache entries (admin)
+      description: >-
+        Exactly one selector: `prefix`, `tag`, `key`, or `all: true`.
+        Empty/whitespace selectors and `all: false` are omitted (422 if
+        that leaves no selector). Targeted clears require `cache.write`.
+        A full flush (`all: true`) requires the distinct `cache.clear_all`
+        permission. Redis flush scan-and-deletes keys under the store
+        prefix (never `FLUSHDB`); `deleted` is value-key count only.
+        Prefix is a literal string (Redis glob metacharacters are
+        escaped). This process's L1 stores are cleared only on `all`.
+        Every clear is audit-logged. 403 is a well-formed body the
+        caller is not permitted to run; 422 is an invalid selector.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prefix:
+                  type: string
+                tag:
+                  type: string
+                key:
+                  type: string
+                all:
+                  type: boolean
+            examples:
+              prefix:
+                value: { prefix: "product:123:" }
+              tag:
+                value: { tag: "cms:7" }
+              key:
+                value: { key: "product:123:en:EUR" }
+              all:
+                value: { all: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  mode: tag
+                  target: "cms:7"
+                  deleted: 12
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  /api/v1/admin/cache/purge-url:
+    post:
+      operationId: adminCachePurgeURL
+      tags: ["Admin: Cache"]
+      summary: Purge full-page cache keys for a storefront path (admin)
+      description: >-
+        Escape hatch when tag invalidation missed a page (PR-1046). Deletes
+        the concrete FPC keys for `path` across every store's
+        store/language/currency vary dimension × guest and authenticated
+        auth-state — a handful of keys, not a wildcard scan. Requires
+        `cache.purge_url` (distinct from `cache.write`). Path must be an
+        allowlisted storefront route (`/`, `/products/{slug}`, …). Optional
+        query string is filtered like FPC storage (listing params plus any
+        `attr_*` keys present in the URL). Bare `/products` does not clear
+        paginated/sorted variants — pass the exact query or prefer
+        `POST /admin/cache/clear` with `tag`. `deleted` counts keys that
+        actually existed before delete (not the expand-list length); a
+        mid-loop backend error may leave other vary keys live. Always
+        audit-logged.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  example: /products/widget
+            examples:
+              pdp:
+                value: { path: "/products/widget" }
+              listing:
+                value: { path: "/products?page=2&sort=name" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  path: /products/widget
+                  keys:
+                    - "fpc:v1:…"
+                  deleted: 2
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+  # ── Admin: Search ──────────────────────────────────────
+  /api/v1/admin/search/reindex:
+    post:
+      operationId: adminTriggerSearchReindex
+      tags: ["Admin: Search"]
+      summary: Trigger a search reindex
+      description: >-
+        Triggers a full, category-scoped, product-scoped, or
+        since-timestamp reindex. A single product ID under
+        `scope: "products"` is indexed synchronously and returns `200`
+        immediately, instead of being queued — every other request
+        (`scope: "all"`, multiple IDs, `scope: "since"`, or any
+        `scope: "categories"` request, including exactly one ID) is
+        enqueued as a background run and returns `202` with a run ID to
+        poll via `GET /api/v1/admin/search/reindex/{runID}`.
+        `scope: "categories"` reindexes that category's *member products*,
+        not the category's own search document — for the latter, use
+        `scope: "category_document"` instead (exactly one ID, always
+        synchronous, returns `200` with `category_id`). These are
+        deliberately separate, non-interchangeable scopes: a category and
+        its member products are distinct indexed entities, unlike a
+        product where "the product" and "the thing indexed" are the same.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope:
+                  type: string
+                  enum: [all, products, categories, category_document, since]
+                ids:
+                  type: array
+                  items:
+                    type: string
+                  maxItems: 10000
+                  description: >-
+                    Required for scope=products and scope=categories (any
+                    count); required, and capped at exactly one entry, for
+                    scope=category_document. More than 10,000 entries is
+                    rejected outright (422) for scope=products/categories,
+                    separate from the resolved-scope full-scan substitution
+                    described in the merchant guide.
+                since:
+                  type: string
+                  format: date-time
+                  description: Required for scope=since. Must not be in the future.
+            examples:
+              full:
+                value:
+                  scope: all
+              singleProduct:
+                summary: Synchronous single-item path (product)
+                value:
+                  scope: products
+                  ids: ["9f3e2b1a-2222-4c3e-8b1a-000000000001"]
+              categoryDocument:
+                summary: Synchronous single-item path (category document)
+                value:
+                  scope: category_document
+                  ids: ["c1a2b3d4-4444-4c3e-8b1a-000000000003"]
+              categories:
+                summary: Always queued, regardless of ID count
+                value:
+                  scope: categories
+                  ids: ["c1a2b3d4-4444-4c3e-8b1a-000000000003"]
+              since:
+                value:
+                  scope: since
+                  since: "2026-01-01T00:00:00Z"
+      responses:
+        "200":
+          description: >-
+            OK — a synchronous single-item path: scope=products (exactly
+            one ID) returns `product_id`; scope=category_document (always
+            exactly one ID) returns `category_id`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: indexed
+                  product_id: "9f3e2b1a-2222-4c3e-8b1a-000000000001"
+                error: null
+        "202":
+          description: Accepted — enqueued as a background run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  run_id: "b6e2b1a2-3333-4c3e-8b1a-000000000002"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+
+    get:
+      operationId: adminListSearchReindexRuns
+      tags: ["Admin: Search"]
+      summary: List reindex runs (admin)
+      description: >-
+        PR-1038's run-history read model — paginated, most recently
+        started first, unfiltered by scope/status.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  runs:
+                    - id: "b6e2b1a2-3333-4c3e-8b1a-000000000002"
+                      scope: products
+                      scope_params: { requested_scope: products, product_ids: [] }
+                      status: completed
+                      total_count: 120
+                      processed_count: 120
+                      error_count: 0
+                      started_at: "2026-01-01T00:00:00Z"
+                      finished_at: "2026-01-01T00:02:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/search/reindex/{runID}:
+    get:
+      operationId: adminGetSearchReindexRun
+      tags: ["Admin: Search"]
+      summary: Get a reindex run's progress
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: runID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  id: "b6e2b1a2-3333-4c3e-8b1a-000000000002"
+                  scope: products
+                  scope_params: { requested_scope: products, product_ids: [] }
+                  status: processing
+                  total_count: 120
+                  processed_count: 45
+                  error_count: 0
+                  started_at: "2026-01-01T00:00:00Z"
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Schedules ───────────────────────────────────
+  /api/v1/admin/schedules:
+    get:
+      operationId: adminListSchedules
+      tags: ["Admin: Schedules"]
+      summary: List registered scheduled tasks (admin)
+      description: >-
+        Reflects every task any process (the standalone `scheduler` command
+        or `serve` with an embedded scheduler) has registered, regardless of
+        which process is currently running — the catalog is Postgres-backed,
+        not read from this server's own memory.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  schedules:
+                    - name: cache.cleanup
+                      spec: "*/5 * * * *"
+                      next_run: "2026-01-01T00:05:00Z"
+                      enabled: true
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/schedules/{name}/trigger:
+    post:
+      operationId: adminTriggerSchedule
+      tags: ["Admin: Schedules"]
+      summary: Trigger a scheduled task immediately
+      description: >-
+        Invokes the task's function out-of-band from its normal tick,
+        regardless of a disabled override. Only works when this server
+        process has a scheduler embedded (dev mode, or a `serve` deployment
+        that opts into embedding) — in a standard production deployment,
+        where the scheduler runs as a separate process, this returns `409`
+        since there is nothing in this process to invoke.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  status: triggered
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/admin/schedules/{name}/enable:
+    post:
+      operationId: adminEnableSchedule
+      tags: ["Admin: Schedules"]
+      summary: Re-enable a scheduled task
+      description: >-
+        Clears a disable override so the task's normal tick fires again.
+        Takes effect in whichever process is actually running the
+        scheduler, without that process needing a restart.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  enabled: true
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/admin/schedules/{name}/disable:
+    post:
+      operationId: adminDisableSchedule
+      tags: ["Admin: Schedules"]
+      summary: Disable a scheduled task
+      description: >-
+        The task's normal tick will no longer fire it. Does not affect a
+        manual trigger (`/trigger` fires regardless of this override).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+              example:
+                data:
+                  enabled: false
+                error: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── SEO ────────────────────────────────────────────────
+  /sitemap.xml:
+    get:
+      operationId: sitemap
+      tags: [SEO]
+      summary: XML sitemap
+      responses:
+        "200":
+          description: OK
+          content:
+            application/xml:
+              schema:
+                type: string
+
+  /robots.txt:
+    get:
+      operationId: robots
+      tags: [SEO]
+      summary: Robots.txt
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+
+# ══════════════════════════════════════════════════════════
+# Components
+# ══════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        default: 0
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        maximum: 100
+    VisibilityAfter:
+      name: after
+      in: query
+      description: >
+        Opaque resume cursor from meta.next_after on the previous listing
+        response. When set, the offset parameter is ignored. Pass after (not
+        an advanced offset) when meta.truncated is true and next_after is
+        present. has_more may produce one trailing empty page when only
+        hidden rows remain. Cursors are position-based and can drift if
+        products are inserted or deleted between requests. Cursor resume
+        depth is capped at 100000 repository rows (classic offset is not
+        capped the same way): past that limit meta.depth_limited is true,
+        has_more is false, and next_after is omitted. Tampered or over-cap
+        cursors return 422.
+      schema:
+        type: string
+    ProductType:
+      name: type
+      in: query
+      description: Optional product type filter (admin list).
+      schema:
+        type: string
+        enum: [simple, virtual, bundle, grouped, configurable, downloadable]
+    ProductId:
+      name: id
+      in: path
+      required: true
+      description: Product UUID or slug.
+      schema:
+        type: string
+    VariantId:
+      name: variantId
+      in: path
+      required: true
+      schema:
+        type: string
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      schema:
+        type: string
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+    StorefrontFieldNames:
+      name: fields
+      in: query
+      required: false
+      description: >
+        Default storefront product/category JSON uses Go exported names
+        (`ID`, `Name`, `Slug`). Set `snake` for `id`/`name`/`slug` maps
+        (also accepted as header `X-Shopanda-Field-Names: snake`).
+        `blocks` and `meta` stay composition output either way.
+      schema:
+        type: string
+        enum: [snake]
+    CategoryId:
+      name: id
+      in: path
+      required: true
+      description: Category UUID or slug.
+      schema:
+        type: string
+    GenericId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        data:
+          description: Response payload (null on error)
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+
+    ClaimRegisterRequest:
+      type: object
+      required: [order_id, claim_token, email, password]
+      properties:
+        order_id:
+          type: string
+        claim_token:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+          format: password
+        first_name:
+          type: string
+        last_name:
+          type: string
+
+    VisibilityListMeta:
+      type: object
+      description: Pagination meta for visibility-filtered product listings.
+      properties:
+        truncated:
+          type: boolean
+          description: >
+            Scan budget stopped before the page was filled; continue with
+            after when next_after is present.
+        has_more:
+          type: boolean
+          description: >
+            More repository rows may exist. May produce one trailing empty
+            page when only hidden rows remain.
+        depth_limited:
+          type: boolean
+          description: >
+            Cursor resume reached the 100000-row depth cap. next_after is
+            omitted; classic offset may still reach deeper rows until keyset
+            pagination.
+        next_after:
+          type: string
+          description: Opaque resume cursor for the after query parameter.
+
+    ErrorBody:
+      type: object
+      nullable: true
+      properties:
+        code:
+          type: string
+          enum:
+            - not_found
+            - conflict
+            - validation
+            - unauthorized
+            - forbidden
+            - rate_limited
+            - internal
+        message:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required: [email, password, first_name, last_name]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        first_name:
+          type: string
+        last_name:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    VisibilityModesInput:
+      type: object
+      description: >-
+        Partial per-axis visibility override modes (PR-1055/PR-1059 CR). No
+        property is required — every axis is independently optional on both
+        create and update. "auto" resolves the axis from AutoBasis
+        (status/quantity/price/store/category facts); "visible"/"hidden"
+        force the axis regardless of those facts. An omitted axis keeps its
+        current/default value: on create, DefaultVisibilityAxes() (all auto)
+        for that axis; on update, the product's existing mode for that axis
+        (merge, not replace — sending only `{"catalog":"hidden"}` changes
+        catalog alone and leaves search/individually/purchasable untouched).
+        Omit the whole object to leave every axis at its current/default
+        value. Any present-but-invalid mode value is rejected with 422. An
+        explicit JSON `null` for one axis (e.g. `{"catalog": null}`) is
+        treated the same as omitting that axis entirely — it keeps the
+        stored/default mode, not an error — because each axis unmarshals
+        into a `*string` and JSON `null` leaves that pointer `nil`, exactly
+        like a key that was never sent.
+      properties:
+        catalog:
+          type: string
+          nullable: true
+          enum: [auto, visible, hidden]
+        search:
+          type: string
+          nullable: true
+          enum: [auto, visible, hidden]
+        individually:
+          type: string
+          nullable: true
+          enum: [auto, visible, hidden]
+        purchasable:
+          type: string
+          nullable: true
+          description: >-
+            "visible" here is a sellability override (force on sale), not
+            display-only — see internal/domain/catalog/visibility.go.
+          enum: [auto, visible, hidden]
+
+    VisibilityAxisExplanation:
+      type: object
+      description: >-
+        How one visibility axis resolved (PR-1059 CR) — mirrors
+        catalog.AxisExplanation. "resolved" is the domain-level ResolveAxis
+        result (ignores product status); "effective" is the public-gate
+        EffectiveAxis result (storefront truth — always false for a
+        non-active product, even when the mode is forced visible).
+        `failure_codes` is only populated when `mode` is "auto" and
+        `auto_basis` (on the parent AdminProductVisibility object) is false;
+        a forced axis has nothing to explain.
+      properties:
+        mode:
+          type: string
+          enum: [auto, visible, hidden]
+        override:
+          type: boolean
+          description: True when mode is not "auto" (a merchant override).
+        resolved:
+          type: boolean
+        effective:
+          type: boolean
+        failure_codes:
+          type: array
+          items:
+            type: string
+            enum: [status_inactive, no_stock, no_price, no_store_assignment, no_category]
+
+    AdminProductVisibility:
+      type: object
+      description: >-
+        The `visibility` object on `GET /api/v1/admin/products/{id}`
+        (PR-1059 CR). Informational only — never a gate. `enforced` mirrors
+        `catalog.visibility.enforce` (whether the public axis gate is
+        actually live); when false, `effective` on each axis still reports
+        what *would* happen if enforce were on. `failure_codes` is the
+        top-level AutoBasisFailureCodes list for the product's **saved**
+        status (status → stock → price → store → category, in check order);
+        `axes.<name>.failure_codes` repeats the same list only for axes
+        currently in "auto" mode with `auto_basis` false. `input_failure_codes`
+        (PR-1059 CR round 3) is `catalog.AutoBasisInputFailureCodes` — the
+        same list with `status_inactive` always excluded (stock → price →
+        store → category only). The admin SPA uses `input_failure_codes` as
+        the source of truth for a *live* status preview: when the form's
+        status select changes (before saving), it recomputes `auto_basis`/
+        `failure_codes` client-side from `{selected status, input_failure_codes}`
+        instead of re-fetching this payload, since `input_failure_codes`
+        never changes with the form's status — only the saved product's
+        underlying stock/price/store/category facts do.
+      properties:
+        enforced:
+          type: boolean
+        status:
+          type: string
+          enum: [draft, active, archived]
+        auto_basis:
+          type: boolean
+        failure_codes:
+          type: array
+          items:
+            type: string
+            enum: [status_inactive, no_stock, no_price, no_store_assignment, no_category]
+        input_failure_codes:
+          type: array
+          description: >-
+            failure_codes with status_inactive always excluded — see this
+            schema's description.
+          items:
+            type: string
+            enum: [no_stock, no_price, no_store_assignment, no_category]
+        axes:
+          type: object
+          properties:
+            catalog:
+              $ref: "#/components/schemas/VisibilityAxisExplanation"
+            search:
+              $ref: "#/components/schemas/VisibilityAxisExplanation"
+            individually:
+              $ref: "#/components/schemas/VisibilityAxisExplanation"
+            purchasable:
+              $ref: "#/components/schemas/VisibilityAxisExplanation"
+
+    AdminProductGetData:
+      type: object
+      description: >-
+        `data` payload for `GET /api/v1/admin/products/{id}` (PR-1059 CR).
+      properties:
+        product:
+          type: object
+          description: >-
+            `catalog.Product`, Go-serialized with no JSON tags — field names
+            are the exported Go struct field names verbatim (PascalCase: `ID`,
+            `Name`, `Slug`, `Description`, `Status`, `Type`, `PricingMode`,
+            `StockMode`, `ExplodeOrderLines`, `RequiresLinkedParent`, `VisibilityModes`, `Attributes`,
+            `CreatedAt`, `UpdatedAt`), not
+            the snake_case used by the rest of this response's `data` keys.
+        category_ids:
+          type: array
+          items:
+            type: string
+        visibility:
+          $ref: "#/components/schemas/AdminProductVisibility"
+        visibility_error:
+          type: string
+          description: >-
+            Set instead of `visibility` when the visibility-facts read
+            failed or the snapshot was missing (see this operation's
+            description). The product itself is still returned with a 200.
+
+    AdminProductGetResponse:
+      type: object
+      description: Envelope specialized with AdminProductGetData's typed `data`.
+      properties:
+        data:
+          $ref: "#/components/schemas/AdminProductGetData"
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+
+    CreateProductRequest:
+      type: object
+      required: [name, slug, description]
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          description: Product taxonomy; omit to default to simple.
+          enum: [simple, virtual, bundle, grouped, configurable, downloadable]
+        pricing_mode:
+          type: string
+          description: >-
+            Bundle price source. `fixed` uses the bundle's own price row.
+            `dynamic` sums required component prices when the product is priced
+            and is stored only for `type=bundle`. Omit to default to `fixed`.
+            Sending `dynamic` for any other type is rejected with 422.
+            An unknown token is rejected.
+          enum: [fixed, dynamic]
+        stock_mode:
+          type: string
+          description: >-
+            Bundle stock source. `fixed` uses the bundle's own stock row.
+            `dynamic` is the minimum of floor(component stock / required
+            quantity) across required components and is stored only for
+            `type=bundle`. Omit to default to `fixed`. Sending `dynamic` for
+            any other type is rejected with 422. An unknown token is rejected.
+            Grouped parents have no parent stock.
+          enum: [fixed, dynamic]
+        explode_order_lines:
+          type: boolean
+          description: >-
+            When true, checkout writes one order line per required component
+            and drops the bundle parent line. Allowed only when `type` is
+            `bundle` and both `pricing_mode` and `stock_mode` are `dynamic`.
+            Omit to default to false. Sending true for any other combination
+            is rejected with 422.
+        requires_linked_parent:
+          type: boolean
+          description: >-
+            When true, the purchasable axis stays false until the request
+            carries a non-empty assignment context (a parent product id, or
+            deferred assignment). Omit to store false. Display axes are
+            unchanged. There is no product-type restriction. Not accepted
+            on product CSV (PR-1073).
+        visibility_modes:
+          $ref: "#/components/schemas/VisibilityModesInput"
+        attributes:
+          type: object
+          additionalProperties: true
+
+    UpdateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, draft, archived]
+        type:
+          type: string
+          enum: [simple, virtual, bundle, grouped, configurable, downloadable]
+        pricing_mode:
+          type: string
+          description: >-
+            Same values as create. Omitted on a bundle keeps the mode read
+            from the locked row. Changing `type` off `bundle` while omitting
+            this field stores `fixed`. Sending `dynamic` for a non-bundle is
+            rejected with 422.
+          enum: [fixed, dynamic]
+        stock_mode:
+          type: string
+          description: >-
+            Same values as create. Omitted on a bundle keeps the mode read
+            from the locked row. Changing `type` off `bundle` while omitting
+            this field stores `fixed`. Sending `dynamic` for a non-bundle is
+            rejected with 422.
+          enum: [fixed, dynamic]
+        explode_order_lines:
+          type: boolean
+          description: >-
+            Same rule as create. Omitted on a bundle keeps the flag read from
+            the locked row while the product remains a bundle with both
+            pricing_mode and stock_mode dynamic. Omitting the field stores
+            false when `type` changes off `bundle`, or when a pricing_mode or
+            stock_mode change leaves the bundle ineligible to explode. Sending
+            true without both dynamic modes is rejected with 422.
+        requires_linked_parent:
+          type: boolean
+          description: >-
+            Same flag as create. Omit to keep the stored value. There is
+            no product-type restriction. Not accepted on product CSV (PR-1073).
+        visibility_modes:
+          $ref: "#/components/schemas/VisibilityModesInput"
+        attributes:
+          type: object
+          additionalProperties: true
+
+    AddBundleComponentRequest:
+      type: object
+      required: [component_product_id, quantity]
+      properties:
+        component_product_id:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 9999
+        required:
+          type: boolean
+          description: Omit to default to true.
+
+    AddGroupedMemberRequest:
+      type: object
+      required: [member_product_id]
+      properties:
+        member_product_id:
+          type: string
+
+    AddLinkedEligibleParentRequest:
+      type: object
+      description: Add an explicit parent allowlist row for a child product (products.write). Duplicate pairs are insert-ignore success.
+      required: [parent_product_id]
+      properties:
+        parent_product_id:
+          type: string
+          description: Parent product UUID (must not equal the child id).
+    AddLinkedEligibleCategoryRequest:
+      type: object
+      description: Add a category eligibility rule for a child product (products.write). Duplicate pairs are insert-ignore success.
+      required: [category_id]
+      properties:
+        category_id:
+          type: string
+          description: Category UUID.
+
+    AttachDownloadableFileRequest:
+      type: object
+      required: [asset_id]
+      properties:
+        asset_id:
+          type: string
+        position:
+          type: integer
+          minimum: 0
+          maximum: 9999
+        label:
+          type: string
+          maxLength: 200
+
+    ReplaceDownloadableFileRequest:
+      type: object
+      required: [old_asset_id, asset_id]
+      description: >-
+        Omitting position/label preserves the previous join values. Grant
+        retarget is asset-scoped (not this product only). Without
+        global_retarget, shared attachments return 422. With
+        global_retarget=true, every grant on the blob moves to asset_id.
+      properties:
+        old_asset_id:
+          type: string
+        asset_id:
+          type: string
+        position:
+          type: integer
+          minimum: 0
+          maximum: 9999
+        label:
+          type: string
+          maxLength: 200
+        global_retarget:
+          type: boolean
+          description: >-
+            Required when other products still attach old_asset_id. When true,
+            every download_grants row for the old blob is retargeted (or conflict-
+            revoked / deleted per UNIQUE rules).
+
+    PutDownloadableGrantSettingsRequest:
+      type: object
+      properties:
+        expiry_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          nullable: true
+        download_limit:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          nullable: true
+
+    RevokeDownloadGrantRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+
+    ReissueDownloadGrantRequest:
+      type: object
+      required: [reason]
+      description: >-
+        Exactly one of expires_at or expiry_days is required; expiry must be
+        strictly in the future. Reissue runs in one DB transaction (row lock,
+        extend, optional CAS reset).
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+          description: RFC3339 absolute expiry; must be strictly after now.
+        expiry_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+          description: Days from now when expires_at is omitted.
+        download_limit:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        reset_count:
+          type: boolean
+          description: Defaults to true. When true, count resets before a lower limit is applied.
+        reason:
+          type: string
+      anyOf:
+        - required: [expires_at]
+        - required: [expiry_days]
+
+    CreateVariantRequest:
+      type: object
+      required: [sku, name]
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+
+    UpdateVariantRequest:
+      type: object
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+
+    CreatePageRequest:
+      type: object
+      required: [slug, title, content]
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        is_active:
+          type: boolean
+
+    UpdatePageRequest:
+      type: object
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        is_active:
+          type: boolean
+
+    CreateStoreRequest:
+      type: object
+      required: [code, name, currency, country, language, domain]
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        currency:
+          type: string
+        country:
+          type: string
+        language:
+          type: string
+        domain:
+          type: string
+        is_default:
+          type: boolean
+
+    UpdateStoreRequest:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        currency:
+          type: string
+        country:
+          type: string
+        language:
+          type: string
+        domain:
+          type: string
+        is_default:
+          type: boolean
+
+    CartEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            cart:
+              $ref: "#/components/schemas/Cart"
+        error:
+          $ref: "#/components/schemas/ErrorBody"
+
+    Cart:
+      type: object
+      properties:
+        id:
+          type: string
+        customer_id:
+          type: string
+        status:
+          type: string
+          enum: [active, checked_out, abandoned]
+        currency:
+          type: string
+        coupon_code:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartItem"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CartItem:
+      type: object
+      properties:
+        variant_id:
+          type: string
+        quantity:
+          type: integer
+        unit_price:
+          type: integer
+          format: int64
+          description: Price in smallest currency unit (e.g. cents)
+        currency:
+          type: string
+        line_total:
+          type: integer
+          format: int64
+          description: quantity * unit_price
+        assignment_parent_product_id:
+          type: string
+        assignment_parent_unit_id:
+          type: string
+        assignment_deferred:
+          type: boolean
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: unauthorized
+              message: authentication required
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: forbidden
+              message: insufficient permissions
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: not_found
+              message: not found
+    Validation:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: validation
+              message: invalid input
+    Conflict:
+      description: Request conflicts with the resource's current state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: conflict
+              message: the resource's current status does not allow this action
+    InternalError:
+      description: Unexpected server error (stable client message; details logged server-side)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: internal
+              message: internal server error
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            example: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+          example:
+            data: null
+            error:
+              code: rate_limited
+              message: rate limit exceeded

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Admin — Shopanda</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+    <div id="admin-layout" class="admin-layout" data-auth="false">
+        <header class="admin-header">
+            <a href="/admin/dashboard" data-link class="logo">Shopanda Admin</a>
+            <div class="admin-context-switcher" aria-label="Admin scope context">
+                <label>Store
+                    <select id="admin-context-store"></select>
+                </label>
+                <label>Language
+                    <select id="admin-context-language"></select>
+                </label>
+                <label>Currency
+                    <select id="admin-context-currency"></select>
+                </label>
+            </div>
+            <div class="user-info">
+                <a href="/admin/account" data-link id="admin-user-name"></a>
+                <a href="#" id="admin-logout">Logout</a>
+            </div>
+        </header>
+        <div class="admin-body">
+            <aside class="admin-sidebar">
+                <nav>
+                    <ul>
+                        <li><a href="/admin/dashboard" data-link>Dashboard</a></li>
+                    </ul>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Sales</span>
+                        <ul>
+                            <li><a href="/admin/orders" data-link>Orders</a></li>
+                            <li><a href="/admin/sales/returns" data-link>Returns</a></li>
+                            <li><a href="/admin/sales/transactions" data-link>Transactions</a></li>
+                            <li><a href="/admin/sales/assignments" data-link>Assignments</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Catalog</span>
+                        <ul>
+                            <li><a href="/admin/products" data-link>Products</a></li>
+                            <li><a href="/admin/catalog/categories" data-link>Categories</a></li>
+                            <li><a href="/admin/catalog/attributes" data-link>Attributes</a></li>
+                            <li><a href="/admin/catalog/prices" data-link>Bulk Prices</a></li>
+                            <li><a href="/admin/catalog/reviews" data-link>Reviews</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Customers</span>
+                        <ul>
+                            <li><a href="/admin/customers" data-link>Customers</a></li>
+                            <li><a href="/admin/customers/groups" data-link>Groups</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Marketing</span>
+                        <ul>
+                            <li><a href="/admin/marketing/promotions" data-link>Promotions</a></li>
+                            <li><a href="/admin/marketing/coupons" data-link>Coupons</a></li>
+                            <li><a href="/admin/marketing/abandoned-cart" data-link>Abandoned Cart</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Content</span>
+                        <ul>
+                            <li><a href="/admin/content/pages" data-link>Pages</a></li>
+                            <li><a href="/admin/content/navigation" data-link>Navigation</a></li>
+                            <li><a href="/admin/content/blocks" data-link>Blocks</a></li>
+                            <li><a href="/admin/media" data-link>Media</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Operations</span>
+                        <ul>
+                            <li><a href="/admin/operations/inventory" data-link>Inventory</a></li>
+                            <li><a href="/admin/operations/shipping" data-link>Shipping</a></li>
+                            <li><a href="/admin/operations/payments" data-link>Payments</a></li>
+                            <li><a href="/admin/operations/jobs" data-link>Jobs</a></li>
+                            <li><a href="/admin/operations/schedules" data-link>Schedules</a></li>
+                            <li><a href="/admin/operations/search" data-link>Search</a></li>
+                            <li><a href="/admin/operations/cache" data-link>Cache</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Settings</span>
+                        <ul>
+                            <li><a href="/admin/settings" data-link>General</a></li>
+                            <li><a href="/admin/settings/localization" data-link>Localization</a></li>
+                            <li><a href="/admin/settings/users" data-link>Users &amp; Roles</a></li>
+                            <li><a href="/admin/settings/audit" data-link>Audit Log</a></li>
+                            <li><a href="/admin/settings/extension-fields" data-link>Extension Fields</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Store Management</span>
+                        <ul>
+                            <li><a href="/admin/store" data-link>Stores</a></li>
+                            <li><a href="/admin/store/domains" data-link>Domains</a></li>
+                            <li><a href="/admin/store/languages" data-link>Languages</a></li>
+                            <li><a href="/admin/store/currencies" data-link>Currencies</a></li>
+                        </ul>
+                    </section>
+                    <section class="nav-group">
+                        <span class="nav-group-label">Integrations</span>
+                        <ul>
+                            <li><a href="/admin/integrations" data-link>Integrations</a></li>
+                        </ul>
+                    </section>
+                </nav>
+            </aside>
+            <main id="admin-content" class="admin-content">
+                <noscript>
+                    <p>JavaScript is required for the admin panel.</p>
+                </noscript>
+            </main>
+        </div>
+    </div>
+    <script src="/admin/cache_admin_ui.js"></script>
+    <script src="/admin/product_type_sections.js"></script>
+    <script src="/admin/product_visibility_section.js"></script>
+    <script src="/admin/product_composition_section.js"></script>
+    <script src="/admin/product_linked_section.js"></script>
+    <script src="/admin/product_downloadable_section.js"></script>
+    <script src="/admin/assignment_admin_ui.js"></script>
+    <script src="/admin/download_grant_admin_ui.js"></script>
+    <script src="/admin/admin.js"></script>
+</body>
+</html>

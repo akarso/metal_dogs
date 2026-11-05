@@ -1,0 +1,991 @@
+package checkout_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/internal/application/checkout"
+	"github.com/akarso/shopanda/internal/domain/cart"
+	"github.com/akarso/shopanda/internal/domain/order"
+	"github.com/akarso/shopanda/internal/domain/payment"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/domain/shipping"
+	"github.com/akarso/shopanda/internal/platform/event"
+	"github.com/akarso/shopanda/internal/platform/id"
+	"github.com/akarso/shopanda/internal/platform/logger"
+)
+
+// ============================================================
+// Mock shipping provider
+// ============================================================
+
+func shippingRegistryWith(p shipping.Provider) *shipping.ProviderRegistry {
+	reg := shipping.NewProviderRegistry()
+	reg.Register(p)
+	return reg
+}
+
+type mockShippingProvider047 struct {
+	method    shipping.ShippingMethod
+	rate      shipping.ShippingRate
+	err       error
+	itemCount int
+}
+
+func (p *mockShippingProvider047) Method() shipping.ShippingMethod { return p.method }
+
+func (p *mockShippingProvider047) CalculateRate(_ context.Context, _ string, _ string, itemCount int) (shipping.ShippingRate, error) {
+	p.itemCount = itemCount
+	return p.rate, p.err
+}
+
+// ============================================================
+// Mock shipment repository
+// ============================================================
+
+type mockShipmentRepo047 struct {
+	created *shipping.Shipment
+	err     error
+}
+
+func (r *mockShipmentRepo047) FindByID(_ context.Context, _ string) (*shipping.Shipment, error) {
+	return nil, nil
+}
+func (r *mockShipmentRepo047) FindByOrderID(_ context.Context, _ string) (*shipping.Shipment, error) {
+	return nil, nil
+}
+func (r *mockShipmentRepo047) Create(_ context.Context, s *shipping.Shipment) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.created = s
+	return nil
+}
+func (r *mockShipmentRepo047) UpdateStatus(_ context.Context, _ *shipping.Shipment, _ time.Time) error {
+	return nil
+}
+
+// ============================================================
+// Mock payment provider
+// ============================================================
+
+type mockPaymentProvider047 struct {
+	method payment.PaymentMethod
+	result payment.ProviderResult
+	err    error
+}
+
+func (p *mockPaymentProvider047) Method() payment.PaymentMethod { return p.method }
+
+func (p *mockPaymentProvider047) Initiate(_ context.Context, _ *payment.Payment) (payment.ProviderResult, error) {
+	return p.result, p.err
+}
+
+// ============================================================
+// Mock payment repository
+// ============================================================
+
+type mockPaymentRepo047 struct {
+	created      *payment.Payment
+	createErr    error
+	updateErr    error
+	updateCalled bool
+}
+
+func (r *mockPaymentRepo047) FindByID(_ context.Context, _ string) (*payment.Payment, error) {
+	return nil, nil
+}
+func (r *mockPaymentRepo047) FindByOrderID(_ context.Context, _ string) (*payment.Payment, error) {
+	return nil, nil
+}
+func (r *mockPaymentRepo047) Create(_ context.Context, p *payment.Payment) error {
+	if r.createErr != nil {
+		return r.createErr
+	}
+	r.created = p
+	return nil
+}
+func (r *mockPaymentRepo047) UpdateStatus(_ context.Context, _ *payment.Payment, _ time.Time) error {
+	r.updateCalled = true
+	return r.updateErr
+}
+func (r *mockPaymentRepo047) List(_ context.Context, _ payment.ListFilter) ([]payment.Payment, error) {
+	return nil, nil
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
+func orderForCheckout047(t *testing.T) *order.Order {
+	t.Helper()
+	item, err := order.NewItem("v1", "SKU-v1", "Variant v1", 2, shared.MustNewMoney(1000, "EUR"))
+	if err != nil {
+		t.Fatalf("NewItem: %v", err)
+	}
+	o, err := order.NewOrder(id.New(), "cust-1", "", "EUR", []order.Item{item})
+	if err != nil {
+		t.Fatalf("NewOrder: %v", err)
+	}
+	return &o
+}
+
+// ============================================================
+// SelectShippingStep tests
+// ============================================================
+
+func TestSelectShippingStep_Name(t *testing.T) {
+	step := newSelectShippingStep047(
+		&mockShippingProvider047{method: shipping.MethodFlatRate}, &mockShipmentRepo047{})
+	if step.Name() != "select_shipping" {
+		t.Errorf("Name() = %q, want select_shipping", step.Name())
+	}
+}
+
+func TestSelectShippingStep_Success(t *testing.T) {
+	cost := shared.MustNewMoney(500, "EUR")
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate: shipping.ShippingRate{
+			ProviderRef: "flat_rate:order-1",
+			Cost:        cost,
+			Label:       "Flat Rate Shipping",
+		},
+	}
+	repo := &mockShipmentRepo047{}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if repo.created == nil {
+		t.Fatal("expected shipment to be saved")
+	}
+	if repo.created.OrderID != cctx.Order.ID {
+		t.Errorf("OrderID = %q, want %q", repo.created.OrderID, cctx.Order.ID)
+	}
+	if repo.created.Method != shipping.MethodFlatRate {
+		t.Errorf("Method = %q, want flat_rate", repo.created.Method)
+	}
+	if repo.created.Cost.Amount() != 500 {
+		t.Errorf("Cost = %d, want 500", repo.created.Cost.Amount())
+	}
+
+	raw, ok := cctx.GetMeta("shipment")
+	if !ok {
+		t.Fatal("expected shipment in meta")
+	}
+	if _, ok := raw.(*shipping.Shipment); !ok {
+		t.Fatalf("shipment meta is %T, want *shipping.Shipment", raw)
+	}
+	if v, ok := cctx.GetMeta("shipment_selected"); !ok || v != true {
+		t.Error("expected shipment_selected=true in meta")
+	}
+}
+
+func TestSelectShippingStep_CalculateRateError(t *testing.T) {
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		err:    errors.New("unsupported currency"),
+	}
+	step := newSelectShippingStep047(provider, &mockShipmentRepo047{})
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error from calculate rate")
+	}
+	if _, ok := cctx.GetMeta("shipment_selected"); ok {
+		t.Error("shipment_selected should not be set on error")
+	}
+}
+
+func TestSelectShippingStep_SaveError(t *testing.T) {
+	cost := shared.MustNewMoney(500, "EUR")
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: cost},
+	}
+	repo := &mockShipmentRepo047{err: errors.New("db down")}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error from save")
+	}
+	if _, ok := cctx.GetMeta("shipment_selected"); ok {
+		t.Error("shipment_selected should not be set on error")
+	}
+}
+
+func TestSelectShippingStep_UsesTotalQuantity(t *testing.T) {
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: shared.MustNewMoney(500, "EUR")},
+	}
+	step := newSelectShippingStep047(provider, &mockShipmentRepo047{})
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1", "v2")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if provider.itemCount != 4 {
+		t.Fatalf("itemCount = %d, want %d", provider.itemCount, 4)
+	}
+}
+
+func TestSelectShippingStep_RejectsUnavailableSelectedMethod(t *testing.T) {
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: shared.MustNewMoney(500, "EUR")},
+	}
+	step := newSelectShippingStep047(provider, &mockShipmentRepo047{})
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+	cctx.Input = checkout.Input{ShippingMethod: "pickup"}
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error for unavailable shipping method")
+	}
+}
+
+func TestSelectShippingStep_NoOrder(t *testing.T) {
+	provider := &mockShippingProvider047{method: shipping.MethodFlatRate}
+	step := newSelectShippingStep047(provider, &mockShipmentRepo047{})
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error for missing order")
+	}
+}
+
+func TestSelectShippingStep_NilContext(t *testing.T) {
+	provider := &mockShippingProvider047{method: shipping.MethodFlatRate}
+	step := newSelectShippingStep047(provider, &mockShipmentRepo047{})
+
+	err := step.Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestSelectShippingStep_Idempotent(t *testing.T) {
+	cost := shared.MustNewMoney(500, "EUR")
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: cost},
+	}
+	repo := &mockShipmentRepo047{}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	first := repo.created
+
+	repo.err = errors.New("should not be called")
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("second Execute should be idempotent: %v", err)
+	}
+	if repo.created != first {
+		t.Error("repo Create called on second execution")
+	}
+}
+
+func TestSelectShippingStep_SkipsDigitalOnlyCart(t *testing.T) {
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: shared.MustNewMoney(500, "EUR")},
+	}
+	repo := &mockShipmentRepo047{err: errors.New("should not create shipment")}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1", "v2")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, false)
+	cctx.Input = checkout.Input{ShippingMethod: ""}
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if repo.created != nil {
+		t.Fatal("expected no shipment for digital-only cart")
+	}
+	if v, ok := cctx.GetMeta("shipping_not_required"); !ok || v != true {
+		t.Fatalf("shipping_not_required = %#v, want true", v)
+	}
+	if v, ok := cctx.GetMeta("shipment_selected"); !ok || v != true {
+		t.Fatalf("shipment_selected = %#v, want true", v)
+	}
+}
+
+func TestSelectShippingStep_SkipsDownloadableOnlyCart(t *testing.T) {
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: shared.MustNewMoney(500, "EUR")},
+	}
+	repo := &mockShipmentRepo047{err: errors.New("should not create shipment")}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, false)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if repo.created != nil {
+		t.Fatal("expected no shipment for downloadable-only cart")
+	}
+	if v, ok := cctx.GetMeta("shipping_not_required"); !ok || v != true {
+		t.Fatalf("shipping_not_required = %#v, want true", v)
+	}
+}
+
+func TestSelectShippingStep_RequiresMetaTrueCreatesShipment(t *testing.T) {
+	cost := shared.MustNewMoney(500, "EUR")
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: cost},
+	}
+	repo := &mockShipmentRepo047{}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if repo.created == nil {
+		t.Fatal("expected shipment when shipping_required meta is true")
+	}
+}
+
+func TestSelectShippingStep_MissingShippingRequiredMeta(t *testing.T) {
+	provider := &mockShippingProvider047{method: shipping.MethodFlatRate}
+	step := newSelectShippingStep047(provider, &mockShipmentRepo047{})
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1")
+	cctx.Order = orderForCheckout047(t)
+	// deliberately omit ShippingRequiredMetaKey
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error when shipping requirement meta is missing")
+	}
+	if _, ok := cctx.GetMeta("shipping_not_required"); ok {
+		t.Fatal("must not skip shipping when meta is missing")
+	}
+	if _, ok := cctx.GetMeta("shipment_selected"); ok {
+		t.Fatal("shipment_selected must not be set when meta is missing")
+	}
+}
+
+func TestSelectShippingStep_EmptyCartFailsClosed(t *testing.T) {
+	cost := shared.MustNewMoney(500, "EUR")
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: cost},
+	}
+	repo := &mockShipmentRepo047{}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	c, err := cart.NewCart("cart-1", "EUR")
+	if err != nil {
+		t.Fatalf("NewCart: %v", err)
+	}
+	c.CustomerID = "cust-1"
+	cctx.Cart = &c
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if repo.created == nil {
+		t.Fatal("empty cart must fail closed and still attempt shipping")
+	}
+}
+
+func TestSelectShippingStep_MixedCartStillRequiresShipping(t *testing.T) {
+	cost := shared.MustNewMoney(500, "EUR")
+	provider := &mockShippingProvider047{
+		method: shipping.MethodFlatRate,
+		rate:   shipping.ShippingRate{Cost: cost},
+	}
+	repo := &mockShipmentRepo047{}
+	step := newSelectShippingStep047(provider, repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Cart = cartWithItems037(t, "cust-1", "v1", "v2")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if repo.created == nil {
+		t.Fatal("expected shipment for mixed cart")
+	}
+	if _, ok := cctx.GetMeta("shipping_not_required"); ok {
+		t.Fatal("shipping_not_required should not be set for mixed cart")
+	}
+}
+
+// ============================================================
+// InitiatePaymentStep tests
+// ============================================================
+
+func paymentRegistryWith(providers ...payment.Provider) *payment.ProviderRegistry {
+	reg := payment.NewProviderRegistry()
+	for _, p := range providers {
+		reg.Register(p)
+	}
+	return reg
+}
+
+func TestInitiatePaymentStep_Name(t *testing.T) {
+	step := checkout.NewInitiatePaymentStep(
+		paymentRegistryWith(&mockPaymentProvider047{method: payment.MethodManual}),
+		&mockPaymentRepo047{},
+	)
+	if step.Name() != "initiate_payment" {
+		t.Errorf("Name() = %q, want initiate_payment", step.Name())
+	}
+}
+
+func TestInitiatePaymentStep_Success(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{
+			ProviderRef: "manual:pay-1",
+			Success:     true,
+		},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if repo.created == nil {
+		t.Fatal("expected payment to be saved")
+	}
+	if repo.created.OrderID != cctx.Order.ID {
+		t.Errorf("OrderID = %q, want %q", repo.created.OrderID, cctx.Order.ID)
+	}
+	if repo.created.Method != payment.MethodManual {
+		t.Errorf("Method = %q, want manual", repo.created.Method)
+	}
+	if !repo.updateCalled {
+		t.Error("expected UpdateStatus to be called")
+	}
+
+	raw, ok := cctx.GetMeta("payment")
+	if !ok {
+		t.Fatal("expected payment in meta")
+	}
+	py := raw.(*payment.Payment)
+	if py.Status() != payment.StatusCompleted {
+		t.Errorf("payment status = %v, want completed", py.Status())
+	}
+	if py.ProviderRef != "manual:pay-1" {
+		t.Errorf("ProviderRef = %q, want manual:pay-1", py.ProviderRef)
+	}
+	if v, ok := cctx.GetMeta("payment_initiated"); !ok || v != true {
+		t.Error("expected payment_initiated=true in meta")
+	}
+}
+
+func TestInitiatePaymentStep_RejectsUnavailableSelectedMethod(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{ProviderRef: "manual:pay-1", Success: true},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+	cctx.Input = checkout.Input{PaymentMethod: string(payment.MethodStripe)}
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error for unavailable payment method")
+	}
+	if repo.created != nil {
+		t.Fatal("payment should not be created when selected method is unavailable")
+	}
+}
+
+func TestInitiatePaymentStep_SelectsProviderByMethod(t *testing.T) {
+	manual := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{ProviderRef: "manual:pay-1", Success: true},
+	}
+	stripe := &mockPaymentProvider047{
+		method: payment.MethodStripe,
+		result: payment.ProviderResult{ProviderRef: "pi_test", Pending: true, ClientSecret: "sec"},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(manual, stripe), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+	cctx.Input = checkout.Input{PaymentMethod: string(payment.MethodStripe)}
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if repo.created == nil || repo.created.Method != payment.MethodStripe {
+		t.Fatalf("created.Method = %q, want stripe", repo.created.Method)
+	}
+}
+
+func TestInitiatePaymentStep_Declined(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{
+			Success: false,
+		},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error for declined payment")
+	}
+
+	if !repo.updateCalled {
+		t.Error("expected UpdateStatus to be called even on decline")
+	}
+
+	raw, ok := cctx.GetMeta("payment")
+	if !ok {
+		t.Fatal("expected payment in meta even on decline")
+	}
+	py := raw.(*payment.Payment)
+	if py.Status() != payment.StatusFailed {
+		t.Errorf("payment status = %v, want failed", py.Status())
+	}
+}
+
+func TestInitiatePaymentStep_ProviderError(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		err:    errors.New("provider unreachable"),
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error from provider")
+	}
+	// Payment was created but not updated
+	if repo.created == nil {
+		t.Error("expected payment to be created before provider call")
+	}
+	if repo.updateCalled {
+		t.Error("UpdateStatus should not be called on provider error")
+	}
+}
+
+func TestInitiatePaymentStep_CreateError(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{Success: true},
+	}
+	repo := &mockPaymentRepo047{createErr: errors.New("db down")}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error from create")
+	}
+	if _, ok := cctx.GetMeta("payment_initiated"); ok {
+		t.Error("payment_initiated should not be set on error")
+	}
+}
+
+func TestInitiatePaymentStep_UpdateStatusError(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{ProviderRef: "ref", Success: true},
+	}
+	repo := &mockPaymentRepo047{updateErr: errors.New("conflict")}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error from update status")
+	}
+	if v, ok := cctx.GetMeta("payment_initiated"); !ok || v != true {
+		t.Fatal("payment_initiated must be set before UpdateStatus on a synchronous approve")
+	}
+	raw, ok := cctx.GetMeta("payment")
+	if !ok {
+		t.Fatal("expected payment in meta after synchronous approve")
+	}
+	py := raw.(*payment.Payment)
+	if py.Status() != payment.StatusCompleted {
+		t.Fatalf("payment status = %v, want completed", py.Status())
+	}
+}
+
+func TestInitiatePaymentStep_NoOrder(t *testing.T) {
+	provider := &mockPaymentProvider047{method: payment.MethodManual}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), &mockPaymentRepo047{})
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error for missing order")
+	}
+}
+
+func TestInitiatePaymentStep_NilContext(t *testing.T) {
+	provider := &mockPaymentProvider047{method: payment.MethodManual}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), &mockPaymentRepo047{})
+
+	err := step.Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestInitiatePaymentStep_Idempotent(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{ProviderRef: "ref", Success: true},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	first := repo.created
+
+	repo.createErr = errors.New("should not be called")
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("second Execute should be idempotent: %v", err)
+	}
+	if repo.created != first {
+		t.Error("repo Create called on second execution")
+	}
+}
+
+func TestInitiatePaymentStep_Pending(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodStripe,
+		result: payment.ProviderResult{
+			ProviderRef:  "pi_test_abc123",
+			Pending:      true,
+			ClientSecret: "pi_test_abc123_secret_xyz",
+		},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if repo.created == nil {
+		t.Fatal("expected payment to be saved")
+	}
+	if repo.created.Method != payment.MethodStripe {
+		t.Errorf("Method = %q, want stripe", repo.created.Method)
+	}
+	if !repo.updateCalled {
+		t.Error("expected UpdateStatus to be called")
+	}
+
+	raw, ok := cctx.GetMeta("payment")
+	if !ok {
+		t.Fatal("expected payment in meta")
+	}
+	py := raw.(*payment.Payment)
+	if py.Status() != payment.StatusPending {
+		t.Errorf("payment status = %v, want pending", py.Status())
+	}
+	if py.ProviderRef != "pi_test_abc123" {
+		t.Errorf("ProviderRef = %q, want pi_test_abc123", py.ProviderRef)
+	}
+
+	if v, ok := cctx.GetMeta("payment_initiated"); !ok || v != true {
+		t.Error("expected payment_initiated=true in meta")
+	}
+	cs, ok := cctx.GetMeta("client_secret")
+	if !ok {
+		t.Fatal("expected client_secret in meta")
+	}
+	if cs != "pi_test_abc123_secret_xyz" {
+		t.Errorf("client_secret = %q, want pi_test_abc123_secret_xyz", cs)
+	}
+}
+
+func TestInitiatePaymentStep_Pending_NoClientSecret(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodStripe,
+		result: payment.ProviderResult{
+			ProviderRef: "pi_test_no_secret",
+			Pending:     true,
+		},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if _, ok := cctx.GetMeta("client_secret"); ok {
+		t.Error("expected no client_secret in meta when ClientSecret is empty")
+	}
+	if v, ok := cctx.GetMeta("payment_initiated"); !ok || v != true {
+		t.Error("expected payment_initiated=true in meta")
+	}
+}
+
+func TestInitiatePaymentStep_Pending_EmptyProviderRef(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodStripe,
+		result: payment.ProviderResult{
+			Pending:      true,
+			ClientSecret: "pi_secret",
+		},
+	}
+	repo := &mockPaymentRepo047{}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error for pending result with empty ProviderRef")
+	}
+	if _, ok := cctx.GetMeta("payment_initiated"); ok {
+		t.Error("payment_initiated should not be set when pending has no provider reference")
+	}
+}
+
+func TestInitiatePaymentStep_Pending_UpdateStatusErrorSetsInitiated(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodStripe,
+		result: payment.ProviderResult{
+			ProviderRef:  "pi_accepted",
+			Pending:      true,
+			ClientSecret: "pi_accepted_secret",
+		},
+	}
+	repo := &mockPaymentRepo047{updateErr: errors.New("conflict")}
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	err := step.Execute(context.Background(), cctx)
+	if err == nil {
+		t.Fatal("expected error from update status")
+	}
+	if v, ok := cctx.GetMeta("payment_initiated"); !ok || v != true {
+		t.Fatal("payment_initiated must be set before UpdateStatus on an accepted pending charge")
+	}
+	raw, ok := cctx.GetMeta("payment")
+	if !ok {
+		t.Fatal("expected payment in meta after accepted pending initiate")
+	}
+	py := raw.(*payment.Payment)
+	if py.Status() != payment.StatusPending {
+		t.Fatalf("payment status = %v, want pending", py.Status())
+	}
+	if py.ProviderRef != "pi_accepted" {
+		t.Fatalf("ProviderRef = %q, want pi_accepted", py.ProviderRef)
+	}
+}
+
+func TestInitiatePaymentStep_PublishesOrderPaidOnSuccess(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{ProviderRef: "manual:pay-1", Success: true},
+	}
+	repo := &mockPaymentRepo047{}
+	bus := event.NewBus(logger.New("error"))
+	var paid []string
+	bus.On(order.EventOrderPaid, func(_ context.Context, evt event.Event) error {
+		data := evt.Data.(order.OrderStatusChangedData)
+		paid = append(paid, data.OrderID)
+		return nil
+	})
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), repo).WithEventBus(bus)
+
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(paid) != 1 || paid[0] != cctx.Order.ID {
+		t.Fatalf("order.paid = %v, want [%s]", paid, cctx.Order.ID)
+	}
+}
+
+func TestInitiatePaymentStep_PendingDoesNotPublishOrderPaid(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodStripe,
+		result: payment.ProviderResult{ProviderRef: "pi_pending", Pending: true, ClientSecret: "sec"},
+	}
+	bus := event.NewBus(logger.New("error"))
+	bus.On(order.EventOrderPaid, func(_ context.Context, _ event.Event) error {
+		t.Fatal("order.paid must not fire before Stripe capture")
+		return nil
+	})
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), &mockPaymentRepo047{}).WithEventBus(bus)
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+}
+
+func TestInitiatePaymentStep_ZeroPayablePublishesOrderPaid(t *testing.T) {
+	item, err := order.NewItem("v1", "SKU-v1", "Free", 1, shared.MustNewMoney(0, "EUR"))
+	if err != nil {
+		t.Fatalf("NewItem: %v", err)
+	}
+	o, err := order.NewOrder(id.New(), "cust-1", "", "EUR", []order.Item{item})
+	if err != nil {
+		t.Fatalf("NewOrder: %v", err)
+	}
+	bus := event.NewBus(logger.New("error"))
+	var paid int
+	bus.On(order.EventOrderPaid, func(_ context.Context, _ event.Event) error {
+		paid++
+		return nil
+	})
+	step := checkout.NewInitiatePaymentStep(
+		paymentRegistryWith(&mockPaymentProvider047{method: payment.MethodManual}),
+		&mockPaymentRepo047{},
+	).WithEventBus(bus)
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = &o
+	setShippingRequired047(cctx, true)
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if paid != 1 {
+		t.Fatalf("order.paid count = %d, want 1", paid)
+	}
+	if v, ok := cctx.GetMeta("payment_skipped"); !ok || v != true {
+		t.Fatal("expected payment_skipped=true")
+	}
+	// Idempotent already-paid heal: retry republishes order.paid.
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("retry Execute: %v", err)
+	}
+	if paid != 2 {
+		t.Fatalf("order.paid count after retry = %d, want 2", paid)
+	}
+}
+
+func TestInitiatePaymentStep_PublishErrorAfterSuccessReturnsNil(t *testing.T) {
+	provider := &mockPaymentProvider047{
+		method: payment.MethodManual,
+		result: payment.ProviderResult{ProviderRef: "manual:pay-1", Success: true},
+	}
+	bus := event.NewBus(logger.New("error"))
+	bus.On(order.EventOrderPaid, func(_ context.Context, _ event.Event) error {
+		return errors.New("subscriber down")
+	})
+	step := checkout.NewInitiatePaymentStep(paymentRegistryWith(provider), &mockPaymentRepo047{}).WithEventBus(bus)
+	cctx := checkout.NewContext("cart-1", "cust-1", "EUR")
+	cctx.Order = orderForCheckout047(t)
+	setShippingRequired047(cctx, true)
+	if err := step.Execute(context.Background(), cctx); err != nil {
+		t.Fatalf("Execute after publish failure must return nil, got %v", err)
+	}
+}

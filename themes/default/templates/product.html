@@ -1,0 +1,138 @@
+{{ define "title" }}{{ .Product.Name }}{{ end }}
+{{ define "content" }}
+<section class="page-intro">
+    <p class="eyebrow">Product detail</p>
+    <h1>{{ .Product.Name }}</h1>
+    <p>Server-rendered product pages now inherit the shared storefront shell and bundled theme CSS.</p>
+</section>
+
+<section class="product-detail-card">
+    {{slot_container "pdp.gallery"}}
+    <div class="product-detail-card__media" aria-hidden="true">
+        <span>{{ .Product.Name }}</span>
+    </div>
+    {{/slot_container}}
+    {{slot_container "pdp.info"}}
+    <div class="product-detail-card__body">
+        {{layout_blocks "pdp.info"}}
+        {{block "meta"}}
+        <div class="product-detail-card__meta">
+            <span class="status-pill">{{ .Product.Status }}</span>
+            <span>Slug: /products/{{ .Product.Slug }}</span>
+        </div>
+        {{/block}}
+        {{block "description"}}
+        {{ if .Product.Description }}
+        <p>{{ .Product.Description }}</p>
+        {{ else }}
+        <p>No merchandising description has been added yet.</p>
+        {{ end }}
+        {{/block}}
+        {{block "composition"}}
+        {{ range .Blocks }}
+        {{ if eq .Type "price_indication" }}
+        <p class="price-indication muted-note">Lowest price in the last 30 days: {{ index .Data "currency" }} {{ index .Data "lowest_30d_price" }} (current price: {{ index .Data "currency" }} {{ index .Data "current_price" }})</p>
+        {{ end }}
+        {{ if eq .Type "weee_disclosure" }}
+        <aside class="weee-disclosure muted-note" aria-label="WEEE recycling information">
+            {{ if index .Data "symbol_visible" }}<p class="weee-disclosure__symbol" aria-hidden="true">♻ WEEE</p>{{ end }}
+            {{ if index .Data "category_label" }}<p>WEEE category: {{ index .Data "category_label" }}</p>{{ end }}
+            {{ if index .Data "producer_registration" }}<p>Producer registration: {{ index .Data "producer_registration" }}</p>{{ end }}
+            {{ if index .Data "take_back_info" }}<p>{{ index .Data "take_back_info" }}</p>{{ end }}
+        </aside>
+        {{ end }}
+        {{ if eq .Type "gpsr_safety_disclosure" }}
+        <aside class="gpsr-disclosure muted-note" aria-label="Product safety information">
+            {{ if index .Data "manufacturer_name" }}<p>Manufacturer: {{ index .Data "manufacturer_name" }}{{ if index .Data "manufacturer_contact" }} ({{ index .Data "manufacturer_contact" }}){{ end }}</p>{{ end }}
+            {{ if index .Data "importer_name" }}<p>EU importer: {{ index .Data "importer_name" }}{{ if index .Data "importer_contact" }} ({{ index .Data "importer_contact" }}){{ end }}</p>{{ end }}
+            {{ if index .Data "product_identifier" }}<p>Product identifier: {{ index .Data "product_identifier" }}</p>{{ end }}
+            {{ if index .Data "conformity_mark_label" }}<p>{{ index .Data "conformity_mark_label" }}</p>{{ end }}
+            {{ if index .Data "age_restriction_label" }}<p>{{ index .Data "age_restriction_label" }}</p>{{ end }}
+            {{ if index .Data "safety_warnings" }}<p>{{ index .Data "safety_warnings" }}</p>{{ end }}
+        </aside>
+        {{ end }}
+        {{ if eq .Type "product_reviews" }}
+        <section class="product-reviews" aria-label="Customer reviews">
+            <h2>Customer reviews</h2>
+            <p class="product-reviews__summary">{{ printf "%.1f" (index .Data "average_rating") }} / 5 · {{ index .Data "review_count" }} review(s)</p>
+            <ul class="product-reviews__list">
+                {{ range index .Data "reviews" }}
+                <li class="product-reviews__item">
+                    <p class="product-reviews__meta"><strong>{{ index . "reviewer_name" }}</strong> · {{ index . "rating" }}/5 · {{ index . "created_at" }}</p>
+                    {{ if index . "title" }}<p class="product-reviews__title">{{ index . "title" }}</p>{{ end }}
+                    <p>{{ index . "body" }}</p>
+                </li>
+                {{ end }}
+            </ul>
+        </section>
+        {{ end }}
+        {{ end }}
+        {{/block}}
+        {{block "detail_grid"}}
+        <dl class="detail-grid">
+            <div>
+                <dt>Store</dt>
+                <dd>{{ .Layout.SiteName }}</dd>
+            </div>
+            <div>
+                <dt>Currency</dt>
+                <dd>{{ if .Currency }}{{ .Currency }}{{ else }}Not resolved{{ end }}</dd>
+            </div>
+            <div>
+                <dt>Country</dt>
+                <dd>{{ if .Country }}{{ .Country }}{{ else }}Not resolved{{ end }}</dd>
+            </div>
+            <div>
+                <dt>Composition blocks</dt>
+                <dd>{{ len .Blocks }}</dd>
+            </div>
+        </dl>
+        {{/block}}
+        {{block "actions"}}
+        {{slot . "pdp.actions" "before"}}
+        <div class="product-detail-card__actions">
+            {{slot . "pdp.actions" "prepend"}}
+            <a class="button-link" href="/">Back to home</a>
+            {{ if .CartForm }}
+            <form class="product-detail-card__cart" action="{{ .CartForm.Action }}" method="post" hx-post="{{ .CartForm.Action }}" hx-target="#product-cart-status" hx-swap="innerHTML" hx-on::before-request="document.getElementById('product-cart-status').textContent = ''" hx-on::before-swap="if (event.detail.xhr.status >= 200 && event.detail.xhr.status < 300) { event.detail.shouldSwap = false; } else { event.detail.shouldSwap = true; event.detail.target = document.getElementById('product-cart-status'); }" hx-on::after-request="if (event.detail.xhr.status >= 200 && event.detail.xhr.status < 300) { document.getElementById('product-cart-status').textContent = 'Added to cart.'; htmx.trigger(document.body, 'cart-updated'); }">
+                <input type="hidden" name="variant_id" value="{{ .CartForm.VariantID }}">
+                <input type="hidden" name="quantity" value="{{ .CartForm.Quantity }}">
+                <input type="hidden" name="redirect_to" value="{{ .CartForm.RedirectTo }}">
+                {{ range .CartForm.ExtensionFields }}
+                <label>{{ .Label }}
+                    {{ if eq .Type "bool" }}
+                    <input type="hidden" name="{{ .FormName }}" value="false">
+                    <input type="checkbox" name="{{ .FormName }}" value="true" {{ if .Required }}required{{ end }}>
+                    {{ else if eq .Type "enum" }}
+                    <select name="{{ .FormName }}" {{ if .Required }}required{{ end }}>
+                        <option value="">—</option>
+                        {{ range .Options }}<option value="{{ . }}">{{ . }}</option>{{ end }}
+                    </select>
+                    {{ else if or (eq .Type "int") (eq .Type "money") }}
+                    <input type="number" step="1" name="{{ .FormName }}" {{ if .Required }}required{{ end }}>
+                    {{ else }}
+                    <input type="text" name="{{ .FormName }}" {{ if .Required }}required{{ end }}>
+                    {{ end }}
+                </label>
+                {{ end }}
+                <button type="submit">Add to cart</button>
+                <span id="product-cart-status" class="muted-note product-detail-card__cart-status" role="status" aria-live="polite"></span>
+            </form>
+            {{ else }}
+            <span class="muted-note">This product is not purchasable yet.</span>
+            {{ end }}
+            {{slot . "pdp.actions" "append"}}
+        </div>
+        {{slot . "pdp.actions" "after"}}
+        {{/block}}
+        {{/layout_blocks}}
+    </div>
+    {{/slot_container}}
+</section>
+{{ if .Layout.UseFragments }}
+<div id="fragment-recently-viewed" class="storefront-fragment" hx-get="/fragments/recently-viewed?add={{ .Product.ID }}" hx-trigger="load" hx-swap="outerHTML">
+    <section class="recently-viewed" aria-busy="true"><p class="muted-note">Loading recently viewed…</p></section>
+</div>
+{{ end }}
+{{ end }}
+{{ template "layout.html" . }}

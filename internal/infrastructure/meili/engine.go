@@ -1,0 +1,661 @@
+package meili
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/search"
+)
+
+// Compile-time check.
+var _ search.SearchEngine = (*Engine)(nil)
+
+// httpTimeout is used for all Meilisearch HTTP calls.
+const httpTimeout = 10 * time.Second
+
+// taskPollInterval is the delay between task status checks.
+const taskPollInterval = 100 * time.Millisecond
+
+// Config holds the settings needed to connect to a Meilisearch instance.
+type Config struct {
+	Host   string // e.g. "http://localhost:7700"
+	APIKey string // master or search key
+	Index  string // product index UID, e.g. "products"
+	// CategoriesIndex is the index UID for category documents (PR-1037),
+	// e.g. "categories". Required, like Index — validated by New.
+	CategoriesIndex string
+}
+
+// taskInfo represents a Meilisearch async task response.
+type taskInfo struct {
+	TaskUID int64  `json:"taskUid"`
+	Status  string `json:"status"`
+}
+
+// meiliAPI is the subset of Meilisearch HTTP operations we use.
+// Extracting this interface makes unit-testing possible without a real server.
+type meiliAPI interface {
+	addDocuments(ctx context.Context, docs []map[string]interface{}) (int64, error)
+	deleteDocument(ctx context.Context, id string) (int64, error)
+	search(ctx context.Context, req searchRequest) (searchResponse, error)
+	updateSettings(ctx context.Context, settings indexSettings) (int64, error)
+	getTask(ctx context.Context, taskUID int64) (taskInfo, error)
+}
+
+// Engine implements search.SearchEngine backed by Meilisearch.
+type Engine struct {
+	api             meiliAPI
+	index           string
+	categoriesAPI   meiliAPI
+	categoriesIndex string
+}
+
+// New creates an Engine and configures the Meilisearch index settings for
+// both the product and category indexes.
+func New(cfg Config) (*Engine, error) {
+	if cfg.Host == "" {
+		return nil, fmt.Errorf("meili: empty host")
+	}
+	if cfg.Index == "" {
+		return nil, fmt.Errorf("meili: empty index")
+	}
+	if cfg.CategoriesIndex == "" {
+		return nil, fmt.Errorf("meili: empty categories index")
+	}
+	if cfg.CategoriesIndex == cfg.Index {
+		return nil, fmt.Errorf("meili: categories index %q must differ from the product index", cfg.CategoriesIndex)
+	}
+
+	host := strings.TrimRight(cfg.Host, "/")
+	client := &httpClient{
+		base:   host,
+		apiKey: cfg.APIKey,
+		index:  cfg.Index,
+		http:   &http.Client{Timeout: httpTimeout},
+	}
+	categoriesClient := &httpClient{
+		base:   host,
+		apiKey: cfg.APIKey,
+		index:  cfg.CategoriesIndex,
+		http:   &http.Client{Timeout: httpTimeout},
+	}
+
+	e := &Engine{api: client, index: cfg.Index, categoriesAPI: categoriesClient, categoriesIndex: cfg.CategoriesIndex}
+
+	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer cancel()
+	taskUID, err := client.updateSettings(ctx, defaultSettings())
+	if err != nil {
+		return nil, fmt.Errorf("meili: configure index %q: %w", cfg.Index, err)
+	}
+	if err := e.waitForTask(ctx, taskUID); err != nil {
+		return nil, fmt.Errorf("meili: configure index %q: %w", cfg.Index, err)
+	}
+
+	// A fresh timeout, not the ctx above: that budget can already be
+	// mostly spent by the product index's own updateSettings+waitForTask
+	// round trip, which would silently shrink the categories index's
+	// effective configure timeout depending on how long the product step
+	// happened to take — httpTimeout is meant as a per-operation budget
+	// (same as httpClient's own http.Client{Timeout: httpTimeout}), not
+	// one shared across two sequential setup steps.
+	catCtx, catCancel := context.WithTimeout(context.Background(), httpTimeout)
+	defer catCancel()
+	catTaskUID, err := categoriesClient.updateSettings(catCtx, categoriesDefaultSettings())
+	if err != nil {
+		return nil, fmt.Errorf("meili: configure index %q: %w", cfg.CategoriesIndex, err)
+	}
+	if err := e.waitForTask(catCtx, catTaskUID); err != nil {
+		return nil, fmt.Errorf("meili: configure index %q: %w", cfg.CategoriesIndex, err)
+	}
+
+	return e, nil
+}
+
+// newWithAPI is a test-only constructor.
+func newWithAPI(api meiliAPI, index string) *Engine {
+	return &Engine{api: api, index: index}
+}
+
+// newWithAPIAndCategories is a test-only constructor for tests exercising
+// category indexing.
+func newWithAPIAndCategories(api meiliAPI, index string, categoriesAPI meiliAPI, categoriesIndex string) *Engine {
+	return &Engine{api: api, index: index, categoriesAPI: categoriesAPI, categoriesIndex: categoriesIndex}
+}
+
+// Name returns "meilisearch".
+func (e *Engine) Name() string { return "meilisearch" }
+
+// waitForTask polls a Meilisearch task until it reaches a terminal state.
+func (e *Engine) waitForTask(ctx context.Context, taskUID int64) error {
+	for {
+		info, err := e.api.getTask(ctx, taskUID)
+		if err != nil {
+			return fmt.Errorf("meili: get task %d: %w", taskUID, err)
+		}
+		switch info.Status {
+		case "succeeded":
+			return nil
+		case "failed":
+			return fmt.Errorf("meili: task %d failed", taskUID)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(taskPollInterval):
+		}
+	}
+}
+
+// IndexProduct adds or updates a product in the Meilisearch index.
+func (e *Engine) IndexProduct(ctx context.Context, p search.Product) error {
+	doc := productToDocMap(p)
+	if _, err := e.api.addDocuments(ctx, []map[string]interface{}{doc}); err != nil {
+		return fmt.Errorf("meili: index product %s: %w", p.ID, err)
+	}
+	return nil
+}
+
+// RemoveProduct removes a product from the Meilisearch index.
+func (e *Engine) RemoveProduct(ctx context.Context, productID string) error {
+	if _, err := e.api.deleteDocument(ctx, productID); err != nil {
+		return fmt.Errorf("meili: remove product %s: %w", productID, err)
+	}
+	return nil
+}
+
+// IndexCategory adds or updates a category document in the categories index.
+func (e *Engine) IndexCategory(ctx context.Context, c search.Category) error {
+	doc := categoryToDocMap(c)
+	if _, err := e.categoriesAPI.addDocuments(ctx, []map[string]interface{}{doc}); err != nil {
+		return fmt.Errorf("meili: index category %s: %w", c.ID, err)
+	}
+	return nil
+}
+
+// RemoveCategory removes a category from the categories index.
+func (e *Engine) RemoveCategory(ctx context.Context, categoryID string) error {
+	if _, err := e.categoriesAPI.deleteDocument(ctx, categoryID); err != nil {
+		return fmt.Errorf("meili: remove category %s: %w", categoryID, err)
+	}
+	return nil
+}
+
+// ConfigureAttributeFacets registers flattened attr_<code> fields as filterable for facets and filters.
+func (e *Engine) ConfigureAttributeFacets(ctx context.Context, codes []string) error {
+	settings := defaultSettings()
+	seen := make(map[string]struct{}, len(settings.FilterableAttributes)+len(codes))
+	for _, field := range settings.FilterableAttributes {
+		seen[field] = struct{}{}
+	}
+	for _, code := range codes {
+		if !search.AttributeCodeValid(code) || search.ReservedFacetKey(code) {
+			continue
+		}
+		field := search.AttributeIndexField(code)
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		settings.FilterableAttributes = append(settings.FilterableAttributes, field)
+	}
+	taskUID, err := e.api.updateSettings(ctx, settings)
+	if err != nil {
+		return fmt.Errorf("meili: configure attribute facets: %w", err)
+	}
+	if err := e.waitForTask(ctx, taskUID); err != nil {
+		return fmt.Errorf("meili: configure attribute facets: %w", err)
+	}
+	return nil
+}
+
+// Search executes a search query against Meilisearch.
+func (e *Engine) Search(ctx context.Context, query search.SearchQuery) (search.SearchResult, error) {
+	if err := query.Validate(); err != nil {
+		return search.SearchResult{}, err
+	}
+
+	req := buildSearchRequest(query)
+	resp, err := e.api.search(ctx, req)
+	if err != nil {
+		return search.SearchResult{}, fmt.Errorf("meili: search: %w", err)
+	}
+
+	return mapSearchResponse(resp), nil
+}
+
+// Suggest returns autocomplete suggestions via Meilisearch prefix search.
+// Visibility filters come from query.Filters only (same as Search). Always
+// ANDs fail-open status=active (or missing) as defense in depth. If
+// Meilisearch is unreachable, an empty list is returned (graceful degradation).
+func (e *Engine) Suggest(ctx context.Context, query search.SuggestQuery) ([]search.Suggestion, error) {
+	if query.Prefix == "" {
+		return nil, nil
+	}
+
+	req := searchRequest{
+		Q:      query.Prefix,
+		Limit:  query.EffectiveLimit(),
+		Filter: buildFilterExpression(query.Filters, true),
+	}
+	resp, err := e.api.search(ctx, req)
+	if err != nil {
+		// Graceful degradation: return empty list on failure.
+		return nil, nil
+	}
+
+	suggestions := make([]search.Suggestion, 0, len(resp.Hits))
+	for _, raw := range resp.Hits {
+		if doc, ok := docFromHit(raw); ok {
+			suggestions = append(suggestions, search.Suggestion{
+				Text:      doc.Name,
+				Type:      "product",
+				URL:       "/products/" + doc.Slug,
+				ProductID: doc.ID,
+			})
+		}
+	}
+	return suggestions, nil
+}
+
+// --- document mapping ---
+
+type document struct {
+	ID                  string                 `json:"id"`
+	Name                string                 `json:"name"`
+	Description         string                 `json:"description"`
+	Slug                string                 `json:"slug"`
+	Type                string                 `json:"type,omitempty"`
+	Status              string                 `json:"status,omitempty"`
+	CategoryIDs         []string               `json:"category_ids,omitempty"`
+	Price               int64                  `json:"price"`
+	InStock             bool                   `json:"in_stock"`
+	CreatedAt           int64                  `json:"created_at"`
+	Attributes          map[string]interface{} `json:"attributes,omitempty"`
+	VisibleInCatalog    bool                   `json:"visible_in_catalog"`
+	VisibleInSearch     bool                   `json:"visible_in_search"`
+	VisibleIndividually bool                   `json:"visible_individually"`
+	Purchasable         bool                   `json:"purchasable"`
+}
+
+// categoryDocument is the document shape for the categories index.
+type categoryDocument struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Slug         string `json:"slug"`
+	Description  string `json:"description,omitempty"`
+	ParentID     string `json:"parent_id,omitempty"`
+	ProductCount int    `json:"product_count"`
+}
+
+func categoryToDocMap(c search.Category) map[string]interface{} {
+	doc := map[string]interface{}{
+		"id":            c.ID,
+		"name":          c.Name,
+		"slug":          c.Slug,
+		"description":   c.Description,
+		"product_count": c.ProductCount,
+	}
+	if c.ParentID != "" {
+		doc["parent_id"] = c.ParentID
+	}
+	return doc
+}
+
+func productToDocMap(p search.Product) map[string]interface{} {
+	// Do not default empty Status to "active": that would resurrect drafts under
+	// a status=active filter when the source left status blank. Write the scanned
+	// value, or omit the field so fail-open (status NOT EXISTS) applies until a
+	// correct reindex.
+	doc := map[string]interface{}{
+		"id":                   p.ID,
+		"name":                 p.Name,
+		"description":          p.Description,
+		"slug":                 p.Slug,
+		"type":                 p.Type,
+		"price":                p.Price,
+		"in_stock":             p.InStock,
+		"created_at":           p.CreatedAt.Unix(),
+		"visible_in_catalog":   p.VisibleInCatalog,
+		"visible_in_search":    p.VisibleInSearch,
+		"visible_individually": p.VisibleIndividually,
+		"purchasable":          p.Purchasable,
+	}
+	if status := strings.TrimSpace(p.Status); status != "" {
+		doc["status"] = status
+	}
+	if len(p.CategoryIDs) > 0 {
+		doc["category_ids"] = p.CategoryIDs
+	}
+	if len(p.Attributes) > 0 {
+		doc["attributes"] = p.Attributes
+		for code, raw := range p.Attributes {
+			if !search.AttributeCodeValid(code) || search.ReservedFacetKey(code) {
+				continue
+			}
+			if value := attributeIndexValue(raw); value != "" {
+				doc[search.AttributeIndexField(code)] = value
+			}
+		}
+	}
+	return doc
+}
+
+func attributeIndexValue(raw interface{}) string {
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func docFromHit(raw json.RawMessage) (document, bool) {
+	var doc document
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return document{}, false
+	}
+	return doc, true
+}
+
+// --- search request / response ---
+
+type searchRequest struct {
+	Q      string   `json:"q"`
+	Filter string   `json:"filter,omitempty"`
+	Sort   []string `json:"sort,omitempty"`
+	Limit  int      `json:"limit"`
+	Offset int      `json:"offset"`
+	Facets []string `json:"facets,omitempty"`
+}
+
+type searchResponse struct {
+	Hits               []json.RawMessage         `json:"hits"`
+	EstimatedTotalHits int                       `json:"estimatedTotalHits"`
+	FacetDistribution  map[string]map[string]int `json:"facetDistribution,omitempty"`
+}
+
+func buildSearchRequest(q search.SearchQuery) searchRequest {
+	req := searchRequest{
+		Q:      q.Text,
+		Limit:  q.EffectiveLimit(),
+		Offset: q.Offset,
+		Facets: []string{"category_ids"},
+		Filter: buildFilterExpression(q.Filters, true),
+	}
+
+	for _, code := range q.FacetAttributes {
+		if !search.AttributeCodeValid(code) || search.ReservedFacetKey(code) {
+			continue
+		}
+		field := search.AttributeIndexField(code)
+		if !facetFieldIncluded(req.Facets, field) {
+			req.Facets = append(req.Facets, field)
+		}
+	}
+
+	if q.Sort != "" {
+		if strings.HasPrefix(q.Sort, "-") {
+			req.Sort = []string{q.Sort[1:] + ":desc"}
+		} else {
+			req.Sort = []string{q.Sort + ":asc"}
+		}
+	}
+
+	return req
+}
+
+// buildFilterExpression turns Search/Suggest Filters into a Meilisearch filter
+// string. When requireActive is true, fail-open status=active (or missing) is
+// always ANDed (defense in depth alongside index-time EffectiveAxis). Visibility
+// bools use MeiliVisibilityEqualsTrue so documents missing the new attrs fail
+// open until reindex (aligned with Postgres DEFAULT true).
+func buildFilterExpression(filters map[string]interface{}, requireActive bool) string {
+	var parts []string
+	if requireActive {
+		parts = append(parts, search.MeiliStatusActiveOrMissing())
+	}
+	for k, v := range filters {
+		switch k {
+		case "category":
+			parts = append(parts, fmt.Sprintf("category_ids = %q", v))
+		case "price_min":
+			parts = append(parts, fmt.Sprintf("price >= %v", v))
+		case "price_max":
+			parts = append(parts, fmt.Sprintf("price <= %v", v))
+		case "in_stock":
+			parts = append(parts, fmt.Sprintf("in_stock = %v", v))
+		case search.FilterVisibleInSearch, search.FilterVisibleInCatalog, search.FilterPurchasable:
+			if search.FilterBoolTrue(v) {
+				parts = append(parts, search.MeiliVisibilityEqualsTrue(k))
+			}
+		case search.FilterType:
+			if typeStr, ok := search.SanitizeFilterType(v); ok {
+				parts = append(parts, fmt.Sprintf("type = %q", typeStr))
+			}
+		case search.FilterStatus:
+			// Caller-supplied status is ignored when requireActive already
+			// pinned the fail-open active gate; avoid duplicating / weakening it.
+			if !requireActive {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+					parts = append(parts, fmt.Sprintf("%s = %q", search.FilterStatus, strings.TrimSpace(s)))
+				}
+			}
+		default:
+			if code, ok := search.AttributeCodeFromFilterKey(k); ok && !search.ReservedFacetKey(code) {
+				parts = append(parts, fmt.Sprintf("%s = %q", search.AttributeFilterKey(code), fmt.Sprint(v)))
+			}
+		}
+	}
+	return strings.Join(parts, " AND ")
+}
+
+func facetFieldIncluded(facets []string, field string) bool {
+	for _, f := range facets {
+		if f == field {
+			return true
+		}
+	}
+	return false
+}
+
+func mapSearchResponse(resp searchResponse) search.SearchResult {
+	products := make([]search.Product, 0, len(resp.Hits))
+	for _, raw := range resp.Hits {
+		if doc, ok := docFromHit(raw); ok {
+			products = append(products, search.Product{
+				ID:                  doc.ID,
+				Name:                doc.Name,
+				Slug:                doc.Slug,
+				Description:         doc.Description,
+				Type:                doc.Type,
+				Status:              doc.Status,
+				CategoryIDs:         doc.CategoryIDs,
+				Price:               doc.Price,
+				InStock:             doc.InStock,
+				CreatedAt:           time.Unix(doc.CreatedAt, 0).UTC(),
+				Attributes:          doc.Attributes,
+				VisibleInCatalog:    doc.VisibleInCatalog,
+				VisibleInSearch:     doc.VisibleInSearch,
+				VisibleIndividually: doc.VisibleIndividually,
+				Purchasable:         doc.Purchasable,
+			})
+		}
+	}
+
+	facets := make(map[string][]search.FacetValue)
+	for key, dist := range resp.FacetDistribution {
+		outKey := key
+		if code, ok := search.AttributeCodeFromFilterKey(key); ok {
+			outKey = code
+		}
+		fv := make([]search.FacetValue, 0, len(dist))
+		for val, count := range dist {
+			fv = append(fv, search.FacetValue{Value: val, Count: count})
+		}
+		facets[outKey] = fv
+	}
+
+	return search.SearchResult{
+		Products: products,
+		Total:    resp.EstimatedTotalHits,
+		Facets:   facets,
+	}
+}
+
+// --- index settings ---
+
+type indexSettings struct {
+	SearchableAttributes []string `json:"searchableAttributes"`
+	FilterableAttributes []string `json:"filterableAttributes"`
+	SortableAttributes   []string `json:"sortableAttributes"`
+	DisplayedAttributes  []string `json:"displayedAttributes"`
+}
+
+func defaultSettings() indexSettings {
+	return indexSettings{
+		SearchableAttributes: []string{"name", "description", "slug"},
+		FilterableAttributes: []string{
+			"category_ids", "price", "in_stock",
+			"type", "status",
+			"visible_in_catalog", "visible_in_search", "visible_individually", "purchasable",
+		},
+		SortableAttributes:  []string{"price", "name", "created_at"},
+		DisplayedAttributes: []string{"*"},
+	}
+}
+
+// categoriesDefaultSettings configures the categories index: searchable on
+// name/slug/description, filterable/sortable on parent_id/product_count
+// for a future category browsing/admin UI (out of scope for PR-1037
+// itself, which only wires the write side).
+func categoriesDefaultSettings() indexSettings {
+	return indexSettings{
+		SearchableAttributes: []string{"name", "slug", "description"},
+		FilterableAttributes: []string{"parent_id"},
+		SortableAttributes:   []string{"name", "product_count"},
+		DisplayedAttributes:  []string{"*"},
+	}
+}
+
+// --- HTTP client ---
+
+type httpClient struct {
+	base   string
+	apiKey string
+	index  string
+	http   *http.Client
+}
+
+func (c *httpClient) addDocuments(ctx context.Context, docs []map[string]interface{}) (int64, error) {
+	body, err := json.Marshal(docs)
+	if err != nil {
+		return 0, err
+	}
+	url := fmt.Sprintf("%s/indexes/%s/documents", c.base, c.index)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return 0, err
+	}
+	var task taskInfo
+	if err := c.doRequest(req, &task); err != nil {
+		return 0, err
+	}
+	return task.TaskUID, nil
+}
+
+func (c *httpClient) deleteDocument(ctx context.Context, id string) (int64, error) {
+	url := fmt.Sprintf("%s/indexes/%s/documents/%s", c.base, c.index, id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	var task taskInfo
+	if err := c.doRequest(req, &task); err != nil {
+		return 0, err
+	}
+	return task.TaskUID, nil
+}
+
+func (c *httpClient) search(ctx context.Context, sr searchRequest) (searchResponse, error) {
+	body, err := json.Marshal(sr)
+	if err != nil {
+		return searchResponse{}, err
+	}
+	url := fmt.Sprintf("%s/indexes/%s/search", c.base, c.index)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return searchResponse{}, err
+	}
+	var resp searchResponse
+	if err := c.doRequest(req, &resp); err != nil {
+		return searchResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *httpClient) updateSettings(ctx context.Context, settings indexSettings) (int64, error) {
+	body, err := json.Marshal(settings)
+	if err != nil {
+		return 0, err
+	}
+	url := fmt.Sprintf("%s/indexes/%s/settings", c.base, c.index)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, strings.NewReader(string(body)))
+	if err != nil {
+		return 0, err
+	}
+	var task taskInfo
+	if err := c.doRequest(req, &task); err != nil {
+		return 0, err
+	}
+	return task.TaskUID, nil
+}
+
+func (c *httpClient) getTask(ctx context.Context, taskUID int64) (taskInfo, error) {
+	url := fmt.Sprintf("%s/tasks/%d", c.base, taskUID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return taskInfo{}, err
+	}
+	var info taskInfo
+	if err := c.doRequest(req, &info); err != nil {
+		return taskInfo{}, err
+	}
+	return info, nil
+}
+
+func (c *httpClient) doRequest(req *http.Request, dest interface{}) error {
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("meili: read response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("meili: %s %s: status %d: %s", req.Method, req.URL.Path, resp.StatusCode, string(respBody))
+	}
+
+	if dest != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, dest); err != nil {
+			return fmt.Errorf("meili: decode response: %w", err)
+		}
+	}
+	return nil
+}

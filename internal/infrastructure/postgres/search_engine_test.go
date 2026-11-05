@@ -1,0 +1,919 @@
+package postgres_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/domain/pricing"
+	"github.com/akarso/shopanda/internal/domain/search"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/internal/platform/id"
+)
+
+func TestSearchEngine_Name(t *testing.T) {
+	db := testDB(t)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	if got := engine.Name(); got != "postgres" {
+		t.Errorf("Name() = %q, want %q", got, "postgres")
+	}
+}
+
+func TestSearchEngine_IndexProduct(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+
+	// Create a product first.
+	p := mustNewProduct(t, "Indexable Shoe", "indexable-shoe-"+id.New()[:8])
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+	if err := repo.Create(ctx, &p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Publish it so it appears in search.
+	p.Status = catalog.StatusActive
+	if err := repo.Update(ctx, &p); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	sp := search.Product{
+		ID:          p.ID,
+		Name:        p.Name,
+		Slug:        p.Slug,
+		Description: "comfortable running shoe",
+	}
+
+	err = engine.IndexProduct(ctx, sp)
+	if err != nil {
+		t.Fatalf("IndexProduct: %v", err)
+	}
+
+	// The product should now be searchable.
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "running shoe"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total == 0 {
+		t.Error("expected at least 1 result after IndexProduct")
+	}
+}
+
+func TestSearchEngine_IndexProduct_NotFound(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+
+	sp := search.Product{ID: id.New(), Name: "Ghost", Description: "none"}
+	err = engine.IndexProduct(context.Background(), sp)
+	if err == nil {
+		t.Fatal("expected error for non-existent product")
+	}
+}
+
+// TestSearchEngine_IndexCategory_UpdatesSearchVector pins that
+// IndexCategory (the trigger's explicit-reindex counterpart, see
+// migrations/072) actually populates categories.search_vector from
+// name/slug, mirroring IndexProduct's own trigger-vs-explicit-call split.
+func TestSearchEngine_IndexCategory_UpdatesSearchVector(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	t.Cleanup(func() { mustExec(t, db, "DELETE FROM categories") })
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+
+	c := mustNewCategory(t, "Vintage Cameras", "vintage-cameras-"+id.New()[:8])
+	mustExec(t, db, "INSERT INTO categories (id, parent_id, name, slug, position, meta, created_at, updated_at) VALUES ($1, NULL, $2, $3, 0, '{}'::jsonb, now(), now())", c.ID, c.Name, c.Slug)
+	// Clear the vector the insert trigger already populated, so a passing
+	// assertion below is actually exercising IndexCategory, not the trigger.
+	mustExec(t, db, "UPDATE categories SET search_vector = NULL WHERE id = $1", c.ID)
+
+	if err := engine.IndexCategory(ctx, search.Category{ID: c.ID, Name: c.Name, Slug: c.Slug}); err != nil {
+		t.Fatalf("IndexCategory: %v", err)
+	}
+
+	var isNull bool
+	if err := db.QueryRowContext(ctx, "SELECT search_vector IS NULL FROM categories WHERE id = $1", c.ID).Scan(&isNull); err != nil {
+		t.Fatalf("query search_vector: %v", err)
+	}
+	if isNull {
+		t.Fatal("search_vector is NULL after IndexCategory, want populated")
+	}
+}
+
+func TestSearchEngine_IndexCategory_NotFound(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+
+	err = engine.IndexCategory(context.Background(), search.Category{ID: id.New(), Name: "Ghost"})
+	if err == nil {
+		t.Fatal("expected error for non-existent category")
+	}
+}
+
+func TestSearchEngine_RemoveCategory(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	t.Cleanup(func() { mustExec(t, db, "DELETE FROM categories") })
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+
+	c := mustNewCategory(t, "Removable Category", "removable-category-"+id.New()[:8])
+	mustExec(t, db, "INSERT INTO categories (id, parent_id, name, slug, position, meta, created_at, updated_at) VALUES ($1, NULL, $2, $3, 0, '{}'::jsonb, now(), now())", c.ID, c.Name, c.Slug)
+
+	if err := engine.RemoveCategory(ctx, c.ID); err != nil {
+		t.Fatalf("RemoveCategory: %v", err)
+	}
+
+	var isNull bool
+	if err := db.QueryRowContext(ctx, "SELECT search_vector IS NULL FROM categories WHERE id = $1", c.ID).Scan(&isNull); err != nil {
+		t.Fatalf("query search_vector: %v", err)
+	}
+	if !isNull {
+		t.Fatal("search_vector is not NULL after RemoveCategory, want NULL")
+	}
+}
+
+func TestSearchEngine_RemoveProduct(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+
+	// Create and publish a product.
+	p := mustNewProduct(t, "Removable Widget", "removable-widget-"+id.New()[:8])
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+	if err := repo.Create(ctx, &p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	p.Status = catalog.StatusActive
+	if err := repo.Update(ctx, &p); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Index it explicitly.
+	sp := search.Product{ID: p.ID, Name: p.Name, Description: "unique removable item"}
+	if err := engine.IndexProduct(ctx, sp); err != nil {
+		t.Fatalf("IndexProduct: %v", err)
+	}
+
+	// Remove from search index.
+	if err := engine.RemoveProduct(ctx, p.ID); err != nil {
+		t.Fatalf("RemoveProduct: %v", err)
+	}
+
+	// Should no longer appear in search.
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "unique removable item"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total != 0 {
+		t.Errorf("Total = %d, want 0 after RemoveProduct", result.Total)
+	}
+}
+
+func TestSearchEngine_RemoveProduct_TriggerRepopulates(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	// Create and publish a product.
+	p := mustNewProduct(t, "Trigger Test Widget", "trigger-test-"+id.New()[:8])
+	p.Description = "unique trigger repopulation test"
+	p.Status = catalog.StatusActive
+	if err := repo.Create(ctx, &p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := repo.Update(ctx, &p); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Remove from search index (sets search_vector = NULL).
+	if err := engine.RemoveProduct(ctx, p.ID); err != nil {
+		t.Fatalf("RemoveProduct: %v", err)
+	}
+
+	// Update the product name via repo — the trigger fires on name/description changes
+	// and repopulates search_vector.
+	p.Name = "Trigger Restored Widget"
+	if err := repo.Update(ctx, &p); err != nil {
+		t.Fatalf("Update after remove: %v", err)
+	}
+
+	// The trigger should have repopulated search_vector, making it searchable again.
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "trigger restored"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total == 0 {
+		t.Error("expected product to be searchable again after trigger repopulation")
+	}
+}
+
+func TestSearchEngine_Search_TextMatch(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	// Create two published products.
+	p1 := mustNewProduct(t, "Leather Boots", "leather-boots-"+id.New()[:8])
+	p1.Description = "premium leather boots for hiking"
+	p1.Status = catalog.StatusActive
+	if err := repo.Create(ctx, &p1); err != nil {
+		t.Fatalf("Create p1: %v", err)
+	}
+	if err := repo.Update(ctx, &p1); err != nil {
+		t.Fatalf("Update p1: %v", err)
+	}
+
+	p2 := mustNewProduct(t, "Cotton T-Shirt", "cotton-tshirt-"+id.New()[:8])
+	p2.Description = "comfortable cotton t-shirt"
+	p2.Status = catalog.StatusActive
+	if err := repo.Create(ctx, &p2); err != nil {
+		t.Fatalf("Create p2: %v", err)
+	}
+	if err := repo.Update(ctx, &p2); err != nil {
+		t.Fatalf("Update p2: %v", err)
+	}
+
+	// Search for leather.
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "leather"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total != 1 {
+		t.Errorf("Total = %d, want 1", result.Total)
+	}
+	if len(result.Products) != 1 {
+		t.Fatalf("len(Products) = %d, want 1", len(result.Products))
+	}
+	if result.Products[0].ID != p1.ID {
+		t.Errorf("Product ID = %q, want %q", result.Products[0].ID, p1.ID)
+	}
+}
+
+func TestSearchEngine_Search_EmptyText(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	p := mustNewProduct(t, "Visible Product", "visible-"+id.New()[:8])
+	p.Status = catalog.StatusActive
+	if err := repo.Create(ctx, &p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := repo.Update(ctx, &p); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Empty text returns all active products with search vectors.
+	result, err := engine.Search(ctx, search.SearchQuery{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total < 1 {
+		t.Error("expected at least 1 result for empty text query")
+	}
+}
+
+func TestSearchEngine_Search_Pagination(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	suffix := id.New()[:6]
+	for i := 0; i < 3; i++ {
+		p := mustNewProduct(t, fmt.Sprintf("Paginated Item %d", i), fmt.Sprintf("paginated-%d-%s", i, suffix))
+		p.Description = "paginated searchable item"
+		p.Status = catalog.StatusActive
+		if err := repo.Create(ctx, &p); err != nil {
+			t.Fatalf("Create p%d: %v", i, err)
+		}
+		if err := repo.Update(ctx, &p); err != nil {
+			t.Fatalf("Update p%d: %v", i, err)
+		}
+	}
+
+	// Fetch first page (limit 2).
+	r1, err := engine.Search(ctx, search.SearchQuery{Text: "paginated", Limit: 2})
+	if err != nil {
+		t.Fatalf("Search page 1: %v", err)
+	}
+	if r1.Total < 3 {
+		t.Errorf("Total = %d, want >= 3", r1.Total)
+	}
+	if len(r1.Products) != 2 {
+		t.Errorf("len(Products) = %d, want 2", len(r1.Products))
+	}
+
+	// Fetch second page.
+	r2, err := engine.Search(ctx, search.SearchQuery{Text: "paginated", Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("Search page 2: %v", err)
+	}
+	if len(r2.Products) < 1 {
+		t.Errorf("len(Products) = %d, want >= 1", len(r2.Products))
+	}
+}
+
+func TestSearchEngine_Search_SortByName(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	suffix := id.New()[:6]
+	names := []string{"Alpha Sortable " + suffix, "Charlie Sortable " + suffix, "Bravo Sortable " + suffix}
+	for _, name := range names {
+		p := mustNewProduct(t, name, "sort-"+id.New()[:8])
+		p.Description = "sortable product " + suffix
+		p.Status = catalog.StatusActive
+		if err := repo.Create(ctx, &p); err != nil {
+			t.Fatalf("Create %s: %v", name, err)
+		}
+		if err := repo.Update(ctx, &p); err != nil {
+			t.Fatalf("Update %s: %v", name, err)
+		}
+	}
+
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "sortable " + suffix, Sort: "name"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Products) < 3 {
+		t.Fatalf("len(Products) = %d, want >= 3", len(result.Products))
+	}
+	if result.Products[0].Name > result.Products[1].Name {
+		t.Errorf("expected ascending order: %q > %q", result.Products[0].Name, result.Products[1].Name)
+	}
+}
+
+func TestSearchEngine_Search_ValidationError(t *testing.T) {
+	db := testDB(t)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+
+	_, err = engine.Search(context.Background(), search.SearchQuery{Offset: -1})
+	if err == nil {
+		t.Fatal("expected validation error for negative offset")
+	}
+}
+
+func TestSearchEngine_Search_PopulatesPriceAvailabilityAndCreatedAt(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	t.Cleanup(func() {
+		for _, stmt := range []string{
+			"DELETE FROM reservations",
+			"DELETE FROM stock",
+			"DELETE FROM prices",
+			"DELETE FROM product_categories",
+			"DELETE FROM variants",
+			"DELETE FROM bundle_components",
+			"DELETE FROM grouped_members",
+			"DELETE FROM linked_eligible_parents",
+			"DELETE FROM linked_eligible_categories",
+			"DELETE FROM products",
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("cleanup failed for %q: %v", stmt, err)
+			}
+		}
+	})
+
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+
+	productRepo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+	variantRepo, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatalf("NewVariantRepo: %v", err)
+	}
+	priceRepo, err := postgres.NewPriceRepo(db)
+	if err != nil {
+		t.Fatalf("NewPriceRepo: %v", err)
+	}
+	stockRepo, err := postgres.NewStockRepo(db)
+	if err != nil {
+		t.Fatalf("NewStockRepo: %v", err)
+	}
+	reservationRepo, err := postgres.NewReservationRepo(db)
+	if err != nil {
+		t.Fatalf("NewReservationRepo: %v", err)
+	}
+
+	p := mustNewProduct(t, "Projected Search Product", "projected-search-"+id.New()[:8])
+	p.Description = "search projection coverage"
+	p.Status = catalog.StatusActive
+	if err := productRepo.Create(ctx, &p); err != nil {
+		t.Fatalf("Create product: %v", err)
+	}
+	if err := productRepo.Update(ctx, &p); err != nil {
+		t.Fatalf("Update product: %v", err)
+	}
+
+	v := mustNewVariant(t, p.ID, "SKU-SEARCH-"+id.New()[:8])
+	if err := variantRepo.Create(ctx, &v); err != nil {
+		t.Fatalf("Create variant: %v", err)
+	}
+
+	globalPrice, err := pricing.NewPrice(id.New(), v.ID, "", shared.MustNewMoney(1299, "EUR"))
+	if err != nil {
+		t.Fatalf("NewPrice global: %v", err)
+	}
+	if err := priceRepo.Upsert(ctx, &globalPrice); err != nil {
+		t.Fatalf("Upsert global price: %v", err)
+	}
+	storePrice, err := pricing.NewPrice(id.New(), v.ID, "store-1", shared.MustNewMoney(999, "EUR"))
+	if err != nil {
+		t.Fatalf("NewPrice store: %v", err)
+	}
+	if err := priceRepo.Upsert(ctx, &storePrice); err != nil {
+		t.Fatalf("Upsert store price: %v", err)
+	}
+
+	stockEntry, err := inventory.NewStockEntry(v.ID, 7)
+	if err != nil {
+		t.Fatalf("NewStockEntry: %v", err)
+	}
+	if err := stockRepo.SetStock(ctx, &stockEntry); err != nil {
+		t.Fatalf("SetStock: %v", err)
+	}
+
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "projection coverage"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("Total = %d, want 1", result.Total)
+	}
+	if len(result.Products) != 1 {
+		t.Fatalf("len(Products) = %d, want 1", len(result.Products))
+	}
+	got := result.Products[0]
+	if got.Price != 1299 {
+		t.Errorf("Price = %d, want 1299", got.Price)
+	}
+	if !got.InStock {
+		t.Error("InStock = false, want true")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero")
+	}
+	if got.CreatedAt.UTC().Unix() != p.CreatedAt.UTC().Unix() {
+		t.Errorf("CreatedAt = %v, want %v", got.CreatedAt.UTC(), p.CreatedAt.UTC())
+	}
+
+	storeScoped, err := engine.Search(ctx, search.SearchQuery{Text: "projection coverage", StoreID: "store-1", Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("Search store scoped: %v", err)
+	}
+	if len(storeScoped.Products) != 1 {
+		t.Fatalf("len(StoreScoped.Products) = %d, want 1", len(storeScoped.Products))
+	}
+	if storeScoped.Products[0].Price != 999 {
+		t.Errorf("store scoped Price = %d, want 999", storeScoped.Products[0].Price)
+	}
+
+	reservation, err := inventory.NewReservation(id.New(), v.ID, 7, time.Now().UTC().Add(15*time.Minute))
+	if err != nil {
+		t.Fatalf("NewReservation: %v", err)
+	}
+	if err := reservationRepo.Reserve(ctx, &reservation); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+
+	reservedOut, err := engine.Search(ctx, search.SearchQuery{Text: "projection coverage", StoreID: "store-1", Currency: "EUR"})
+	if err != nil {
+		t.Fatalf("Search reserved out: %v", err)
+	}
+	if len(reservedOut.Products) != 1 {
+		t.Fatalf("len(ReservedOut.Products) = %d, want 1", len(reservedOut.Products))
+	}
+	if reservedOut.Products[0].InStock {
+		t.Error("InStock = true after reservations consume all stock, want false")
+	}
+}
+
+func TestSearchEngine_Search_DynamicBundleInStockFromComponents(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	t.Cleanup(func() {
+		for _, stmt := range []string{
+			"DELETE FROM reservations",
+			"DELETE FROM stock",
+			"DELETE FROM prices",
+			"DELETE FROM product_categories",
+			"DELETE FROM variants",
+			"DELETE FROM bundle_components",
+			"DELETE FROM grouped_members",
+			"DELETE FROM linked_eligible_parents",
+			"DELETE FROM linked_eligible_categories",
+			"DELETE FROM products",
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("cleanup failed for %q: %v", stmt, err)
+			}
+		}
+	})
+
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	productRepo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+	variantRepo, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatalf("NewVariantRepo: %v", err)
+	}
+	stockRepo, err := postgres.NewStockRepo(db)
+	if err != nil {
+		t.Fatalf("NewStockRepo: %v", err)
+	}
+	componentRepo, err := postgres.NewBundleComponentRepo(db)
+	if err != nil {
+		t.Fatalf("NewBundleComponentRepo: %v", err)
+	}
+
+	bundle := mustNewProduct(t, "Dynamic Kit", "dynamic-kit-"+id.New()[:8])
+	bundle.Type = catalog.TypeBundle
+	bundle.StockMode = catalog.StockModeDynamic
+	bundle.Status = catalog.StatusActive
+	bundle.Description = "dynamic kit rollup coverage"
+	if err := productRepo.Create(ctx, &bundle); err != nil {
+		t.Fatalf("Create bundle: %v", err)
+	}
+	if err := productRepo.Update(ctx, &bundle); err != nil {
+		t.Fatalf("Update bundle: %v", err)
+	}
+	bundleVariant := mustNewVariant(t, bundle.ID, "SKU-DK-"+id.New()[:8])
+	if err := variantRepo.Create(ctx, &bundleVariant); err != nil {
+		t.Fatalf("Create bundle variant: %v", err)
+	}
+	own, err := inventory.NewStockEntry(bundleVariant.ID, 0)
+	if err != nil {
+		t.Fatalf("NewStockEntry bundle: %v", err)
+	}
+	if err := stockRepo.SetStock(ctx, &own); err != nil {
+		t.Fatalf("SetStock bundle: %v", err)
+	}
+
+	component := mustNewProduct(t, "Piece", "dynamic-piece-"+id.New()[:8])
+	component.Status = catalog.StatusActive
+	if err := productRepo.Create(ctx, &component); err != nil {
+		t.Fatalf("Create component: %v", err)
+	}
+	componentVariant := mustNewVariant(t, component.ID, "SKU-DP-"+id.New()[:8])
+	if err := variantRepo.Create(ctx, &componentVariant); err != nil {
+		t.Fatalf("Create component variant: %v", err)
+	}
+	compStock, err := inventory.NewStockEntry(componentVariant.ID, 4)
+	if err != nil {
+		t.Fatalf("NewStockEntry component: %v", err)
+	}
+	if err := stockRepo.SetStock(ctx, &compStock); err != nil {
+		t.Fatalf("SetStock component: %v", err)
+	}
+	link, err := catalog.NewBundleComponent(bundle.ID, component.ID, 2)
+	if err != nil {
+		t.Fatalf("NewBundleComponent: %v", err)
+	}
+	if err := componentRepo.Upsert(ctx, link); err != nil {
+		t.Fatalf("Upsert component: %v", err)
+	}
+
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "rollup coverage"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Products) != 1 {
+		t.Fatalf("len(Products) = %d, want 1", len(result.Products))
+	}
+	if !result.Products[0].InStock {
+		t.Fatal("InStock = false, want true when required components cover the bundle and the bundle's own stock is 0")
+	}
+}
+
+func TestSearchEngine_Search_DynamicBundleVirtualComponentInStock(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	t.Cleanup(func() {
+		for _, stmt := range []string{
+			"DELETE FROM reservations",
+			"DELETE FROM stock",
+			"DELETE FROM prices",
+			"DELETE FROM product_categories",
+			"DELETE FROM variants",
+			"DELETE FROM bundle_components",
+			"DELETE FROM grouped_members",
+			"DELETE FROM linked_eligible_parents",
+			"DELETE FROM linked_eligible_categories",
+			"DELETE FROM products",
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("cleanup failed for %q: %v", stmt, err)
+			}
+		}
+	})
+
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	productRepo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+	variantRepo, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatalf("NewVariantRepo: %v", err)
+	}
+	stockRepo, err := postgres.NewStockRepo(db)
+	if err != nil {
+		t.Fatalf("NewStockRepo: %v", err)
+	}
+	componentRepo, err := postgres.NewBundleComponentRepo(db)
+	if err != nil {
+		t.Fatalf("NewBundleComponentRepo: %v", err)
+	}
+
+	bundle := mustNewProduct(t, "Virtual Kit", "virtual-kit-"+id.New()[:8])
+	bundle.Type = catalog.TypeBundle
+	bundle.StockMode = catalog.StockModeDynamic
+	bundle.Status = catalog.StatusActive
+	bundle.Description = "virtual leaf rollup coverage"
+	if err := productRepo.Create(ctx, &bundle); err != nil {
+		t.Fatalf("Create bundle: %v", err)
+	}
+	if err := productRepo.Update(ctx, &bundle); err != nil {
+		t.Fatalf("Update bundle: %v", err)
+	}
+	bundleVariant := mustNewVariant(t, bundle.ID, "SKU-VK-"+id.New()[:8])
+	if err := variantRepo.Create(ctx, &bundleVariant); err != nil {
+		t.Fatalf("Create bundle variant: %v", err)
+	}
+	own, err := inventory.NewStockEntry(bundleVariant.ID, 0)
+	if err != nil {
+		t.Fatalf("NewStockEntry bundle: %v", err)
+	}
+	if err := stockRepo.SetStock(ctx, &own); err != nil {
+		t.Fatalf("SetStock bundle: %v", err)
+	}
+
+	component := mustNewProduct(t, "Download", "virtual-piece-"+id.New()[:8])
+	component.Type = catalog.TypeVirtual
+	component.Status = catalog.StatusActive
+	if err := productRepo.Create(ctx, &component); err != nil {
+		t.Fatalf("Create component: %v", err)
+	}
+	componentVariant := mustNewVariant(t, component.ID, "SKU-VV-"+id.New()[:8])
+	if err := variantRepo.Create(ctx, &componentVariant); err != nil {
+		t.Fatalf("Create component variant: %v", err)
+	}
+	link, err := catalog.NewBundleComponent(bundle.ID, component.ID, 1)
+	if err != nil {
+		t.Fatalf("NewBundleComponent: %v", err)
+	}
+	if err := componentRepo.Upsert(ctx, link); err != nil {
+		t.Fatalf("Upsert component: %v", err)
+	}
+
+	result, err := engine.Search(ctx, search.SearchQuery{Text: "virtual leaf rollup"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Products) != 1 {
+		t.Fatalf("len(Products) = %d, want 1", len(result.Products))
+	}
+	if !result.Products[0].InStock {
+		t.Fatal("InStock = false, want true for a virtual required component with no stock row")
+	}
+}
+
+// TestSearchEngine_IndexProduct_VisibilityColumnsAndFilter pins PR-1079:
+// IndexProduct writes denormalized search_visible_* columns, Search honors
+// visible_in_search, and Suggest applies visible_in_search when the
+// caller/enforce layer passes that filter.
+func TestSearchEngine_IndexProduct_VisibilityColumnsAndFilter(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	visible := mustNewProduct(t, "Vis Filter Visible", "vis-filter-visible-"+id.New()[:8])
+	hidden := mustNewProduct(t, "Vis Filter Hidden", "vis-filter-hidden-"+id.New()[:8])
+	for _, p := range []*catalog.Product{&visible, &hidden} {
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		p.Status = catalog.StatusActive
+		if err := repo.Update(ctx, p); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	}
+
+	if err := engine.IndexProduct(ctx, search.Product{
+		ID: visible.ID, Name: visible.Name, Description: "visibilityfiltertoken",
+		VisibleInCatalog: true, VisibleInSearch: true, VisibleIndividually: true, Purchasable: true,
+	}); err != nil {
+		t.Fatalf("IndexProduct visible: %v", err)
+	}
+	if err := engine.IndexProduct(ctx, search.Product{
+		ID: hidden.ID, Name: hidden.Name, Description: "visibilityfiltertoken",
+		VisibleInCatalog: true, VisibleInSearch: false, VisibleIndividually: true, Purchasable: true,
+	}); err != nil {
+		t.Fatalf("IndexProduct hidden: %v", err)
+	}
+
+	var searchVis bool
+	if err := db.QueryRowContext(ctx, `SELECT search_visible_in_search FROM products WHERE id = $1`, hidden.ID).Scan(&searchVis); err != nil {
+		t.Fatalf("scan search_visible_in_search: %v", err)
+	}
+	if searchVis {
+		t.Fatal("expected search_visible_in_search=false after IndexProduct")
+	}
+
+	result, err := engine.Search(ctx, search.SearchQuery{
+		Text: "visibilityfiltertoken",
+		Filters: map[string]interface{}{
+			search.FilterVisibleInSearch: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Total != 1 || len(result.Products) != 1 || result.Products[0].ID != visible.ID {
+		t.Fatalf("Search with visible_in_search: total=%d products=%v, want only %s", result.Total, result.Products, visible.ID)
+	}
+	if result.Products[0].Type == "" {
+		t.Error("expected Type projected onto search.Product")
+	}
+	if !result.Products[0].VisibleInSearch {
+		t.Error("expected VisibleInSearch=true on hit")
+	}
+
+	suggestions, err := engine.Suggest(ctx, search.SuggestQuery{
+		Prefix: "Vis Filter", Limit: 10,
+		Filters: map[string]interface{}{search.FilterVisibleInSearch: true},
+	})
+	if err != nil {
+		t.Fatalf("Suggest: %v", err)
+	}
+	sawVisible := false
+	for _, s := range suggestions {
+		if s.ProductID == hidden.ID {
+			t.Fatal("Suggest must exclude search_visible_in_search=false products")
+		}
+		if s.ProductID == visible.ID {
+			sawVisible = true
+		}
+	}
+	if !sawVisible {
+		t.Fatal("Suggest must include the visible product")
+	}
+}
+
+// TestSearchEngine_Suggest_CategoryFilter pins Search/Suggest filter parity:
+// category on SuggestQuery.Filters must exclude products outside that category.
+func TestSearchEngine_Suggest_CategoryFilter(t *testing.T) {
+	db := testDB(t)
+	ensureProductsTable(t, db)
+	engine, err := postgres.NewSearchEngine(db)
+	if err != nil {
+		t.Fatalf("NewSearchEngine: %v", err)
+	}
+	ctx := context.Background()
+	productRepo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatalf("NewProductRepo: %v", err)
+	}
+
+	catIn := mustNewCategory(t, "Suggest Cat In", "suggest-cat-in-"+id.New()[:8])
+	catOut := mustNewCategory(t, "Suggest Cat Out", "suggest-cat-out-"+id.New()[:8])
+	for _, c := range []catalog.Category{catIn, catOut} {
+		mustExec(t, db, "INSERT INTO categories (id, parent_id, name, slug, position, meta, created_at, updated_at) VALUES ($1, NULL, $2, $3, 0, '{}'::jsonb, now(), now())", c.ID, c.Name, c.Slug)
+	}
+
+	inCat := mustNewProduct(t, "SuggestParity Alpha", "suggest-parity-alpha-"+id.New()[:8])
+	outCat := mustNewProduct(t, "SuggestParity Beta", "suggest-parity-beta-"+id.New()[:8])
+	for _, p := range []*catalog.Product{&inCat, &outCat} {
+		p.Status = catalog.StatusActive
+		if err := productRepo.Create(ctx, p); err != nil {
+			t.Fatalf("Create product: %v", err)
+		}
+	}
+	if err := productRepo.AssignCategory(ctx, inCat.ID, catIn.ID); err != nil {
+		t.Fatalf("AssignCategory in: %v", err)
+	}
+	if err := productRepo.AssignCategory(ctx, outCat.ID, catOut.ID); err != nil {
+		t.Fatalf("AssignCategory out: %v", err)
+	}
+
+	suggestions, err := engine.Suggest(ctx, search.SuggestQuery{
+		Prefix:  "SuggestParity",
+		Limit:   10,
+		Filters: map[string]interface{}{"category": catIn.ID},
+	})
+	if err != nil {
+		t.Fatalf("Suggest: %v", err)
+	}
+	if len(suggestions) != 1 || suggestions[0].ProductID != inCat.ID {
+		t.Fatalf("Suggest with category = %+v, want only %s", suggestions, inCat.ID)
+	}
+	for _, s := range suggestions {
+		if s.ProductID == outCat.ID {
+			t.Fatal("Suggest must exclude out-of-category products")
+		}
+	}
+}

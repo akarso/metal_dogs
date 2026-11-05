@@ -1,0 +1,477 @@
+/* Admin-specific overrides on top of Pico CSS */
+
+:root {
+    --admin-sidebar-width: 220px;
+    --admin-header-height: 56px;
+}
+
+/* Layout */
+.admin-layout {
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+}
+
+.admin-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    height: var(--admin-header-height);
+    padding: 0 1rem;
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+}
+
+.admin-header a {
+    color: var(--pico-primary-inverse);
+    text-decoration: none;
+}
+
+.admin-header .logo {
+    font-weight: 700;
+    font-size: 1.1rem;
+}
+
+.admin-header .user-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.admin-context-switcher {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-left: auto;
+}
+
+.admin-context-switcher label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+    color: var(--pico-primary-inverse);
+    font-size: 0.8rem;
+}
+
+.admin-context-switcher select {
+    margin: 0;
+    min-width: 6.5rem;
+    padding: 0.2rem 0.45rem;
+    height: auto;
+    font-size: 0.8rem;
+    background: rgba(255, 255, 255, 0.15);
+    color: var(--pico-primary-inverse);
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+.admin-context-switcher option {
+    color: #111;
+}
+
+.admin-body {
+    display: flex;
+    flex: 1;
+}
+
+/* Sidebar */
+.admin-sidebar {
+    width: var(--admin-sidebar-width);
+    padding: 1rem 0;
+    background: var(--pico-card-background-color);
+    border-right: 1px solid var(--pico-muted-border-color);
+}
+
+.admin-sidebar nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.admin-sidebar nav ul li a {
+    display: block;
+    padding: 0.6rem 1.2rem;
+    text-decoration: none;
+    color: var(--pico-color);
+    border-left: 3px solid transparent;
+}
+
+.admin-sidebar nav ul li a:hover {
+    background: var(--pico-secondary-background);
+}
+
+.admin-sidebar nav ul li a[aria-current="page"] {
+    border-left-color: var(--pico-primary);
+    font-weight: 600;
+}
+
+/* Grouped nav sections */
+.nav-group {
+    margin-top: 0.25rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--pico-muted-border-color);
+}
+
+.nav-group-label {
+    display: block;
+    padding: 0.5rem 1.2rem 0.2rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--pico-muted-color);
+    pointer-events: none;
+    user-select: none;
+}
+
+.nav-group ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.nav-group ul li a {
+    padding-left: 1.6rem;
+}
+
+/* Content */
+.admin-content {
+    flex: 1;
+    padding: 1.5rem;
+    overflow-y: auto;
+}
+
+/* Login */
+.login-container {
+    max-width: 380px;
+    margin: 4rem auto;
+}
+
+.login-container h1 {
+    text-align: center;
+}
+
+.login-note,
+.admin-form-hint {
+    color: var(--pico-muted-color);
+}
+
+.login-note {
+    text-align: center;
+    margin-bottom: 1rem;
+}
+
+.admin-form-hint {
+    display: block;
+    margin-top: -0.5rem;
+    margin-bottom: 1rem;
+}
+
+/* Hide shell when not authenticated */
+.admin-layout[data-auth="false"] .admin-header .user-info,
+.admin-layout[data-auth="false"] .admin-sidebar,
+.admin-layout[data-auth="false"] .admin-context-switcher {
+    display: none;
+}
+
+.admin-layout[data-auth="false"] .admin-content {
+    max-width: 100%;
+}
+
+/* Dashboard stat cards */
+.stats-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-card {
+    text-align: center;
+    margin: 0;
+    padding: 1rem;
+}
+
+.stat-card header {
+    font-size: 0.85rem;
+    opacity: 0.7;
+    margin-bottom: 0.3rem;
+}
+
+.stat-card p {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+/* Order status badges */
+.badge {
+    display: inline-block;
+    padding: 0.15em 0.5em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.badge-pending    { background: #fef3cd; color: #856404; }
+.badge-confirmed  { background: #d1ecf1; color: #0c5460; }
+.badge-paid       { background: #d4edda; color: #155724; }
+.badge-cancelled  { background: #f8d7da; color: #721c24; }
+.badge-failed     { background: #f5c6cb; color: #721c24; }
+.badge-processing { background: #d1ecf1; color: #0c5460; }
+.badge-done       { background: #d4edda; color: #155724; }
+.badge-completed  { background: #d4edda; color: #155724; }
+
+.badge-approximate { background: #e9ecef; color: #495057; text-transform: none; }
+
+.reindex-progress-track {
+    background: #e9ecef;
+    border-radius: 4px;
+    height: 0.75rem;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+.reindex-progress-fill {
+    background: #0c5460;
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.media-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.media-dropzone {
+    border: 2px dashed var(--pico-muted-border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+    margin-bottom: 1rem;
+}
+
+.media-dropzone.is-dragover {
+    border-color: var(--pico-primary);
+    background: var(--pico-secondary-background);
+}
+
+.media-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.media-card {
+    margin: 0;
+    overflow: hidden;
+}
+
+.media-card-preview {
+    aspect-ratio: 4 / 3;
+    background: var(--pico-secondary-background);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.media-card-preview img,
+.media-preview-body img,
+.product-image-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.media-card-body {
+    display: grid;
+    gap: 0.5rem;
+    padding-top: 0.75rem;
+}
+
+.media-card-actions,
+.media-field-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.media-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    z-index: 1000;
+}
+
+.media-modal {
+    width: min(960px, 100%);
+    max-height: 90vh;
+    overflow: auto;
+    background: var(--pico-background-color);
+    border-radius: 12px;
+    padding: 1rem;
+}
+
+.media-modal > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.media-preview-modal {
+    width: min(720px, 100%);
+}
+
+.media-preview-body {
+    display: grid;
+    gap: 1rem;
+}
+
+.product-media-field {
+    margin: 1.5rem 0;
+}
+
+.product-image-preview {
+    max-width: 320px;
+    aspect-ratio: 4 / 3;
+    background: var(--pico-secondary-background);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+    .media-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .media-card-actions,
+    .media-field-actions {
+        flex-direction: column;
+    }
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.settings-scope-banner {
+    margin-bottom: 1rem;
+}
+
+.settings-scope-banner p {
+    margin: 0;
+    padding: 0.7rem 0.9rem;
+    border-radius: 8px;
+    background: var(--pico-secondary-background);
+    border: 1px solid var(--pico-muted-border-color);
+}
+
+.settings-grid section {
+    margin: 0;
+}
+
+.settings-grid form {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.settings-scope-note {
+    margin: 0;
+    color: var(--pico-muted-color);
+    font-size: 0.85rem;
+}
+
+.cache-confirm-all {
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    border: 1px solid #f2c870;
+    background: #fff4df;
+    border-radius: 4px;
+}
+
+.cache-clear-value-field[hidden],
+.cache-confirm-all[hidden] {
+    display: none;
+}
+
+.cache-confirm-all p {
+    margin: 0 0 0.5rem;
+}
+
+.settings-scope-badge {
+    display: inline-block;
+    margin-left: 0.35rem;
+    padding: 0.08rem 0.4rem;
+    border-radius: 999px;
+    font-size: 0.67rem;
+    line-height: 1.2;
+    vertical-align: middle;
+    border: 1px solid transparent;
+}
+
+.settings-scope-badge-global {
+    background: #ecf6ff;
+    color: #0b4a7a;
+    border-color: #b6dcf8;
+}
+
+.settings-scope-badge-store {
+    background: #fff4df;
+    color: #7a4f00;
+    border-color: #f2c870;
+}
+
+.settings-scope-badge-translatable {
+    background: #efeaff;
+    color: #49308a;
+    border-color: #cfc1ff;
+}
+
+.settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.admin-tree-list {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.admin-tree-list > li {
+    margin: 0.35rem 0;
+}
+
+.product-category-picker {
+    margin-top: 0.75rem;
+}
+
+.product-category-tree {
+    margin-top: 0.75rem;
+    padding-left: 0;
+}
+
+.product-category-tree-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+}

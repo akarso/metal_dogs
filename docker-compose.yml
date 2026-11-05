@@ -1,0 +1,142 @@
+# =============================================================================
+# Shopanda — Docker Compose
+# =============================================================================
+# Default profile:  app + worker + scheduler + postgres (production layout)
+# Dev profile:      adds mailpit   (docker compose --profile dev up)
+# Search profile:   adds meilisearch (docker compose --profile search up)
+# Queue profile:    adds rabbitmq   (docker compose --profile queue up)
+#
+# Quick start:
+#   cp .env.example .env          # edit values (set real SMTP / JWT for production)
+#   # Compose injects local DX defaults against non-TLS postgres:17-alpine:
+#   #   SHOPANDA_DEV_MODE=true (unset/empty still → true; set false/0/no to override)
+#   #   SHOPANDA_DATABASE_PASSWORD=changeme (if unset)
+#   #   SHOPANDA_DATABASE_SSLMODE=disable (if unset — stock Postgres has no TLS)
+#   # Production-like compose: set SHOPANDA_DEV_MODE=false, a strong
+#   # SHOPANDA_DATABASE_PASSWORD (not changeme), and
+#   # SHOPANDA_DATABASE_SSLMODE=require|verify-ca|verify-full (TLS to Postgres).
+#   # Probes: image HEALTHCHECK = /healthz (liveness); traffic control = /readyz.
+#   docker compose up -d
+#   docker compose run --rm app migrate
+#   docker compose run --rm app seed
+#
+# Local email testing:
+#   Set SHOPANDA_MAIL_SMTP_HOST=mailpit and SHOPANDA_MAIL_SMTP_PORT=1025 in .env
+#   docker compose --profile dev up -d    # Mailpit UI at http://localhost:8025
+# =============================================================================
+
+x-shopanda-common: &shopanda-common
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    # Service-to-service defaults — override .env / config defaults that
+    # assume localhost, which is unreachable from inside the container.
+    # Keep these in sync with the postgres service defaults below.
+    SHOPANDA_DATABASE_HOST: postgres
+    SHOPANDA_DATABASE_PORT: 5432
+    SHOPANDA_DATABASE_USER: "${SHOPANDA_DATABASE_USER:-shopanda}"
+    SHOPANDA_DATABASE_PASSWORD: "${SHOPANDA_DATABASE_PASSWORD:-changeme}"
+    SHOPANDA_DATABASE_NAME: "${SHOPANDA_DATABASE_NAME:-shopanda}"
+    # Stock postgres:17-alpine has no TLS — default disable when .env omits sslmode.
+    # Override in .env with require|verify-ca|verify-full only if Postgres is TLS-terminated.
+    SHOPANDA_DATABASE_SSLMODE: "${SHOPANDA_DATABASE_SSLMODE:-disable}"
+    # Local compose DX: default DEV_MODE=true (unset/empty still → true).
+    # Production-like: set SHOPANDA_DEV_MODE=false (or 0/no) explicitly in .env.
+    SHOPANDA_DEV_MODE: "${SHOPANDA_DEV_MODE:-true}"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  # ---------- Application (HTTP) ----------------------------------------------
+  app:
+    <<: *shopanda-common
+    command: serve
+    ports:
+      - "${SHOPANDA_SERVER_PORT:-8080}:8080"
+
+  # ---------- Background worker (email, cache cleanup, …) ---------------------
+  worker:
+    <<: *shopanda-common
+    command: worker
+    healthcheck:
+      disable: true
+
+  # ---------- Cron scheduler (enqueues recurring jobs) ------------------------
+  scheduler:
+    <<: *shopanda-common
+    command: scheduler
+    healthcheck:
+      disable: true
+
+  # ---------- PostgreSQL ------------------------------------------------------
+  # Pinned 2026-04-17; refresh periodically.
+  postgres:
+    image: postgres:17-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
+    environment:
+      POSTGRES_DB: "${SHOPANDA_DATABASE_NAME:-shopanda}"
+      POSTGRES_USER: "${SHOPANDA_DATABASE_USER:-shopanda}"
+      POSTGRES_PASSWORD: "${SHOPANDA_DATABASE_PASSWORD:-changeme}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SHOPANDA_DATABASE_USER:-shopanda} -d ${SHOPANDA_DATABASE_NAME:-shopanda}"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------- Mailpit (dev profile) -------------------------------------------
+  # Local SMTP sink — UI at http://localhost:8025
+  # Pinned 2026-04-17; refresh periodically.
+  mailpit:
+    image: axllent/mailpit:v1.22@sha256:f7f7c31de4de59540ad6515a0ca057a77525bca2069b6e747d873ca66c10fe08
+    ports:
+      - "127.0.0.1:8025:8025"   # Web UI
+      - "127.0.0.1:1025:1025"   # SMTP
+    profiles: ["dev"]
+    restart: unless-stopped
+
+  # ---------- Meilisearch (search profile) ------------------------------------
+  # Full-text search engine — API at http://localhost:7700
+  # Pinned 2026-04-17; refresh periodically.
+  meilisearch:
+    image: getmeili/meilisearch:v1.13@sha256:bed3fb650e62da53145777204891159242f6ea4ce69e215b36223af4aa64a0ae
+    environment:
+      # No MEILI_MASTER_KEY — intentionally unprotected for local dev only.
+      # For internet-exposed deployments, set MEILI_MASTER_KEY to a strong secret.
+      MEILI_ENV: "development"
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - meilidata:/meili_data
+    profiles: ["search"]
+    restart: unless-stopped
+
+  # ---------- RabbitMQ (queue profile) ----------------------------------------
+  # Message broker for queue.driver=rabbitmq — AMQP at localhost:5672,
+  # management UI at http://localhost:15672 (shopanda/changeme by default).
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:-shopanda}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:-changeme}"
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles: ["queue"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  meilidata:

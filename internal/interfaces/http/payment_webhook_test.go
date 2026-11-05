@@ -1,0 +1,463 @@
+package http_test
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/order"
+	"github.com/akarso/shopanda/internal/domain/payment"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/infrastructure/webhook"
+	shophttp "github.com/akarso/shopanda/internal/interfaces/http"
+	"github.com/akarso/shopanda/internal/platform/event"
+	"github.com/akarso/shopanda/internal/platform/logger"
+)
+
+// ── mock payment repo ───────────────────────────────────────────────────
+
+type mockPaymentRepo struct {
+	findByIDFn     func(ctx context.Context, id string) (*payment.Payment, error)
+	findByOrderFn  func(ctx context.Context, orderID string) (*payment.Payment, error)
+	createFn       func(ctx context.Context, p *payment.Payment) error
+	updateStatusFn func(ctx context.Context, p *payment.Payment, prev time.Time) error
+}
+
+func (m *mockPaymentRepo) FindByID(ctx context.Context, id string) (*payment.Payment, error) {
+	if m.findByIDFn != nil {
+		return m.findByIDFn(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *mockPaymentRepo) FindByOrderID(ctx context.Context, orderID string) (*payment.Payment, error) {
+	if m.findByOrderFn != nil {
+		return m.findByOrderFn(ctx, orderID)
+	}
+	return nil, nil
+}
+
+func (m *mockPaymentRepo) Create(ctx context.Context, p *payment.Payment) error {
+	if m.createFn != nil {
+		return m.createFn(ctx, p)
+	}
+	return nil
+}
+
+func (m *mockPaymentRepo) UpdateStatus(ctx context.Context, p *payment.Payment, prev time.Time) error {
+	if m.updateStatusFn != nil {
+		return m.updateStatusFn(ctx, p, prev)
+	}
+	return nil
+}
+
+func (m *mockPaymentRepo) List(context.Context, payment.ListFilter) ([]payment.Payment, error) {
+	return nil, nil
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────
+
+func webhookTestLogger() logger.Logger {
+	return logger.NewWithWriter(io.Discard, "error")
+}
+
+func webhookSetup(repo payment.PaymentRepository) *http.ServeMux {
+	bus := event.NewBus(webhookTestLogger())
+	verifier := webhook.NewHMACVerifier(nil) // no secrets → skip verification
+	h := shophttp.NewPaymentWebhookHandler(repo, bus, verifier)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/payments/webhook/{provider}", h.Handle())
+	return mux
+}
+
+func seedPendingPayment(t *testing.T) *payment.Payment {
+	t.Helper()
+	amt := shared.MustNewMoney(2500, "EUR")
+	p, err := payment.NewPayment("pay-1", "ord-1", payment.MethodManual, amt)
+	if err != nil {
+		t.Fatalf("seedPendingPayment: %v", err)
+	}
+	return &p
+}
+
+func parseWebhookBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]interface{} {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	return body
+}
+
+// ── tests ───────────────────────────────────────────────────────────────
+
+func TestPaymentWebhook_Success(t *testing.T) {
+	py := seedPendingPayment(t)
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	mux := webhookSetup(repo)
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref-abc","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	resp := parseWebhookBody(t, rec)
+	data := resp["data"].(map[string]interface{})
+	if data["status"] != "accepted" {
+		t.Errorf("status = %v, want accepted", data["status"])
+	}
+	if py.Status() != payment.StatusCompleted {
+		t.Errorf("payment status = %v, want completed", py.Status())
+	}
+	if py.ProviderRef != "ref-abc" {
+		t.Errorf("provider_ref = %v, want ref-abc", py.ProviderRef)
+	}
+}
+
+func TestPaymentWebhook_Failure(t *testing.T) {
+	py := seedPendingPayment(t)
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	mux := webhookSetup(repo)
+
+	body := `{"payment_id":"pay-1","provider_ref":"","success":false}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if py.Status() != payment.StatusFailed {
+		t.Errorf("payment status = %v, want failed", py.Status())
+	}
+}
+
+func TestPaymentWebhook_FailedPublishReturns500(t *testing.T) {
+	py := seedPendingPayment(t)
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	bus := event.NewBus(webhookTestLogger())
+	bus.On(payment.EventPaymentFailed, func(context.Context, event.Event) error {
+		return errors.New("revoke failed")
+	})
+	h := shophttp.NewPaymentWebhookHandler(repo, bus, webhook.NewHMACVerifier(nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/payments/webhook/{provider}", h.Handle())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(`{"payment_id":"pay-1","success":false}`))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+	if py.Status() != payment.StatusFailed {
+		t.Errorf("payment status = %v, want failed after publish error", py.Status())
+	}
+}
+
+func TestPaymentWebhook_AlreadyFailedRetryPublishes(t *testing.T) {
+	py := seedPendingPayment(t)
+	if err := py.Fail(); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	bus := event.NewBus(webhookTestLogger())
+	published := 0
+	bus.On(payment.EventPaymentFailed, func(context.Context, event.Event) error {
+		published++
+		return nil
+	})
+	h := shophttp.NewPaymentWebhookHandler(repo, bus, webhook.NewHMACVerifier(nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/payments/webhook/{provider}", h.Handle())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(`{"payment_id":"pay-1","success":false}`))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if published != 1 {
+		t.Fatalf("payment.failed publishes = %d, want 1", published)
+	}
+}
+
+func TestPaymentWebhook_AlreadyFailedRetryPublishError(t *testing.T) {
+	py := seedPendingPayment(t)
+	if err := py.Fail(); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	bus := event.NewBus(webhookTestLogger())
+	bus.On(payment.EventPaymentFailed, func(context.Context, event.Event) error {
+		return errors.New("revoke failed")
+	})
+	h := shophttp.NewPaymentWebhookHandler(repo, bus, webhook.NewHMACVerifier(nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/payments/webhook/{provider}", h.Handle())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(`{"payment_id":"pay-1","success":false}`))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_NotFound(t *testing.T) {
+	repo := &mockPaymentRepo{}
+	mux := webhookSetup(repo)
+
+	body := `{"payment_id":"pay-999","provider_ref":"ref","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_UnknownProvider(t *testing.T) {
+	repo := &mockPaymentRepo{}
+	mux := webhookSetup(repo)
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/unknown-provider", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_InvalidBody(t *testing.T) {
+	repo := &mockPaymentRepo{}
+	mux := webhookSetup(repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader("not json"))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_MissingPaymentID(t *testing.T) {
+	repo := &mockPaymentRepo{}
+	mux := webhookSetup(repo)
+
+	body := `{"provider_ref":"ref","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_AlreadyCompleted(t *testing.T) {
+	py := seedPendingPayment(t)
+	_ = py.Complete("ref-old") // transition to completed
+
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, _ string) (*payment.Payment, error) {
+			return py, nil
+		},
+	}
+	bus := event.NewBus(webhookTestLogger())
+	var paid int
+	bus.On(order.EventOrderPaid, func(_ context.Context, _ event.Event) error {
+		paid++
+		return nil
+	})
+	verifier := webhook.NewHMACVerifier(nil)
+	h := shophttp.NewPaymentWebhookHandler(repo, bus, verifier)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/payments/webhook/{provider}", h.Handle())
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref-new","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	resp := parseWebhookBody(t, rec)
+	data := resp["data"].(map[string]interface{})
+	if data["status"] != "already_processed" {
+		t.Errorf("status = %v, want already_processed", data["status"])
+	}
+	if paid != 1 {
+		t.Fatalf("order.paid republish count = %d, want 1", paid)
+	}
+}
+
+func TestPaymentWebhook_RepoError(t *testing.T) {
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, _ string) (*payment.Payment, error) {
+			return nil, errors.New("db down")
+		},
+	}
+	mux := webhookSetup(repo)
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+// ── signature verification helpers ─────────────────────────────────────
+
+func signBody(secret, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func webhookSetupWithSecret(repo payment.PaymentRepository, secrets map[string]string) *http.ServeMux {
+	bus := event.NewBus(webhookTestLogger())
+	verifier := webhook.NewHMACVerifier(secrets)
+	h := shophttp.NewPaymentWebhookHandler(repo, bus, verifier)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/payments/webhook/{provider}", h.Handle())
+	return mux
+}
+
+// ── signature tests ────────────────────────────────────────────────────
+
+func TestPaymentWebhook_ValidSignature(t *testing.T) {
+	secret := "test-secret-123"
+	py := seedPendingPayment(t)
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	mux := webhookSetupWithSecret(repo, map[string]string{"manual": secret})
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref-signed","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	req.Header.Set("X-Webhook-Signature", signBody(secret, body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if py.Status() != payment.StatusCompleted {
+		t.Errorf("payment status = %v, want completed", py.Status())
+	}
+}
+
+func TestPaymentWebhook_MissingSignature(t *testing.T) {
+	secret := "test-secret-123"
+	repo := &mockPaymentRepo{}
+	mux := webhookSetupWithSecret(repo, map[string]string{"manual": secret})
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	// No X-Webhook-Signature header
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_InvalidSignature(t *testing.T) {
+	secret := "test-secret-123"
+	repo := &mockPaymentRepo{}
+	mux := webhookSetupWithSecret(repo, map[string]string{"manual": secret})
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	req.Header.Set("X-Webhook-Signature", "badhex0000000000000000000000000000000000000000000000000000000000")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestPaymentWebhook_NoSecretConfigured_SkipsVerification(t *testing.T) {
+	py := seedPendingPayment(t)
+	repo := &mockPaymentRepo{
+		findByIDFn: func(_ context.Context, id string) (*payment.Payment, error) {
+			if id == "pay-1" {
+				return py, nil
+			}
+			return nil, nil
+		},
+	}
+	// No secret for "manual" → verification is skipped
+	mux := webhookSetupWithSecret(repo, map[string]string{})
+
+	body := `{"payment_id":"pay-1","provider_ref":"ref-ok","success":true}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/payments/webhook/manual", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}

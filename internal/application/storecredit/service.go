@@ -1,0 +1,123 @@
+package storecredit
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/akarso/shopanda/internal/domain/customer"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	credit "github.com/akarso/shopanda/internal/domain/storecredit"
+	"github.com/akarso/shopanda/internal/platform/apperror"
+)
+
+// defaultMaxIssueAmount is the cap NewService applies before
+// WithMaxIssueAmount is ever called — 100000 minor units (e.g.
+// $1,000.00), matching config.DefaultStoreCreditMaxIssueAmount. A
+// money-minting cap defaulting to "unbounded until someone remembers to
+// configure it" is the wrong failure mode: unlike WithMetrics/WithTracer,
+// where "never called" safely means "not observed," here it would mean
+// "not limited." cmd/api's wiring always calls WithMaxIssueAmount with an
+// operator-configured (or this same default) value regardless, but a
+// Service built directly — in a test, or by a future caller that doesn't
+// go through that wiring path — now gets the safe default too, not zero.
+const defaultMaxIssueAmount = 100000
+
+// Service orchestrates store credit use cases.
+type Service struct {
+	credits        credit.Repository
+	customers      customer.CustomerRepository
+	maxIssueAmount int64
+}
+
+// NewService creates a store credit service.
+func NewService(credits credit.Repository, customers customer.CustomerRepository) *Service {
+	if credits == nil {
+		panic("storecredit: nil repository")
+	}
+	if customers == nil {
+		panic("storecredit: nil customers repository")
+	}
+	return &Service{credits: credits, customers: customers, maxIssueAmount: defaultMaxIssueAmount}
+}
+
+// WithMaxIssueAmount caps a single Issue call at max minor units, in place
+// of the conservative default NewService already applies. A zero max is
+// honored as an explicit, deliberate cap-disable (matching
+// config.StoreCreditConfig's own "0 disables the cap" convention) —
+// distinct from never calling WithMaxIssueAmount at all, which leaves the
+// default in effect. Returns the Service for chaining.
+func (s *Service) WithMaxIssueAmount(max int64) *Service {
+	if max < 0 {
+		return s
+	}
+	s.maxIssueAmount = max
+	return s
+}
+
+// Issue credits a customer account. idempotencyKey is optional; when set, a
+// retried call with the same key is a no-op rather than crediting twice.
+func (s *Service) Issue(ctx context.Context, customerID string, amount shared.Money, note, idempotencyKey string) error {
+	if s.maxIssueAmount > 0 && amount.Amount() > s.maxIssueAmount {
+		return apperror.Validation(fmt.Sprintf("amount exceeds maximum single issuance of %d", s.maxIssueAmount))
+	}
+	return s.credit(ctx, customerID, amount, note, idempotencyKey, "issue")
+}
+
+// Restore returns a previously redeemed debit. It does not apply the
+// admin issuance cap: this is the customer's own money, not a new
+// grant. idempotencyKey is optional; when set, a retried call with the
+// same key is a no-op rather than crediting twice.
+func (s *Service) Restore(ctx context.Context, customerID string, amount shared.Money, note, idempotencyKey string) error {
+	return s.credit(ctx, customerID, amount, note, idempotencyKey, "restore")
+}
+
+func (s *Service) credit(ctx context.Context, customerID string, amount shared.Money, note, idempotencyKey, op string) error {
+	if err := s.ensureCustomer(ctx, customerID); err != nil {
+		return err
+	}
+	if err := s.credits.Issue(ctx, customerID, amount, note, idempotencyKey); err != nil {
+		return fmt.Errorf("storecredit: %s: %w", op, err)
+	}
+	return nil
+}
+
+// GetBalance returns the customer balance for a currency.
+func (s *Service) GetBalance(ctx context.Context, customerID, currency string) (shared.Money, error) {
+	balance, err := s.credits.GetBalance(ctx, customerID, currency)
+	if err != nil {
+		return shared.Money{}, fmt.Errorf("storecredit: get balance: %w", err)
+	}
+	return balance, nil
+}
+
+// Redeem debits store credit for an order.
+func (s *Service) Redeem(ctx context.Context, customerID, orderID string, amount shared.Money) error {
+	if err := s.credits.Redeem(ctx, customerID, orderID, amount); err != nil {
+		if errors.Is(err, credit.ErrInsufficientBalance) {
+			return apperror.Validation("insufficient store credit balance")
+		}
+		return fmt.Errorf("storecredit: redeem: %w", err)
+	}
+	return nil
+}
+
+// ListLedger returns paginated ledger entries.
+func (s *Service) ListLedger(ctx context.Context, customerID, currency string, offset, limit int) ([]credit.Entry, error) {
+	entries, err := s.credits.ListLedger(ctx, customerID, currency, offset, limit)
+	if err != nil {
+		return nil, fmt.Errorf("storecredit: list ledger: %w", err)
+	}
+	return entries, nil
+}
+
+func (s *Service) ensureCustomer(ctx context.Context, customerID string) error {
+	cust, err := s.customers.FindByID(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("storecredit: find customer: %w", err)
+	}
+	if cust == nil {
+		return apperror.NotFound("customer not found")
+	}
+	return nil
+}

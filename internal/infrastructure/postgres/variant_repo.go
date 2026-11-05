@@ -1,0 +1,371 @@
+package postgres
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// Compile-time check that VariantRepo implements catalog.VariantRepository.
+var _ catalog.VariantRepository = (*VariantRepo)(nil)
+
+// VariantRepo implements catalog.VariantRepository using PostgreSQL.
+type VariantRepo struct {
+	db *sql.DB
+	tx *sql.Tx
+}
+
+// NewVariantRepo returns a new VariantRepo backed by db.
+func NewVariantRepo(db *sql.DB) (*VariantRepo, error) {
+	if db == nil {
+		return nil, fmt.Errorf("NewVariantRepo: nil *sql.DB")
+	}
+	return &VariantRepo{db: db, tx: nil}, nil
+}
+
+// WithTx returns a repo bound to the given transaction.
+func (r *VariantRepo) WithTx(tx *sql.Tx) catalog.VariantRepository {
+	return &VariantRepo{db: r.db, tx: tx}
+}
+
+// FindByID returns a variant by its ID.
+// Returns (nil, nil) when the variant does not exist.
+func (r *VariantRepo) FindByID(ctx context.Context, id string) (*catalog.Variant, error) {
+	const q = `SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at
+		FROM variants WHERE id = $1`
+
+	var querier interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if r.tx != nil {
+		querier = r.tx
+	} else {
+		querier = r.db
+	}
+	v, err := r.scanVariant(querier.QueryRowContext(ctx, q, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		if mapped := invalidUUIDError(err, "invalid variant id"); mapped != nil {
+			return nil, mapped
+		}
+		return nil, fmt.Errorf("variant_repo: find by id: %w", err)
+	}
+	return v, nil
+}
+
+// FindBySKU returns a variant by its SKU.
+// Returns (nil, nil) when no variant matches the SKU.
+func (r *VariantRepo) FindBySKU(ctx context.Context, sku string) (*catalog.Variant, error) {
+	const q = `SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at
+		FROM variants WHERE sku = $1`
+
+	var querier interface {
+		QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	}
+	if r.tx != nil {
+		querier = r.tx
+	} else {
+		querier = r.db
+	}
+	v, err := r.scanVariant(querier.QueryRowContext(ctx, q, sku))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("variant_repo: find by sku: %w", err)
+	}
+	return v, nil
+}
+
+// FindByIDs returns variants keyed by ID. Missing ids are omitted.
+func (r *VariantRepo) FindByIDs(ctx context.Context, ids []string) (map[string]*catalog.Variant, error) {
+	if len(ids) == 0 {
+		return map[string]*catalog.Variant{}, nil
+	}
+	const q = `SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at
+		FROM variants WHERE id = ANY($1)`
+
+	var querier interface {
+		QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	}
+	if r.tx != nil {
+		querier = r.tx
+	} else {
+		querier = r.db
+	}
+
+	rows, err := querier.QueryContext(ctx, q, ids)
+	if err != nil {
+		if mapped := invalidUUIDError(err, "invalid variant id"); mapped != nil {
+			return nil, mapped
+		}
+		return nil, fmt.Errorf("variant_repo: find by ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]*catalog.Variant, len(ids))
+	for rows.Next() {
+		v, err := r.scanVariant(rows)
+		if err != nil {
+			return nil, fmt.Errorf("variant_repo: find by ids: %w", err)
+		}
+		out[v.ID] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("variant_repo: find by ids: %w", err)
+	}
+	return out, nil
+}
+
+// FindBySKUs returns variants keyed by SKU for the given SKUs.
+func (r *VariantRepo) FindBySKUs(ctx context.Context, skus []string) (map[string]*catalog.Variant, error) {
+	if len(skus) == 0 {
+		return map[string]*catalog.Variant{}, nil
+	}
+	const q = `SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at
+		FROM variants WHERE sku = ANY($1)`
+
+	var querier interface {
+		QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	}
+	if r.tx != nil {
+		querier = r.tx
+	} else {
+		querier = r.db
+	}
+
+	rows, err := querier.QueryContext(ctx, q, skus)
+	if err != nil {
+		return nil, fmt.Errorf("variant_repo: find by skus: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]*catalog.Variant, len(skus))
+	for rows.Next() {
+		v, err := r.scanVariant(rows)
+		if err != nil {
+			return nil, fmt.Errorf("variant_repo: find by skus: %w", err)
+		}
+		out[v.SKU] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("variant_repo: find by skus: %w", err)
+	}
+	return out, nil
+}
+
+const maxVariantListLimit = 100
+
+// ListByProductID returns variants for the given product ordered by created_at asc.
+func (r *VariantRepo) ListByProductID(ctx context.Context, productID string, offset, limit int) ([]catalog.Variant, error) {
+	if offset < 0 {
+		return nil, apperror.Validation("offset must be >= 0")
+	}
+	if limit <= 0 {
+		return nil, apperror.Validation("limit must be > 0")
+	}
+	if limit > maxVariantListLimit {
+		limit = maxVariantListLimit
+	}
+
+	const q = `SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at
+		FROM variants WHERE product_id = $1 ORDER BY created_at ASC LIMIT $2 OFFSET $3`
+
+	var rows *sql.Rows
+	var err error
+	if r.tx != nil {
+		rows, err = r.tx.QueryContext(ctx, q, productID, limit, offset)
+	} else {
+		rows, err = r.db.QueryContext(ctx, q, productID, limit, offset)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("variant_repo: list by product: %w", err)
+	}
+	defer rows.Close()
+
+	var variants []catalog.Variant
+	for rows.Next() {
+		v, err := r.scanVariant(rows)
+		if err != nil {
+			return nil, fmt.Errorf("variant_repo: list scan: %w", err)
+		}
+		variants = append(variants, *v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("variant_repo: list rows: %w", err)
+	}
+	return variants, nil
+}
+
+// ListByProductIDs returns variants grouped by product ID.
+func (r *VariantRepo) ListByProductIDs(ctx context.Context, productIDs []string, limitPerProduct int) (map[string][]catalog.Variant, error) {
+	if len(productIDs) == 0 {
+		return nil, nil
+	}
+	if limitPerProduct <= 0 {
+		return nil, apperror.Validation("limitPerProduct must be > 0")
+	}
+	if limitPerProduct > maxVariantListLimit {
+		limitPerProduct = maxVariantListLimit
+	}
+
+	const q = `SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at
+		FROM (
+			SELECT id, product_id, sku, name, weight, attributes, created_at, updated_at,
+				ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY created_at ASC) AS rn
+			FROM variants
+			WHERE product_id = ANY($1)
+		) ranked
+		WHERE rn <= $2
+		ORDER BY product_id, created_at ASC`
+
+	var rows *sql.Rows
+	var err error
+	if r.tx != nil {
+		rows, err = r.tx.QueryContext(ctx, q, productIDs, limitPerProduct)
+	} else {
+		rows, err = r.db.QueryContext(ctx, q, productIDs, limitPerProduct)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("variant_repo: list by products: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string][]catalog.Variant, len(productIDs))
+	for rows.Next() {
+		v, err := r.scanVariant(rows)
+		if err != nil {
+			return nil, fmt.Errorf("variant_repo: list by products scan: %w", err)
+		}
+		out[v.ProductID] = append(out[v.ProductID], *v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("variant_repo: list by products rows: %w", err)
+	}
+	return out, nil
+}
+
+// skuConflict returns an apperror.Conflict when err is a unique-constraint
+// violation on the variants_sku_key index; otherwise it returns nil.
+func skuConflict(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "variants_sku_key" {
+		return apperror.Conflict("variant with this sku already exists")
+	}
+	return nil
+}
+
+// Create persists a new variant.
+func (r *VariantRepo) Create(ctx context.Context, v *catalog.Variant) error {
+	if v == nil {
+		return fmt.Errorf("variant_repo: create: variant must not be nil")
+	}
+
+	attrs, err := json.Marshal(v.Attributes)
+	if err != nil {
+		return fmt.Errorf("variant_repo: marshal attributes: %w", err)
+	}
+
+	const q = `INSERT INTO variants (id, product_id, sku, name, weight, attributes, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+
+	var execer interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if r.tx != nil {
+		execer = r.tx
+	} else {
+		execer = r.db
+	}
+	_, err = execer.ExecContext(ctx, q,
+		v.ID, v.ProductID, v.SKU, v.Name, v.Weight,
+		attrs, v.CreatedAt, v.UpdatedAt,
+	)
+	if err != nil {
+		if ce := skuConflict(err); ce != nil {
+			return ce
+		}
+		return fmt.Errorf("variant_repo: create: %w", err)
+	}
+	return nil
+}
+
+// Update persists changes to an existing variant.
+func (r *VariantRepo) Update(ctx context.Context, v *catalog.Variant) error {
+	if v == nil {
+		return fmt.Errorf("variant_repo: update: variant must not be nil")
+	}
+
+	attrs, err := json.Marshal(v.Attributes)
+	if err != nil {
+		return fmt.Errorf("variant_repo: marshal attributes: %w", err)
+	}
+
+	updatedAt := time.Now().UTC()
+
+	const q = `UPDATE variants
+		SET sku = $1, name = $2, weight = $3, attributes = $4, updated_at = $5
+		WHERE id = $6`
+
+	var execer interface {
+		ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	}
+	if r.tx != nil {
+		execer = r.tx
+	} else {
+		execer = r.db
+	}
+	result, err := execer.ExecContext(ctx, q,
+		v.SKU, v.Name, v.Weight, attrs, updatedAt, v.ID,
+	)
+	if err != nil {
+		if ce := skuConflict(err); ce != nil {
+			return ce
+		}
+		return fmt.Errorf("variant_repo: update: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("variant_repo: update rows affected: %w", err)
+	}
+	if rows == 0 {
+		return apperror.NotFound("variant not found")
+	}
+	v.UpdatedAt = updatedAt
+	return nil
+}
+
+// scanVariant reads a variant from a row scanner.
+func (r *VariantRepo) scanVariant(s scanner) (*catalog.Variant, error) {
+	var v catalog.Variant
+	var attrsJSON []byte
+
+	err := s.Scan(
+		&v.ID, &v.ProductID, &v.SKU, &v.Name, &v.Weight,
+		&attrsJSON, &v.CreatedAt, &v.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(attrsJSON) > 0 {
+		if err := json.Unmarshal(attrsJSON, &v.Attributes); err != nil {
+			return nil, fmt.Errorf("unmarshal attributes: %w", err)
+		}
+	}
+	if v.Attributes == nil {
+		v.Attributes = make(map[string]interface{})
+	}
+
+	return &v, nil
+}
