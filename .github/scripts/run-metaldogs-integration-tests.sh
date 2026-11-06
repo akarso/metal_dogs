@@ -38,6 +38,9 @@ if [[ "$status" -ne 0 ]]; then
   exit "$status"
 fi
 
+# Fail on any skip while DSN is set (proves the suite actually exercised Postgres).
+# If a future metaldogs test skips intentionally (testing.Short, feature flag),
+# narrow this filter to DSN/canary packages instead of all ./plugins/metaldogs/... .
 skip_count="$(jq -sr '[.[] | select(.Action=="skip" and .Test != null)] | length' "$json")"
 if [[ "$skip_count" -ne 0 ]]; then
   echo "ERROR: $skip_count test(s) skipped while SHOPANDA_TEST_DSN is set:" >&2

@@ -6,12 +6,14 @@
 #   - CI / integration-metaldogs (F2 harness canaries; decoupled from Shopanda reds)
 #   - CI / govuln
 #   - CI / docs-policy (product-doc relative-link check + promote replay fixture)
-#   - CI / docs-main (main / PRs to main / merge queue to main — forbids docs/phase-*)
+#   - CI / docs-main (forbids docs/phase-* on main)
 #
-# Require on main AND dev: CI / unit, CI / integration, CI / integration-metaldogs,
-# CI / govuln, CI / docs-policy.
-# Require on main ONLY: CI / docs-main. Do not require docs-main on dev — the job
-# is skipped there, and a skipped required check blocks merges.
+# Metal Dogs is main-only. Require on main: CI / unit, CI / integration,
+# CI / integration-metaldogs, CI / govuln, CI / docs-policy, CI / docs-main.
+# When Actions billing returns: confirm branch protection lists the
+# integration-metaldogs check name exactly (stale required checks will not
+# block — or will block on a missing name). The workflow still triggers on
+# legacy `dev` refs inherited from Shopanda; do not treat `dev` as a product branch.
 name: CI
 
 on:

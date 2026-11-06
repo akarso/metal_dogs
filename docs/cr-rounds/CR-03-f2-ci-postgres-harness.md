@@ -21,7 +21,12 @@ Dedicated CI job `integration-metaldogs` runs `.github/scripts/run-metaldogs-int
 
 ## Open gate
 
-Restore GitHub Actions billing and confirm **`CI / integration-metaldogs`** green on `origin`. Shopanda `StoreCredit` / notification-dedupe reds do not block this job.
+1. Restore GitHub Actions billing.
+2. Confirm **branch protection** on `main` requires the check named exactly `CI / integration-metaldogs` (workflow comment documents this; a missing or stale required-check name will not enforce the decoupled job).
+3. Confirm that check is **green** on `origin/main`.
+4. Only then mark F2 process-closed / this CR `Closed:`.
+
+Shopanda `StoreCredit` / notification-dedupe reds do not block `integration-metaldogs`.
 
 ## CR-03 follow-up fixes
 

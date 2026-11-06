@@ -47,6 +47,6 @@ export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?s
 go test ./plugins/metaldogs/... -count=1
 ```
 
-`testutil.OpenIsolated(t, slug)` creates a unique schema per call, pins `search_path` on every pool connection (`pgx` RuntimeParams; URL or keyword DSN), applies plugin migrations, and cleans up. CI job `integration-metaldogs` canaries: `TestMetaStore_RoundTrip`, `TestOpenIsolated_PoolSeesSchema`.
+`testutil.OpenIsolated(t, slug)` creates a unique schema per call, forces `search_path` on every pool connection (`pgx` RuntimeParams; URL or keyword DSN — any pre-set `search_path` in `SHOPANDA_TEST_DSN` is overwritten), applies plugin migrations, and cleans up. CI job `integration-metaldogs` canaries: `TestMetaStore_RoundTrip`, `TestOpenIsolated_PoolSeesSchema`.
 
 Job types for later slices: `integration.sync.metaldogs.<name>` (see ADR-0003).

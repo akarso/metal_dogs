@@ -33,7 +33,8 @@ var (
 // name — CI still serializes packages (-p 1) for suites that share a DSN.
 //
 // DSN may be a postgres(ql):// URL or a libpq keyword/value string; both are
-// accepted via pgx.ParseConfig.
+// accepted via pgx.ParseConfig. Any search_path in SHOPANDA_TEST_DSN is
+// ignored — OpenIsolated always forces the dedicated schema.
 func OpenIsolated(t *testing.T, packageSlug string) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("SHOPANDA_TEST_DSN")
@@ -121,6 +122,8 @@ func openDBWithSearchPath(dsn, schema string) (*sql.DB, error) {
 }
 
 // configWithSearchPath parses dsn (URL or libpq keywords) and sets search_path.
+// Any search_path already present in the DSN is overwritten — isolation must
+// not inherit a caller- or env-supplied path.
 func configWithSearchPath(dsn, schema string) (*pgx.ConnConfig, error) {
 	if schema == "" {
 		return nil, fmt.Errorf("schema required")

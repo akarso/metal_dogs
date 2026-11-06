@@ -251,7 +251,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Tests:** The harness itself is exercised by a trivial repository round-trip test plus pool/same-slug/cleanup canaries.
 - **Safe delivery:** CI only.
 - **Docs:** `runbooks/local-development.md` test section; `AGENTS.md` commands.
-- **Open gate:** Origin Actions billing still blocks live green proof of `CI / integration-metaldogs` on `origin`. That job is billing-only for F2 process-close (Shopanda DSN reds cannot fail it).
+- **Open gate:** Origin Actions billing still blocks live green proof of `CI / integration-metaldogs` on `origin`. When billing returns: require that check name on `main` branch protection, confirm green, then close CR-03. Shopanda DSN reds cannot fail this job.
 
 #### F3 · Observability baseline — size S
 
