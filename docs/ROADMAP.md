@@ -244,14 +244,14 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flag default off; `/api/customizer` on no-cache prefix list.
 - **Docs:** `architecture/overview.md` module layout confirmed; ADR-0003 verification notes.
 
-#### F2 · CI and PostgreSQL test harness — size S — **MERGED** (CR-03 + CR-03-fix, 2026-11-06)
+#### F2 · CI and PostgreSQL test harness — size S — **MERGED** (CR-03 + fixes, 2026-11-06)
 
-- **Goal:** CI runs unit + feature tests against a real PostgreSQL; a shared test helper creates an isolated schema per test package and runs plugin migrations.
-- **Scope:** CI workflow; `testutil` with DB fixture, fake clock, fake ID generator; coverage reporting.
-- **Tests:** The harness itself is exercised by a trivial repository round-trip test.
+- **Goal:** CI runs unit + feature tests against a real PostgreSQL; a shared test helper creates a unique schema per `OpenIsolated` call and runs plugin migrations into it.
+- **Scope:** CI workflow; `testutil` with DB fixture, fake clock, fake ID generator; coverage reporting; dedicated `integration-metaldogs` job (decoupled from Shopanda DSN suite).
+- **Tests:** The harness itself is exercised by a trivial repository round-trip test plus pool/same-slug/cleanup canaries.
 - **Safe delivery:** CI only.
 - **Docs:** `runbooks/local-development.md` test section; `AGENTS.md` commands.
-- **Open gate:** Origin Actions billing still blocks live green proof of the MetaStore / `OpenIsolated` canaries on `origin`. Local DSN proof required until billing is restored. Do not treat F2 as process-closed until that canary is green on origin CI **or** billing remains tracked as the sole open gate in CR-03.
+- **Open gate:** Origin Actions billing still blocks live green proof of `CI / integration-metaldogs` on `origin`. That job is billing-only for F2 process-close (Shopanda DSN reds cannot fail it).
 
 #### F3 · Observability baseline — size S
 

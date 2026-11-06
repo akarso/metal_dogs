@@ -2,12 +2,14 @@
 #
 # Checks reported:
 #   - CI / unit
-#   - CI / integration
+#   - CI / integration (Shopanda DSN packages)
+#   - CI / integration-metaldogs (F2 harness canaries; decoupled from Shopanda reds)
 #   - CI / govuln
 #   - CI / docs-policy (product-doc relative-link check + promote replay fixture)
 #   - CI / docs-main (main / PRs to main / merge queue to main — forbids docs/phase-*)
 #
-# Require on main AND dev: CI / unit, CI / integration, CI / govuln, CI / docs-policy.
+# Require on main AND dev: CI / unit, CI / integration, CI / integration-metaldogs,
+# CI / govuln, CI / docs-policy.
 # Require on main ONLY: CI / docs-main. Do not require docs-main on dev — the job
 # is skipped there, and a skipped required check blocks merges.
 name: CI
@@ -153,30 +155,76 @@ jobs:
       - name: DSN-gated integration tests
         # -json + jq: detect Action=skip (default go test text hides skip reasons).
         # -p 1: serialize packages so concurrent migrate.Run on one DB cannot race.
-        env:
-          COVERPROFILE: coverage-integration.out
+        # Metal Dogs harness canaries run in integration-metaldogs (decoupled).
         run: bash .github/scripts/run-integration-tests.sh
 
-      - name: Metal Dogs coverage (integration)
-        if: success()
+  integration-metaldogs:
+    name: integration-metaldogs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
+        env:
+          POSTGRES_USER: shopanda
+          POSTGRES_PASSWORD: shopanda
+          POSTGRES_DB: shopanda_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shopanda -d shopanda_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SHOPANDA_TEST_DSN: postgres://shopanda:shopanda@localhost:5432/shopanda_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Wait for Postgres readiness
         run: |
           set -euo pipefail
-          if [[ ! -f coverage-integration.out ]]; then
-            echo "No coverage-integration.out (suite did not produce a profile)" >&2
-            exit 1
-          fi
-          go tool cover -func=coverage-integration.out | tee coverage-integration.txt
-          go tool cover -func=coverage-integration.out | grep 'plugins/metaldogs/' | tee coverage-metaldogs-integration.txt || true
-          tail -n 1 coverage-integration.txt
+          echo "Waiting for Postgres at localhost:5432 (max 60s)..."
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U shopanda -d shopanda_test; then
+              echo "Postgres is ready (attempt $i)."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: Postgres did not become ready within 60s" >&2
+          exit 1
 
-      - name: Upload integration coverage
-        if: success()
+      - name: Metal Dogs DSN-gated tests
+        env:
+          COVERPROFILE: coverage-metaldogs-integration.out
+        run: bash .github/scripts/run-metaldogs-integration-tests.sh
+
+      - name: Metal Dogs coverage summary
+        run: |
+          set -euo pipefail
+          go tool cover -func=coverage-metaldogs-integration.out | tee coverage-metaldogs-integration.txt
+          tail -n 1 coverage-metaldogs-integration.txt
+
+      - name: Upload Metal Dogs integration coverage
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: coverage-integration
+          name: coverage-metaldogs-integration
           path: |
-            coverage-integration.out
-            coverage-integration.txt
+            coverage-metaldogs-integration.out
             coverage-metaldogs-integration.txt
           if-no-files-found: error
 

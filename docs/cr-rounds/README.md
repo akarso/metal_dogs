@@ -54,4 +54,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-00 | roadmap bootstrap (documentation only) | — | [`CR-00-roadmap-bootstrap.md`](CR-00-roadmap-bootstrap.md) |
 | CR-01 | F0 Shopanda baseline (+ F0-fix docs/CI contract) | M0 → 1/6 | [`CR-01-f0-shopanda-baseline.md`](CR-01-f0-shopanda-baseline.md) |
 | CR-02 | F1 plugin skeleton behind flag | M0 → 2/6 | [`CR-02-f1-plugin-skeleton.md`](CR-02-f1-plugin-skeleton.md) |
-| CR-03 | F2 CI & PostgreSQL test harness (merged; origin CI proof open) | M0 → 3/6 merged | [`CR-03-f2-ci-postgres-harness.md`](CR-03-f2-ci-postgres-harness.md) |
+| CR-03 | F2 CI & PostgreSQL test harness (merged; billing-only CI gate) | M0 → 3/6 merged | [`CR-03-f2-ci-postgres-harness.md`](CR-03-f2-ci-postgres-harness.md) |

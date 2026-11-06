@@ -1,57 +1,31 @@
 # CR-03: F2 CI & PostgreSQL test harness
 
-- Closed: — (merged; **origin CI proof still open** — billing lock)
+- Closed: — (merged; **origin CI proof still open** — billing lock only)
 - Slices: `F2`
-- Milestone progress: M0 → 3/6 slices merged (`F0`, `F1`, `F2`); F2 process-close blocked on origin canary green or explicit billing-only gate acceptance
+- Milestone progress: M0 → 3/6 slices merged (`F0`, `F1`, `F2`); F2 process-close blocked on `CI / integration-metaldogs` green on origin (billing)
 
 ## What shipped
 
-Metal Dogs PostgreSQL test harness under `plugins/metaldogs/testutil`: `OpenIsolated` creates a **unique** schema per call and returns a `*sql.DB` with `search_path` pinned on **every** pool connection via libpq `options=-csearch_path=…` (not a one-shot `SET` on a pooled handle). Applies `plugin:metaldogs:*` migrations into that schema; drops schema on cleanup via a separate admin connection. Deterministic helpers: `FakeClock`, `SeqGenerator` / `FixedGenerator` (test fakes only). Product `Clock` / `IDGenerator` live in `ports/`. `MigrationFS()` exposes embed FS for the harness; no `RunMigrationsForTest` production API.
+Metal Dogs PostgreSQL test harness under `plugins/metaldogs/testutil`: `OpenIsolated` creates a **unique** schema per call and returns a `*sql.DB` with `search_path` pinned on **every** pool connection via `pgx.ParseConfig` + `RuntimeParams` (URL and libpq keyword DSNs). Applies `plugin:metaldogs:*` migrations; drops schema on cleanup via admin DSN (`t.Logf` on DROP failure). Deterministic helpers: `FakeClock`, `SeqGenerator` / `FixedGenerator`. Product `Clock` / `IDGenerator` in `ports/`. `MigrationFS()` / `MigrationDir` expose embed FS for the harness.
 
-Trivial `MetaStore` port/adapter round-trip + pool isolation / cleanup / same-slug tests. CI `run-integration-tests.sh` includes `./plugins/metaldogs/...` and canaries `TestMetaStore_RoundTrip`, `TestOpenIsolated_PoolSeesSchema`. No-DSN unit coverage artifact excludes `adapters/postgres` (DSN SQL coverage is integration-only). Compose publishes Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side `go test`.
+Dedicated CI job `integration-metaldogs` runs `.github/scripts/run-metaldogs-integration-tests.sh` (canaries: `TestMetaStore_RoundTrip`, `TestOpenIsolated_PoolSeesSchema`). Shopanda DSN suite remains in `integration` / `run-integration-tests.sh` and cannot fail F2 proof.
 
 ## Verification results
 
 | Item | Result |
 | --- | --- |
-| `OpenIsolated` without DSN | Skips cleanly |
-| Pool `search_path` | `TestOpenIsolated_PoolSeesSchema` (MaxOpenConns=8, 20 goroutines) |
-| Same slug twice | Distinct schemas; no cross-visibility |
-| Cleanup | Schema absent from `pg_namespace` after inner test cleanup |
-| `TestMetaStore_RoundTrip` / empty key | Pass locally with compose Postgres |
-| Integration canaries wired | MetaStore + PoolSeesSchema |
-| Coverage | no-DSN unit artifact; integration profile for adapter SQL |
-| ImportBoundary | Passes |
-| Origin Actions canaries | **Blocked** — account billing lock (open gate) |
+| Pool `search_path` | `current_schema()` equality across 20 goroutines; final row count == workers |
+| Same slug / cleanup | Distinct schemas; schema absent from `pg_namespace` after cleanup |
+| URL + keyword DSN parse | Unit tests on `configWithSearchPath` |
+| Origin `integration-metaldogs` | **Blocked** — Actions billing (open gate; billing-only) |
 
-## Tests added
+## Open gate
 
-- `plugins/metaldogs/testutil/db_test.go` (pool, same-slug, cleanup)
-- `plugins/metaldogs/testutil/clock_test.go` (FakeClock Set/Advance, Seq, Fixed)
-- `plugins/metaldogs/adapters/postgres/meta_store_test.go` (round-trip, empty key)
-- CI package list + canaries in `.github/scripts/run-integration-tests.sh`
+Restore GitHub Actions billing and confirm **`CI / integration-metaldogs`** green on `origin`. Shopanda `StoreCredit` / notification-dedupe reds do not block this job.
 
-## Flags / migrations / rollback
+## CR-03 follow-up fixes
 
-- No new flags. No new production migrations (reuses F1 `metaldogs_meta`).
-- Rollback: revert harness/CI-only; no runtime behaviour change.
-
-## Documentation updated
-
-- [x] ROADMAP F2 MERGED + open CI gate; AGENTS.md + `runbooks/local-development.md`
-- [x] `plugins/metaldogs/README.md`; overview deviations; compose host port
-- [x] This CR record + log link
-
-## Follow-ups filed
-
-- **Open gate:** Restore GitHub Actions billing and confirm integration canaries green on `origin` before calling F2 process-closed
-- `F3`: observability baseline (`correlation_id`, metrics, queue depth)
-- Pre-existing Shopanda DSN tests (`StoreCredit` uuid cast, notification dedupe reclaim) fail locally on this pin against fresh Postgres 17; not introduced by F2 — track on next upstream upgrade if still red in Actions
-
-## CR-03-fix (review)
-
-- Fixed pooled `search_path` isolation (DSN startup GUC)
-- Unique schema per `OpenIsolated` call
-- Isolation regression tests + canary
-- Moved Clock/ID product types to `ports/`; removed `RunMigrationsForTest`
-- Honest no-DSN vs integration coverage split; coverage upload only on integration success
+- Pooled isolation via `RuntimeParams` (not one-shot `SET` / URL-only mangling)
+- Decoupled metaldogs integration job
+- ROADMAP goal: unique schema per `OpenIsolated` call
+- Stronger pool assertions; DROP failures logged under `-v`

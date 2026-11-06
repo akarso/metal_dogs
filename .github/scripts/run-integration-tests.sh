@@ -13,11 +13,12 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# Metal Dogs DSN canaries live in run-metaldogs-integration-tests.sh so
+# Shopanda package failures cannot block the F2 harness proof job.
 pkgs=(
   ./internal/infrastructure/postgres/...
   ./internal/platform/migrate/...
   ./plugins/b2b/...
-  ./plugins/metaldogs/...
 )
 
 json="$(mktemp)"
@@ -56,8 +57,6 @@ fi
 canaries=(
   "github.com/akarso/shopanda/internal/infrastructure/postgres|TestProductRepo_CreateAndFindByID"
   "github.com/akarso/shopanda/plugins/b2b/groups|TestPostgresRepo_SaveListFind"
-  "github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres|TestMetaStore_RoundTrip"
-  "github.com/akarso/shopanda/plugins/metaldogs/testutil|TestOpenIsolated_PoolSeesSchema"
 )
 for c in "${canaries[@]}"; do
   pkg="${c%%|*}"

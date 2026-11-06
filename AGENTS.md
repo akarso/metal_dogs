@@ -43,17 +43,19 @@ docker compose up -d postgres
 # Default publish is 127.0.0.1:5432; if busy: SHOPANDA_DATABASE_HOST_PORT=5433 docker compose up -d postgres
 export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?sslmode=disable'
 go test ./plugins/metaldogs/... -count=1
-# Or the CI package set + canaries (needs jq):
+# Metal Dogs DSN canaries (needs jq) — decoupled from Shopanda integration suite:
+bash .github/scripts/run-metaldogs-integration-tests.sh
+# Shopanda DSN packages (postgres/migrate/b2b):
 bash .github/scripts/run-integration-tests.sh
 ```
 
-Coverage (CI artifacts: no-DSN unit packages vs integration for adapter SQL):
+Coverage (CI artifacts: no-DSN unit packages vs `integration-metaldogs` for adapter SQL):
 
 ```bash
 go test ./plugins/metaldogs/ ./plugins/metaldogs/httpapi/ ./plugins/metaldogs/ports/ ./plugins/metaldogs/testutil/ \
   -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-nodsn.out
 go tool cover -func=coverage-metaldogs-nodsn.out
-COVERPROFILE=coverage-integration.out bash .github/scripts/run-integration-tests.sh
+COVERPROFILE=coverage-metaldogs-integration.out bash .github/scripts/run-metaldogs-integration-tests.sh
 ```
 
 Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`. Then `GET /api/customizer/enabled` (not `/healthz`).

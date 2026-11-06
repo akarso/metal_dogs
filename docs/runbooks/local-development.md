@@ -102,18 +102,19 @@ export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?s
 # Adjust host port in the DSN when using SHOPANDA_DATABASE_HOST_PORT.
 
 go test ./plugins/metaldogs/... -count=1
-# CI package set + skip detection + canaries (includes metaldogs MetaStore round-trip):
+# F2 harness canaries only (MetaStore + OpenIsolated pool); needs jq:
+bash .github/scripts/run-metaldogs-integration-tests.sh
+# Shopanda DSN packages (postgres/migrate/b2b) — separate from F2 proof:
 bash .github/scripts/run-integration-tests.sh
 
-# Coverage profiles (CI: no-DSN packages vs integration for adapter SQL):
+# Coverage profiles (CI: no-DSN packages vs integration-metaldogs for adapter SQL):
 go test ./plugins/metaldogs/ ./plugins/metaldogs/httpapi/ ./plugins/metaldogs/ports/ ./plugins/metaldogs/testutil/ \
   -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-nodsn.out
 go tool cover -func=coverage-metaldogs-nodsn.out
-COVERPROFILE=coverage-integration.out bash .github/scripts/run-integration-tests.sh
+COVERPROFILE=coverage-metaldogs-integration.out bash .github/scripts/run-metaldogs-integration-tests.sh
 ```
 
-
-`plugins/metaldogs/testutil.OpenIsolated` creates a **unique** schema per call and returns a DB whose pool connections all start with that `search_path` (libpq `options=-csearch_path`). It runs `plugin:metaldogs:*` migrations and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `NewSeqGenerator`. Product clock/ID ports live in `plugins/metaldogs/ports`.
+`plugins/metaldogs/testutil.OpenIsolated` creates a **unique** schema per call and returns a DB whose pool connections all start with that `search_path` (`pgx` RuntimeParams; URL or libpq keyword DSN). It runs `plugin:metaldogs:*` migrations and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `NewSeqGenerator`. Product clock/ID ports live in `plugins/metaldogs/ports`.
 
 - Storefront unit and E2E: `S1`.
 - Opt-in smoke against real providers: `METALDOGS_SMOKE=1` plus credentials in env; costs money; never in CI.

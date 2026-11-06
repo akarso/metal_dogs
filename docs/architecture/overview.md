@@ -201,7 +201,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator + `/api/customizer/enabled`) | F1 |
 | `cmd/api/cache_control_prefixes.go` | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
-| `.github/scripts/run-integration-tests.sh` | Include `./plugins/metaldogs/...` + MetaStore canary; optional `COVERPROFILE` | F2 |
-| `.github/workflows/ci.yml` | Metal Dogs unit/integration coverage artifacts | F2 |
+| `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
+| `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts | F2 |
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F1 ships the skeleton + health; F2 adds the PostgreSQL test harness.
