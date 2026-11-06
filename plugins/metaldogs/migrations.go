@@ -1,8 +1,11 @@
 package metaldogs
 
 import (
+	"context"
+	"database/sql"
 	"embed"
 
+	"github.com/akarso/shopanda/internal/platform/migrate"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 )
 
@@ -18,4 +21,9 @@ func (p *Plugin) Migration() plugin.MigrationSpec {
 		FS:  migrationFiles,
 		Dir: "migrations",
 	}
+}
+
+// RunMigrationsForTest applies embedded Metal Dogs migrations (integration tests only).
+func RunMigrationsForTest(db *sql.DB) (migrate.PluginFSResult, error) {
+	return migrate.RunPluginFS(context.Background(), db, PluginName, migrationFiles, "migrations")
 }

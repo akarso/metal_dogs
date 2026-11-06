@@ -21,7 +21,7 @@ Pinned commit and upgrade rules: `docs/UPSTREAM_PIN.md`, `docs/runbooks/shopanda
 
 Documentation model: product docs under `docs/` (roadmap, ADRs, CR rounds). Shopanda `docs/phase-*`, promote, and living-guide workflow apply **upstream only**; this tree keeps `docs/GOVULN_BASELINE.md` + stub `docs/guides` / `docs/diagrams` for CI and link honesty.
 
-### Build and test commands (F0)
+### Build and test commands
 
 Commands match the pinned Shopanda tree (`go 1.26.0` in `go.mod`):
 
@@ -32,13 +32,32 @@ go build -o app ./cmd/api
 ./app help           # live CLI list
 
 go test ./plugins/ -run ImportBoundary -count=1
-go test ./plugins/metaldogs/ -count=1
+go test ./plugins/metaldogs/... -count=1
 bash .github/scripts/check-product-docs-links.sh
+```
+
+DSN-gated feature tests (skip when unset; required in CI `integration` job):
+
+```bash
+docker compose up -d postgres
+# Default publish is 127.0.0.1:5432; if busy: SHOPANDA_DATABASE_HOST_PORT=5433 docker compose up -d postgres
+export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?sslmode=disable'
+go test ./plugins/metaldogs/... -count=1
+# Or the CI package set + canaries (needs jq):
+bash .github/scripts/run-integration-tests.sh
+```
+
+Coverage (also uploaded as CI artifacts):
+
+```bash
+go test ./plugins/metaldogs/... -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-unit.out
+go tool cover -func=coverage-metaldogs-unit.out
+COVERPROFILE=coverage-integration.out bash .github/scripts/run-integration-tests.sh
 ```
 
 Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`. Then `GET /api/customizer/enabled` (not `/healthz`).
 
-Additional Metal Dogs feature-test harness commands are added in `F2` and must be documented here in the same change.
+Harness helpers: `plugins/metaldogs/testutil` (`OpenIsolated`, `FakeClock`, `SeqGenerator`).
 
 ## Engineering principles
 

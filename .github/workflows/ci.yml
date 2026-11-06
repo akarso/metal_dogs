@@ -80,6 +80,22 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Metal Dogs coverage (unit)
+        run: |
+          set -euo pipefail
+          go test ./plugins/metaldogs/... -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-unit.out
+          go tool cover -func=coverage-metaldogs-unit.out | tee coverage-metaldogs-unit.txt
+          tail -n 1 coverage-metaldogs-unit.txt
+
+      - name: Upload Metal Dogs unit coverage
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: coverage-metaldogs-unit
+          path: |
+            coverage-metaldogs-unit.out
+            coverage-metaldogs-unit.txt
+          if-no-files-found: error
+
   integration:
     name: integration
     runs-on: ubuntu-latest
@@ -134,7 +150,33 @@ jobs:
       - name: DSN-gated integration tests
         # -json + jq: detect Action=skip (default go test text hides skip reasons).
         # -p 1: serialize packages so concurrent migrate.Run on one DB cannot race.
+        env:
+          COVERPROFILE: coverage-integration.out
         run: bash .github/scripts/run-integration-tests.sh
+
+      - name: Metal Dogs coverage (integration)
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ ! -f coverage-integration.out ]]; then
+            echo "No coverage-integration.out (suite did not produce a profile)" >&2
+            exit 1
+          fi
+          go tool cover -func=coverage-integration.out | tee coverage-integration.txt
+          # Focused summary for the plugin packages exercised by the harness.
+          go tool cover -func=coverage-integration.out | grep 'plugins/metaldogs/' | tee coverage-metaldogs-integration.txt || true
+          tail -n 1 coverage-integration.txt
+
+      - name: Upload integration coverage
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: coverage-integration
+          path: |
+            coverage-integration.out
+            coverage-integration.txt
+            coverage-metaldogs-integration.txt
+          if-no-files-found: ignore
 
   govuln:
     name: govuln

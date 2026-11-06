@@ -1,7 +1,7 @@
 # Runbook: local development environment
 
 - **Introduced by slice:** `F0`, `F2`
-- **Last exercised:** 2026-11-06 — `go build`, `ImportBoundary`, docs-policy + govuln baseline presence, `./app help` with the `.env` edits below (Postgres not required for `help`). Full `./app setup` / `./app dev` still need a running Postgres 17 (compose).
+- **Last exercised:** 2026-11-06 — `go build`, `ImportBoundary`, docs-policy + govuln baseline presence, `./app help` with the `.env` edits below; Metal Dogs DSN harness (`OpenIsolated` + `TestMetaStore_RoundTrip`) against compose Postgres on a published host port. Full `./app setup` / `./app dev` still need Postgres 17.
 - **Severity when triggered:** low
 - **Owner:** every developer
 
@@ -84,12 +84,35 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 
 ```bash
 go test ./plugins/ -run ImportBoundary -count=1
+go test ./plugins/metaldogs/... -count=1   # unit; DSN tests skip without SHOPANDA_TEST_DSN
 bash .github/scripts/check-product-docs-links.sh
 # govuln (needs pinned govulncheck on PATH, as in CI):
 # bash .github/scripts/run-govulncheck.sh
 ```
 
-- Broader Go unit/feature harness: `F2`.
+### DSN-gated feature tests (F2)
+
+Compose publishes Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}`. Default password is `changeme` (same as compose service defaults).
+
+```bash
+docker compose up -d postgres
+# If host 5432 is already taken:
+#   SHOPANDA_DATABASE_HOST_PORT=5433 docker compose up -d postgres
+export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?sslmode=disable'
+# Adjust host port in the DSN when using SHOPANDA_DATABASE_HOST_PORT.
+
+go test ./plugins/metaldogs/... -count=1
+# CI package set + skip detection + canaries (includes metaldogs MetaStore round-trip):
+bash .github/scripts/run-integration-tests.sh
+
+# Coverage profiles (also produced as CI artifacts):
+go test ./plugins/metaldogs/... -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-unit.out
+go tool cover -func=coverage-metaldogs-unit.out
+COVERPROFILE=coverage-integration.out bash .github/scripts/run-integration-tests.sh
+```
+
+`plugins/metaldogs/testutil.OpenIsolated` creates a per-package schema, runs `plugin:metaldogs:*` migrations, and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `SeqGenerator`.
+
 - Storefront unit and E2E: `S1`.
 - Opt-in smoke against real providers: `METALDOGS_SMOKE=1` plus credentials in env; costs money; never in CI.
 

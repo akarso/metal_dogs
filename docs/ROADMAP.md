@@ -244,7 +244,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flag default off; `/api/customizer` on no-cache prefix list.
 - **Docs:** `architecture/overview.md` module layout confirmed; ADR-0003 verification notes.
 
-#### F2 · CI and PostgreSQL test harness — size S
+#### F2 · CI and PostgreSQL test harness — size S — **DONE** (CR-03, 2026-11-06)
 
 - **Goal:** CI runs unit + feature tests against a real PostgreSQL; a shared test helper creates an isolated schema per test package and runs plugin migrations.
 - **Scope:** CI workflow; `testutil` with DB fixture, fake clock, fake ID generator; coverage reporting.

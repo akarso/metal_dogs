@@ -17,15 +17,22 @@ pkgs=(
   ./internal/infrastructure/postgres/...
   ./internal/platform/migrate/...
   ./plugins/b2b/...
+  ./plugins/metaldogs/...
 )
 
 json="$(mktemp)"
 trap 'rm -f "$json"' EXIT
 
+coverprofile="${COVERPROFILE:-}"
+cover_args=()
+if [[ -n "$coverprofile" ]]; then
+  cover_args=(-coverprofile="$coverprofile" -covermode=atomic)
+fi
+
 # Serialize packages (-p 1): multiple packages call migrate.Run on the same DB.
 # Capture exit without aborting the shell so we can report JSON failures.
 set +e
-go test -p 1 -count=1 -json "${pkgs[@]}" >"$json"
+go test -p 1 -count=1 "${cover_args[@]}" -json "${pkgs[@]}" >"$json"
 status=$?
 set -e
 
@@ -49,6 +56,7 @@ fi
 canaries=(
   "github.com/akarso/shopanda/internal/infrastructure/postgres|TestProductRepo_CreateAndFindByID"
   "github.com/akarso/shopanda/plugins/b2b/groups|TestPostgresRepo_SaveListFind"
+  "github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres|TestMetaStore_RoundTrip"
 )
 for c in "${canaries[@]}"; do
   pkg="${c%%|*}"
