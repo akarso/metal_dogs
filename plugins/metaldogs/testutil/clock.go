@@ -3,18 +3,9 @@ package testutil
 import (
 	"sync"
 	"time"
+
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
-
-// Clock provides the current time for deterministic domain/application tests.
-type Clock interface {
-	Now() time.Time
-}
-
-// SystemClock uses time.Now (UTC).
-type SystemClock struct{}
-
-// Now returns time.Now().UTC().
-func (SystemClock) Now() time.Time { return time.Now().UTC() }
 
 // FakeClock is a mutable clock for tests.
 type FakeClock struct {
@@ -26,6 +17,8 @@ type FakeClock struct {
 func NewFakeClock(t time.Time) *FakeClock {
 	return &FakeClock{t: t.UTC()}
 }
+
+var _ ports.Clock = (*FakeClock)(nil)
 
 // Now returns the frozen time.
 func (c *FakeClock) Now() time.Time {

@@ -26,10 +26,11 @@ plugins/metaldogs/
 ├── httpapi/           # public HTTP adapters
 ├── domain/            # domain model (empty until C*)
 ├── application/       # use cases (empty until C*)
-├── ports/             # outbound ports (MetaStore + later C*/G*)
+├── ports/             # Clock, IDGenerator, MetaStore (+ later C*/G*)
 ├── adapters/postgres/ # MetaStore adapter (F2 harness exercise)
-└── testutil/          # OpenIsolated, FakeClock, SeqGenerator
+└── testutil/          # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
 ```
+
 
 ## Current surface (F1)
 
@@ -46,6 +47,6 @@ export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?s
 go test ./plugins/metaldogs/... -count=1
 ```
 
-`testutil.OpenIsolated(t, slug)` creates a dedicated schema, applies plugin migrations, and cleans up. CI runs the same packages via `.github/scripts/run-integration-tests.sh` (canary: `TestMetaStore_RoundTrip`).
+`testutil.OpenIsolated(t, slug)` creates a unique schema per call, pins `search_path` on every pool connection, applies plugin migrations, and cleans up. CI canaries: `TestMetaStore_RoundTrip`, `TestOpenIsolated_PoolSeesSchema`.
 
 Job types for later slices: `integration.sync.metaldogs.<name>` (see ADR-0003).

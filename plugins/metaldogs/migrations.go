@@ -1,11 +1,9 @@
 package metaldogs
 
 import (
-	"context"
-	"database/sql"
 	"embed"
+	"io/fs"
 
-	"github.com/akarso/shopanda/internal/platform/migrate"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 )
 
@@ -23,7 +21,9 @@ func (p *Plugin) Migration() plugin.MigrationSpec {
 	}
 }
 
-// RunMigrationsForTest applies embedded Metal Dogs migrations (integration tests only).
-func RunMigrationsForTest(db *sql.DB) (migrate.PluginFSResult, error) {
-	return migrate.RunPluginFS(context.Background(), db, PluginName, migrationFiles, "migrations")
-}
+// MigrationFS returns the embedded SQL migrations for the test harness.
+// Prefer plugins/metaldogs/testutil.OpenIsolated over calling migrate directly.
+func MigrationFS() fs.FS { return migrationFiles }
+
+// MigrationDir is the directory inside MigrationFS() that holds *.sql files.
+const MigrationDir = "migrations"

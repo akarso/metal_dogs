@@ -57,6 +57,7 @@ canaries=(
   "github.com/akarso/shopanda/internal/infrastructure/postgres|TestProductRepo_CreateAndFindByID"
   "github.com/akarso/shopanda/plugins/b2b/groups|TestPostgresRepo_SaveListFind"
   "github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres|TestMetaStore_RoundTrip"
+  "github.com/akarso/shopanda/plugins/metaldogs/testutil|TestOpenIsolated_PoolSeesSchema"
 )
 for c in "${canaries[@]}"; do
   pkg="${c%%|*}"

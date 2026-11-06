@@ -47,17 +47,18 @@ go test ./plugins/metaldogs/... -count=1
 bash .github/scripts/run-integration-tests.sh
 ```
 
-Coverage (also uploaded as CI artifacts):
+Coverage (CI artifacts: no-DSN unit packages vs integration for adapter SQL):
 
 ```bash
-go test ./plugins/metaldogs/... -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-unit.out
-go tool cover -func=coverage-metaldogs-unit.out
+go test ./plugins/metaldogs/ ./plugins/metaldogs/httpapi/ ./plugins/metaldogs/ports/ ./plugins/metaldogs/testutil/ \
+  -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-nodsn.out
+go tool cover -func=coverage-metaldogs-nodsn.out
 COVERPROFILE=coverage-integration.out bash .github/scripts/run-integration-tests.sh
 ```
 
 Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`. Then `GET /api/customizer/enabled` (not `/healthz`).
 
-Harness helpers: `plugins/metaldogs/testutil` (`OpenIsolated`, `FakeClock`, `SeqGenerator`).
+Harness helpers: `plugins/metaldogs/testutil` (`OpenIsolated` pins `search_path` on every pool conn, `FakeClock`, `NewSeqGenerator`). Product `Clock` / `IDGenerator` are in `ports/`.
 
 ## Engineering principles
 

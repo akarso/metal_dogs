@@ -105,13 +105,15 @@ go test ./plugins/metaldogs/... -count=1
 # CI package set + skip detection + canaries (includes metaldogs MetaStore round-trip):
 bash .github/scripts/run-integration-tests.sh
 
-# Coverage profiles (also produced as CI artifacts):
-go test ./plugins/metaldogs/... -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-unit.out
-go tool cover -func=coverage-metaldogs-unit.out
+# Coverage profiles (CI: no-DSN packages vs integration for adapter SQL):
+go test ./plugins/metaldogs/ ./plugins/metaldogs/httpapi/ ./plugins/metaldogs/ports/ ./plugins/metaldogs/testutil/ \
+  -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-nodsn.out
+go tool cover -func=coverage-metaldogs-nodsn.out
 COVERPROFILE=coverage-integration.out bash .github/scripts/run-integration-tests.sh
 ```
 
-`plugins/metaldogs/testutil.OpenIsolated` creates a per-package schema, runs `plugin:metaldogs:*` migrations, and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `SeqGenerator`.
+
+`plugins/metaldogs/testutil.OpenIsolated` creates a **unique** schema per call and returns a DB whose pool connections all start with that `search_path` (libpq `options=-csearch_path`). It runs `plugin:metaldogs:*` migrations and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `NewSeqGenerator`. Product clock/ID ports live in `plugins/metaldogs/ports`.
 
 - Storefront unit and E2E: `S1`.
 - Opt-in smoke against real providers: `METALDOGS_SMOKE=1` plus credentials in env; costs money; never in CI.

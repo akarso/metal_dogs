@@ -80,20 +80,23 @@ jobs:
       - name: go test
         run: go test ./...
 
-      - name: Metal Dogs coverage (unit)
+      - name: Metal Dogs coverage (no-DSN packages)
+        # Excludes adapters/postgres: those tests skip without SHOPANDA_TEST_DSN;
+        # adapter SQL coverage comes from the integration job artifact.
         run: |
           set -euo pipefail
-          go test ./plugins/metaldogs/... -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-unit.out
-          go tool cover -func=coverage-metaldogs-unit.out | tee coverage-metaldogs-unit.txt
-          tail -n 1 coverage-metaldogs-unit.txt
+          go test ./plugins/metaldogs/ ./plugins/metaldogs/httpapi/ ./plugins/metaldogs/ports/ ./plugins/metaldogs/testutil/ \
+            -count=1 -covermode=atomic -coverprofile=coverage-metaldogs-nodsn.out
+          go tool cover -func=coverage-metaldogs-nodsn.out | tee coverage-metaldogs-nodsn.txt
+          tail -n 1 coverage-metaldogs-nodsn.txt
 
-      - name: Upload Metal Dogs unit coverage
+      - name: Upload Metal Dogs no-DSN coverage
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: coverage-metaldogs-unit
+          name: coverage-metaldogs-nodsn
           path: |
-            coverage-metaldogs-unit.out
-            coverage-metaldogs-unit.txt
+            coverage-metaldogs-nodsn.out
+            coverage-metaldogs-nodsn.txt
           if-no-files-found: error
 
   integration:
@@ -155,7 +158,7 @@ jobs:
         run: bash .github/scripts/run-integration-tests.sh
 
       - name: Metal Dogs coverage (integration)
-        if: always()
+        if: success()
         run: |
           set -euo pipefail
           if [[ ! -f coverage-integration.out ]]; then
@@ -163,12 +166,11 @@ jobs:
             exit 1
           fi
           go tool cover -func=coverage-integration.out | tee coverage-integration.txt
-          # Focused summary for the plugin packages exercised by the harness.
           go tool cover -func=coverage-integration.out | grep 'plugins/metaldogs/' | tee coverage-metaldogs-integration.txt || true
           tail -n 1 coverage-integration.txt
 
       - name: Upload integration coverage
-        if: always()
+        if: success()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: coverage-integration
@@ -176,7 +178,7 @@ jobs:
             coverage-integration.out
             coverage-integration.txt
             coverage-metaldogs-integration.txt
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   govuln:
     name: govuln

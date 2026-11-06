@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
@@ -12,7 +13,7 @@ func TestMetaStore_RoundTrip(t *testing.T) {
 	db := testutil.OpenIsolated(t, "adapters_postgres")
 	store := postgres.NewMetaStore(db)
 	ctx := context.Background()
-	ids := &testutil.SeqGenerator{Prefix: "meta"}
+	ids := testutil.NewSeqGenerator("meta")
 	key := ids.New()
 
 	if err := store.Put(ctx, key, "hello"); err != nil {
@@ -37,5 +38,14 @@ func TestMetaStore_RoundTrip(t *testing.T) {
 	_, ok, err = store.Get(ctx, ids.New())
 	if err != nil || ok {
 		t.Fatalf("missing key: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMetaStore_PutEmptyKey(t *testing.T) {
+	db := testutil.OpenIsolated(t, "adapters_postgres_empty")
+	store := postgres.NewMetaStore(db)
+	err := store.Put(context.Background(), "", "x")
+	if err == nil || !strings.Contains(err.Error(), "key required") {
+		t.Fatalf("Put empty key: %v", err)
 	}
 }
