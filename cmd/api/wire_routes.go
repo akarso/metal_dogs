@@ -47,19 +47,7 @@ func buildServeHandler(cfg *config.Config, log logger.Logger, rt *serveRuntime, 
 	router.Use(shophttp.CSRFMiddleware(cfg.RateLimit.TrustedProxies...))
 	router.Use(shophttp.StoreMiddleware(rt.repos.storeRepo, log))
 	router.Use(shophttp.LanguageMiddleware())
-	router.Use(shophttp.CacheControlMiddleware([]string{
-		"/setup",
-		"/fragments",
-		"/storefront",
-		"/api/v1/setup",
-		"/api/v1/carts",
-		"/api/v1/checkout",
-		"/api/v1/orders",
-		"/api/v1/account",
-		"/api/v1/auth",
-		"/api/v1/shipping",
-		"/api/v1/admin",
-	}))
+	router.Use(shophttp.CacheControlMiddleware(cacheControlNoCachePrefixes()))
 
 	// Routes. /healthz and /readyz are mounted outside this stack (see MountProbes below)
 	// so StoreMiddleware / auth / rate-limit cannot hang probes on a dead DB.

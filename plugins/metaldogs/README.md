@@ -14,7 +14,7 @@ plugins:
 
 or `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`.
 
-Registration: `cmd/api/register_plugins.go` (compile-time).
+Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also registers the plugin `Migrator` (`plugin:metaldogs:*` versions) for `app migrate` / boot.
 
 ## Layout
 
@@ -34,6 +34,8 @@ plugins/metaldogs/
 
 | Method | Path | When enabled |
 | --- | --- | --- |
-| `GET` | `/api/customizer/health` | `{"status":"ok","plugin":"metaldogs"}` |
+| `GET` | `/api/customizer/enabled` | `{"status":"ok","plugin":"metaldogs"}` |
 
-Job types for later slices use Shopanda sync jobs: `integration.sync.metaldogs.<name>` (see ADR-0003).
+**Not a liveness/readiness probe.** Use `/healthz` and `/readyz` for orchestrators. This route sits on the full API middleware stack (including `StoreMiddleware`) and can hang if the database is down. Guest responses for `/api/customizer/*` are forced `Cache-Control: no-store`.
+
+Job types for later slices: `integration.sync.metaldogs.<name>` (see ADR-0003).

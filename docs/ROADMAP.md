@@ -238,10 +238,10 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
-- **Goal:** `plugins/metaldogs` registers as an external plugin, enabled by `plugins.metaldogs.enabled` (default `false`), exposes `GET /api/customizer/health` only when enabled.
+- **Goal:** `plugins/metaldogs` registers as an external plugin, enabled by `plugins.metaldogs.enabled` (default `false`), exposes `GET /api/customizer/enabled` only when enabled (not a process probe).
 - **Scope:** `Plugin` implementation; config struct; registration line in `cmd/api/register_plugins.go`; internal layout `domain/`, `application/`, `ports/`, `adapters/`, `httpapi/`; **verification tasks** for custom job types and plugin migrations with the result written into ADR-0003.
-- **Tests:** Import-boundary test passes with the new plugin; feature test: flag off → `404`, flag on → `200`.
-- **Safe delivery:** Flag default off.
+- **Tests:** Import-boundary; `registerPlugins` enabled/disabled (route + CollectMigrations); Cache-Control `no-store` for `/api/customizer/*` via shared prefix list.
+- **Safe delivery:** Flag default off; `/api/customizer` on no-cache prefix list.
 - **Docs:** `architecture/overview.md` module layout confirmed; ADR-0003 verification notes.
 
 #### F2 · CI and PostgreSQL test harness — size S

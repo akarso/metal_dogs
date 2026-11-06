@@ -33,8 +33,8 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
 	}
 
-	if err := app.RegisterPublicRoute("GET /api/customizer/health", httpapi.Health()); err != nil {
-		return fmt.Errorf("metaldogs plugin: health route: %w", err)
+	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
+		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}
 	return nil
 }

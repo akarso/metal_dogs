@@ -261,8 +261,7 @@ queue:
 #     postgres_cache: true
 #     postgres_queue: true
 
-# --- External plugins ---------------------------------------------------------
-# Third-party-style plugins (see plugins/example). Not part of plugins/core/.
+# --- Plugins (single map; do not paste multiple top-level `plugins:` keys) -----
 # plugins:
 #   example:
 #     enabled: false
@@ -270,25 +269,12 @@ queue:
 #   slotsdemo:
 #     enabled: false
 #   promodemo:
-#     enabled: false   # custom catalog promotion rule types (min_line_total, line_bonus_percent)
-
-# --- B2B module (commercial) --------------------------------------------------
-# Requires a valid license key. See docs/COMMERCIAL.md and plugins/b2b/README.md.
-# plugins:
-#   b2b:
+#     enabled: false
+#   b2b:                         # commercial; see docs/COMMERCIAL.md
 #     enabled: false
 #     license_key: "DEV-local"
-
-# --- Metal Dogs (product plugin) ----------------------------------------------
-# Dark by default. When enabled: GET /api/customizer/health and (later) customizer API.
-# Env: SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
-# plugins:
-#   metaldogs:
-#     enabled: false
-
-# --- GraphQL API (optional, read-only) ----------------------------------------
-# Headless catalog queries; REST remains canonical for writes.
-# plugins:
+#   metaldogs:                   # Metal Dogs product plugin (dark by default)
+#     enabled: false             # or SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
 #   graphql:
 #     enabled: false
 

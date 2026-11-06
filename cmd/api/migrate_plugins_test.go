@@ -14,6 +14,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/migrate"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/b2b"
+	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
 func TestCollectMigrations_PromoIntegrationAndB2B_NoInit(t *testing.T) {
@@ -34,11 +35,34 @@ func TestCollectMigrations_PromoIntegrationAndB2B_NoInit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(regs) != 1 || regs[0].PluginName != "shopanda/b2b" {
-		t.Fatalf("CollectMigrations = %+v, want only shopanda/b2b", regs)
+		t.Fatalf("CollectMigrations = %+v, want only shopanda/b2b (metaldogs disabled)", regs)
 	}
 	spec := b2b.New().Migration()
 	if regs[0].Dir != spec.Dir || len(regs[0].Options.AdoptBareBasenames) != len(spec.Options.AdoptBareBasenames) {
 		t.Fatalf("registration drifted from B2B Migration(): %+v vs %+v", regs[0], spec)
+	}
+}
+
+func TestCollectMigrations_MetalDogs_NoInit(t *testing.T) {
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
+			B2B:       config.B2BPluginConfig{Enabled: false},
+		},
+	}
+	log := logger.NewWithWriter(io.Discard, "error")
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, cfg)
+	regs, err := registry.CollectMigrations(cfg.Plugins.DependsOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regs) != 1 || regs[0].PluginName != "metaldogs" {
+		t.Fatalf("CollectMigrations = %+v, want only metaldogs", regs)
+	}
+	spec := metaldogs.New().Migration()
+	if regs[0].Dir != spec.Dir {
+		t.Fatalf("Dir = %q, want %q", regs[0].Dir, spec.Dir)
 	}
 }
 

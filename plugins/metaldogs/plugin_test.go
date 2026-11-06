@@ -26,14 +26,6 @@ func testApp(enabled bool) *plugin.App {
 	}
 }
 
-func mountPublic(app *plugin.App) http.Handler {
-	mux := http.NewServeMux()
-	for _, route := range app.PublicRoutes() {
-		mux.Handle(route.Pattern, route.Handler)
-	}
-	return mux
-}
-
 func TestPlugin_Name(t *testing.T) {
 	t.Parallel()
 	if got := metaldogs.New().Name(); got != metaldogs.PluginName {
@@ -57,36 +49,25 @@ func TestPlugin_Init_Disabled(t *testing.T) {
 	}
 }
 
-func TestHealth_FlagOff_404(t *testing.T) {
-	t.Parallel()
-	// Mirrors register_plugins.go: plugin is not registered when disabled,
-	// so no public route is mounted and the mux returns 404.
-	app := testApp(false)
-	mux := mountPublic(app)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 when plugin disabled / not registered", rec.Code)
-	}
-}
-
-func TestHealth_FlagOn_200(t *testing.T) {
+func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	t.Parallel()
 	app := testApp(true)
 	if err := metaldogs.New().Init(app); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	mux := mountPublic(app)
+	routes := app.PublicRoutes()
+	if len(routes) != 1 || routes[0].Pattern != "GET /api/customizer/enabled" {
+		t.Fatalf("PublicRoutes = %+v", routes)
+	}
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	routes[0].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", ct)
 	}
-	body := rec.Body.String()
-	if body != `{"status":"ok","plugin":"metaldogs"}` {
+	if body := rec.Body.String(); body != `{"status":"ok","plugin":"metaldogs"}` {
 		t.Fatalf("body = %q", body)
 	}
 }

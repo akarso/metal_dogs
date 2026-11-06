@@ -84,7 +84,7 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
 
 ## Verification
 
-- `./app dev` serves the default Shopanda storefront (and `/api/customizer/health` `200` once `F1` enables the plugin).
+- `./app dev` serves the default Shopanda storefront (and `/api/customizer/enabled` `200` once `F1` enables the plugin).
 - Import-boundary test green; queue depth normal; an end-to-end order on staging produces a snapshot (from `E4` onward).
 
 ## Prevention / follow-up

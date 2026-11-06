@@ -664,7 +664,8 @@ type B2BPluginConfig struct {
 
 // MetalDogsPluginConfig toggles the Metal Dogs product plugin in plugins/metaldogs.
 // Default enabled=false (dark); set plugins.metaldogs.enabled or
-// SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/*.
+// SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/* (not a
+// process probe — use /healthz and /readyz for orchestrators).
 type MetalDogsPluginConfig struct {
 	Enabled bool `yaml:"enabled"`
 }

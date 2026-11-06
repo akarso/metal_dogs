@@ -36,7 +36,7 @@ go test ./plugins/metaldogs/ -count=1
 bash .github/scripts/check-product-docs-links.sh
 ```
 
-Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`.
+Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`. Then `GET /api/customizer/enabled` (not `/healthz`).
 
 Additional Metal Dogs feature-test harness commands are added in `F2` and must be documented here in the same change.
 

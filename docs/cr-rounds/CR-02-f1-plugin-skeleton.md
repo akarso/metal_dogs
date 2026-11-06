@@ -6,16 +6,18 @@
 
 ## What shipped
 
-`plugins/metaldogs` registers behind `plugins.metaldogs.enabled` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default `false`). When enabled: `GET /api/customizer/health` → `200` JSON; when disabled / not registered → `404`. Implements `plugin.Migrator` with `metaldogs_meta` placeholder table. Hexagonal package stubs: `domain/`, `application/`, `ports/`, `adapters/`, `httpapi/`. ADR-0003 verification filled (sync job naming + Migrator).
+`plugins/metaldogs` registers behind `plugins.metaldogs.enabled` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default `false`). When enabled: `GET /api/customizer/enabled` → `200` JSON with `Cache-Control: no-store`; when disabled / not registered → `404`. Implements `plugin.Migrator` with `metaldogs_meta` placeholder table (bare `CREATE TABLE`). Hexagonal package stubs: `domain/`, `application/`, `ports/`, `adapters/`, `httpapi/`. ADR-0003 verification filled (sync job naming + Migrator).
 
 ## Verification results
 
 | Item | Result |
 | --- | --- |
 | Flag default off | Config unit test + Init disabled error |
-| Health 404 / 200 | `TestHealth_FlagOff_404`, `TestHealth_FlagOn_200` |
+| Env override | `SHOPANDA_PLUGINS_METALDOGS_ENABLED` |
+| registerPlugins off/on | Route absent / present + CollectMigrations |
+| Cache-Control | `/api/customizer` on no-cache prefix list; middleware test |
 | ImportBoundary | Passes with new plugin |
-| Migrator | `Migration()` embed FS; ADR-0003 notes |
+| Migrator | CollectMigrations without Init; ADR-0003 notes |
 | Free-form `metaldogs.*` jobs | Confirmed unsupported; use `integration.sync.metaldogs.*` |
 
 ## Tests added

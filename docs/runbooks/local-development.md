@@ -69,7 +69,8 @@ Enable the plugin (optional for local customizer work):
 set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # or YAML: plugins.metaldogs.enabled: true
 ./app dev
-# GET /api/customizer/health → 200 when enabled; 404 when disabled
+# GET /api/customizer/enabled → 200 when enabled; 404 when disabled
+# (not a k8s probe — use /healthz and /readyz)
 ```
 
 ### Why stock `.env.example` alone fails

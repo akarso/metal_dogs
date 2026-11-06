@@ -198,6 +198,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `cmd/api/register_plugins.go` | Registers `metaldogs.New()` when `plugins.metaldogs.enabled` | F1 |
 | `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
-| `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator + health route) | F1 |
+| `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator + `/api/customizer/enabled`) | F1 |
+| `cmd/api/cache_control_prefixes.go` | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F1 ships the skeleton + health only.
