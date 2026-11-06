@@ -42,17 +42,27 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
    - **`AGENTS.md`** — keep Metal Dogs project rules; refresh the build/test command section from upstream if commands changed.
    - **`cmd/api/register_plugins.go`** — re-apply the `metaldogs` registration line if upstream touched the file.
    - All other conflicts: prefer upstream unless listed under "Upstream deviations" in `docs/architecture/overview.md`.
-4. Update the pin **everywhere** (not only `UPSTREAM_PIN.md`). Pin SHAs are hardcoded in product-facing markdown that links upstream guides:
+4. Update the pin **everywhere** (not only `UPSTREAM_PIN.md`). Pin SHAs are hardcoded in product-facing markdown that links upstream guides. Use a portable rewrite (no GNU `sed -i` / `xargs -r`):
 
    ```bash
    OLD=<previous-sha>
    NEW=<new-sha>
-   # Rewrite blob/ and tree/ URLs (README, PLUGINS, RUNBOOK, stubs, plugins/*/README.md, …)
-   rg -l "github.com/akarso/shopanda/(blob|tree)/${OLD}" -g '*.md' \
-     | xargs -r sed -i "s|github.com/akarso/shopanda/blob/${OLD}|github.com/akarso/shopanda/blob/${NEW}|g; s|github.com/akarso/shopanda/tree/${OLD}|github.com/akarso/shopanda/tree/${NEW}|g"
+   python3 -c '
+   import pathlib, re, sys
+   old, new = sys.argv[1], sys.argv[2]
+   pat = re.compile(r"(github\.com/akarso/shopanda/(?:blob|tree)/)" + re.escape(old))
+   for path in pathlib.Path(".").rglob("*.md"):
+       if ".git" in path.parts:
+           continue
+       text = path.read_text(encoding="utf-8")
+       text2, n = pat.subn(r"\g<1>" + new, text)
+       if n:
+           path.write_text(text2, encoding="utf-8")
+           print(f"updated {path} ({n})")
+   ' "$OLD" "$NEW"
+
    # Also edit docs/UPSTREAM_PIN.md pin table by hand (subject/date).
-   # Must be empty:
-   rg -n "${OLD}" -g '*.md' || true
+   # Must be empty for blob/tree URLs:
    test -z "$(rg -l "github.com/akarso/shopanda/(blob|tree)/${OLD}" -g '*.md' || true)"
    ```
 

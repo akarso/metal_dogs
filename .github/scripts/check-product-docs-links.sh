@@ -16,14 +16,16 @@ shopt -s nullglob
 # Markdown href to a guides/diagrams *file* (allows #fragment and ?query before ')').
 # Stub indexes docs/guides/README.md and docs/diagrams/README.md are allowed.
 MD_GUIDE_HREF='\]\((\.\./)*(docs/guides|docs/diagrams)/[^)]+\)'
-# Backtick path mentions of the same (pimdemo-style prose).
-BT_GUIDE_PATH='`(docs/guides|docs/diagrams)/[^`]+`'
+# Backtick path mentions of the same (with or without leading ../).
+BT_GUIDE_PATH='`(\.\./)*(docs/guides|docs/diagrams)/[^`]+`'
 STUB_ALLOW='docs/guides/README\.md|docs/diagrams/README\.md'
 
 self_test() {
   local tmp hits
   tmp="$(mktemp)"
-  trap 'rm -f "${tmp}"' RETURN
+  # EXIT covers failure paths that call exit 1; RETURN covers normal return.
+  # shellcheck disable=SC2064
+  trap "rm -f '${tmp}'" EXIT
 
   printf '%s\n' '[x](../../docs/guides/DEVELOPER.md#three-tier-extension-model)' >"${tmp}"
   hits="$(grep -E "${MD_GUIDE_HREF}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
@@ -46,12 +48,22 @@ self_test() {
     exit 1
   fi
 
+  printf '%s\n' 'See `../../docs/guides/DEVELOPER.md#frag`.' >"${tmp}"
+  hits="$(grep -E "${BT_GUIDE_PATH}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
+  if [[ -z "${hits}" ]]; then
+    echo "SELF-TEST FAIL: relative backtick guide path must be detected" >&2
+    exit 1
+  fi
+
   printf '%s\n' 'See `docs/guides/README.md`.' >"${tmp}"
   hits="$(grep -E "${BT_GUIDE_PATH}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
   if [[ -n "${hits}" ]]; then
     echo "SELF-TEST FAIL: backtick stub README must be allowed" >&2
     exit 1
   fi
+
+  trap - EXIT
+  rm -f "${tmp}"
 }
 
 candidate_paths=(
