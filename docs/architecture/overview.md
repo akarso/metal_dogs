@@ -191,6 +191,13 @@ Files that differ from the pinned Shopanda commit outside `plugins/metaldogs/` a
 | `docs/COMMERCIAL.md` | Restored (B2B licensing boundary inherited with the GPL tree) | F0-fix |
 | `docs/guides/README.md`, `docs/diagrams/README.md` | Stubs pointing at pinned upstream trees (full guides/diagrams not vendored) | F0-fix |
 
-`cmd/api/register_plugins.go` is unchanged in F0 (plugin not registered yet). Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics; Metal Dogs ignores promote tooling until an upgrade deliberately adapts it.
+Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics; Metal Dogs ignores promote tooling until an upgrade deliberately adapts it.
 
-Architecture diagrams in this directory describe the **target** plugin layout and job names (`integration.sync.metaldogs.*`). `plugins/metaldogs` is empty until F1.
+| Path | Why it differs | Introduced |
+| --- | --- | --- |
+| `cmd/api/register_plugins.go` | Registers `metaldogs.New()` when `plugins.metaldogs.enabled` | F1 |
+| `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
+| `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
+| `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator + health route) | F1 |
+
+Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F1 ships the skeleton + health only.

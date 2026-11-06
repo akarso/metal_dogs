@@ -63,7 +63,14 @@ go build -o app ./cmd/api
 
 Open the default Shopanda storefront on the configured HTTP port (see `.env.example`).
 
-Plugin enablement (`plugins.metaldogs.enabled`) lands in `F1`. Until then `plugins/metaldogs` is an empty placeholder and is not registered.
+Enable the plugin (optional for local customizer work):
+
+```bash
+set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
+# or YAML: plugins.metaldogs.enabled: true
+./app dev
+# GET /api/customizer/health → 200 when enabled; 404 when disabled
+```
 
 ### Why stock `.env.example` alone fails
 

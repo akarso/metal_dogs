@@ -279,6 +279,13 @@ queue:
 #     enabled: false
 #     license_key: "DEV-local"
 
+# --- Metal Dogs (product plugin) ----------------------------------------------
+# Dark by default. When enabled: GET /api/customizer/health and (later) customizer API.
+# Env: SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
+# plugins:
+#   metaldogs:
+#     enabled: false
+
 # --- GraphQL API (optional, read-only) ----------------------------------------
 # Headless catalog queries; REST remains canonical for writes.
 # plugins:

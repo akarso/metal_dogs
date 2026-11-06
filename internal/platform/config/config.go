@@ -575,6 +575,7 @@ type PluginsConfig struct {
 	WarehouseDemo   WarehouseDemoPluginConfig   `yaml:"warehousedemo"`
 	PimDemo         PimDemoPluginConfig         `yaml:"pimdemo"`
 	B2B             B2BPluginConfig             `yaml:"b2b"`
+	MetalDogs       MetalDogsPluginConfig       `yaml:"metaldogs"`
 }
 
 // GraphQLPluginConfig toggles the optional read-only GraphQL API core plugin.
@@ -659,6 +660,13 @@ type PimDemoPluginConfig struct {
 type B2BPluginConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	LicenseKey string `yaml:"license_key"`
+}
+
+// MetalDogsPluginConfig toggles the Metal Dogs product plugin in plugins/metaldogs.
+// Default enabled=false (dark); set plugins.metaldogs.enabled or
+// SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/*.
+type MetalDogsPluginConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // CorePluginsConfig allows explicit enable/disable of core infrastructure plugins.
@@ -1289,6 +1297,9 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("SHOPANDA_PLUGINS_B2B_LICENSE_KEY"); v != "" {
 		cfg.Plugins.B2B.LicenseKey = v
 	}
+	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED"); v != "" {
+		cfg.Plugins.MetalDogs.Enabled = parseEnvBool(v)
+	}
 	if v := os.Getenv("SHOPANDA_FRONTEND_ENABLED"); v != "" {
 		cfg.Frontend.Enabled = parseEnvBool(v)
 	}
@@ -1541,6 +1552,7 @@ func flatten(cfg *Config) map[string]string {
 	m["plugins.pimdemo.pim_api_key"] = redactSecret(cfg.Plugins.PimDemo.PimAPIKey)
 	m["plugins.pimdemo.cache_ttl"] = cfg.Plugins.PimDemo.CacheTTL
 	m["plugins.b2b.enabled"] = strconv.FormatBool(cfg.Plugins.B2B.Enabled)
+	m["plugins.metaldogs.enabled"] = strconv.FormatBool(cfg.Plugins.MetalDogs.Enabled)
 	m["frontend.enabled"] = strconv.FormatBool(cfg.Frontend.Enabled)
 	m["frontend.mode"] = cfg.Frontend.Mode
 	m["frontend.theme_path"] = cfg.Frontend.ThemePath

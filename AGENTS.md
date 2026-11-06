@@ -32,9 +32,13 @@ go build -o app ./cmd/api
 ./app help           # live CLI list
 
 go test ./plugins/ -run ImportBoundary -count=1
+go test ./plugins/metaldogs/ -count=1
+bash .github/scripts/check-product-docs-links.sh
 ```
 
-Additional Metal Dogs test harness commands are added in `F2` and must be documented here in the same change.
+Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`.
+
+Additional Metal Dogs feature-test harness commands are added in `F2` and must be documented here in the same change.
 
 ## Engineering principles
 

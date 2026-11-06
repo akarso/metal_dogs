@@ -236,10 +236,10 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
 - **Pin:** `5681894658c44ce344b2df930effecda7ffd43c4` via `upstream` → `https://github.com/akarso/shopanda.git`.
 
-#### F1 · Plugin skeleton behind a flag — size S
+#### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
 - **Goal:** `plugins/metaldogs` registers as an external plugin, enabled by `plugins.metaldogs.enabled` (default `false`), exposes `GET /api/customizer/health` only when enabled.
-- **Scope:** `Plugin` implementation; config struct; registration line in `cmd/api/register_plugins.go`; internal layout `domain/`, `application/`, `ports/`, `adapters/`, `http/`; **verification tasks** for custom job types and plugin migrations with the result written into ADR-0003.
+- **Scope:** `Plugin` implementation; config struct; registration line in `cmd/api/register_plugins.go`; internal layout `domain/`, `application/`, `ports/`, `adapters/`, `httpapi/`; **verification tasks** for custom job types and plugin migrations with the result written into ADR-0003.
 - **Tests:** Import-boundary test passes with the new plugin; feature test: flag off → `404`, flag on → `200`.
 - **Safe delivery:** Flag default off.
 - **Docs:** `architecture/overview.md` module layout confirmed; ADR-0003 verification notes.

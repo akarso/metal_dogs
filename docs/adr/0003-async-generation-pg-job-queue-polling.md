@@ -47,8 +47,15 @@ Shopanda (inspected at the F0 pin) provides a PostgreSQL-backed job queue with r
 - Feature test: worker crash simulation → job re-leased and completed exactly once (no duplicate asset, no duplicate provider call when cost already recorded).
 - `F1` verification result recorded here under "Verification" before status moves to Accepted.
 
-## Verification (to be filled in F1)
+## Verification (F1, 2026-11-06)
 
-- Custom job type registration: _pending_
-- Plugin migration mechanism: _pending_
-- Lease/visibility timeout semantics: _pending_
+Inspected and wired at the F0 pin; confirmed by compiling `plugins/metaldogs` against Shopanda Phase 13 APIs:
+
+| Item | Result |
+| --- | --- |
+| Custom / free-form job types (`metaldogs.generate`) | **Unsupported** upstream (deferred). Use `pluginsdk` `RegisterManual` / `RegisterOnEvent` / `RegisterCron` → queue types `integration.sync.metaldogs.<name>`. |
+| Plugin migration mechanism | **Supported.** `plugin.Migrator` + `Migration()` embed FS; versions `plugin:metaldogs:<basename>`; applied by `app migrate` / boot `InitAll`. F1 ships `001_create_meta.sql` as the first namespaced migration. |
+| On-demand enqueue | **Supported.** `Integration.Enqueue` after composition-root `BindQueue` (PR-1087–1088). Generation job registration lands in `C4`. |
+| Lease/visibility timeout semantics | **Inspected at pin** (Phase 11 queue); contract tests still owed in `C4`. |
+
+Status remains **Proposed** until `C4` accepts this ADR with runtime feature tests for generate/retry.
