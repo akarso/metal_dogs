@@ -37,10 +37,20 @@ cp .env.example .env
 # DEV_MODE=true is required for the example DB password + sslmode=disable.
 # Generate a secret, then set both:
 SECRET="$(openssl rand -hex 32)"
-sed -i "s|^SHOPANDA_AUTH_JWT_SECRET=.*|SHOPANDA_AUTH_JWT_SECRET=${SECRET}|" .env
-grep -q '^SHOPANDA_DEV_MODE=' .env \
-  && sed -i 's|^SHOPANDA_DEV_MODE=.*|SHOPANDA_DEV_MODE=true|' .env \
-  || echo 'SHOPANDA_DEV_MODE=true' >> .env
+# Portable .env edits (GNU and BSD sed): rewrite via temp file, not `sed -i`.
+set_env() { # set_env KEY VALUE
+  local key="$1" val="$2" tmp
+  tmp="$(mktemp)"
+  if grep -q "^${key}=" .env; then
+    awk -v k="${key}" -v v="${val}" 'BEGIN{FS=OFS="="} $1==k{$0=k"="v} {print}' .env >"${tmp}"
+  else
+    cat .env >"${tmp}"
+    printf '%s=%s\n' "${key}" "${val}" >>"${tmp}"
+  fi
+  mv "${tmp}" .env
+}
+set_env SHOPANDA_AUTH_JWT_SECRET "${SECRET}"
+set_env SHOPANDA_DEV_MODE true
 
 # Postgres 17 (compose) — or point .env at a native instance
 docker compose up -d postgres

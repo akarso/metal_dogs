@@ -13,6 +13,47 @@ cd "${ROOT}"
 
 shopt -s nullglob
 
+# Markdown href to a guides/diagrams *file* (allows #fragment and ?query before ')').
+# Stub indexes docs/guides/README.md and docs/diagrams/README.md are allowed.
+MD_GUIDE_HREF='\]\((\.\./)*(docs/guides|docs/diagrams)/[^)]+\)'
+# Backtick path mentions of the same (pimdemo-style prose).
+BT_GUIDE_PATH='`(docs/guides|docs/diagrams)/[^`]+`'
+STUB_ALLOW='docs/guides/README\.md|docs/diagrams/README\.md'
+
+self_test() {
+  local tmp hits
+  tmp="$(mktemp)"
+  trap 'rm -f "${tmp}"' RETURN
+
+  printf '%s\n' '[x](../../docs/guides/DEVELOPER.md#three-tier-extension-model)' >"${tmp}"
+  hits="$(grep -E "${MD_GUIDE_HREF}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
+  if [[ -z "${hits}" ]]; then
+    echo "SELF-TEST FAIL: fragment guide href must be detected" >&2
+    exit 1
+  fi
+
+  printf '%s\n' '[ok](docs/guides/README.md)' >"${tmp}"
+  hits="$(grep -E "${MD_GUIDE_HREF}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
+  if [[ -n "${hits}" ]]; then
+    echo "SELF-TEST FAIL: docs/guides/README.md stub href must be allowed" >&2
+    exit 1
+  fi
+
+  printf '%s\n' 'See `docs/guides/PLUGIN_COMPOSITION.md`.' >"${tmp}"
+  hits="$(grep -E "${BT_GUIDE_PATH}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
+  if [[ -z "${hits}" ]]; then
+    echo "SELF-TEST FAIL: backtick guide path must be detected" >&2
+    exit 1
+  fi
+
+  printf '%s\n' 'See `docs/guides/README.md`.' >"${tmp}"
+  hits="$(grep -E "${BT_GUIDE_PATH}" "${tmp}" | grep -Ev "${STUB_ALLOW}" || true)"
+  if [[ -n "${hits}" ]]; then
+    echo "SELF-TEST FAIL: backtick stub README must be allowed" >&2
+    exit 1
+  fi
+}
+
 candidate_paths=(
   README.md
   PLUGINS.md
@@ -45,16 +86,20 @@ if [[ "${#paths[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-# Relative links to upstream guide/diagram *files* that are not vendored here
-# (stubs live only as docs/guides/README.md and docs/diagrams/README.md).
+# Relative links / backtick paths to upstream guide/diagram *files* that are not
+# vendored here (stubs live only as docs/guides/README.md and docs/diagrams/README.md).
 scan_missing_upstream_docs() {
   local hits ec
   set +e
-  hits="$(grep -RInE '\]\((\.\./)*(docs/guides|docs/diagrams)/[^)#]+\)' -- "${paths[@]}" \
-    | grep -Ev 'docs/guides/README\.md|docs/diagrams/README\.md' \
-    || true)"
+  hits="$(
+    {
+      grep -RInE "${MD_GUIDE_HREF}" -- "${paths[@]}" || true
+      grep -RInE "${BT_GUIDE_PATH}" -- "${paths[@]}" || true
+    } | grep -Ev "${STUB_ALLOW}" || true
+  )"
   ec=$?
   set -e
+  # Pipeline above always ends with grep -Ev || true → ec 0; keep guard for future edits.
   if [[ "${ec}" -gt 1 ]]; then
     echo "ERROR: grep failed while scanning for missing upstream doc links (exit ${ec})" >&2
     exit "${ec}"
@@ -87,6 +132,7 @@ scan() {
   fi
 }
 
+self_test
 scan '\]\((\.\./)*(docs/)?phase-[0-9]' "contain relative links into docs/phase-* (those paths are not on this product tree)."
 scan 'blob/dev/docs/phase-|tree/dev/docs/phase-' "contain hardcoded GitHub blob/tree URLs into docs/phase-* on dev."
 scan_missing_upstream_docs

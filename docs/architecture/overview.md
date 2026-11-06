@@ -183,7 +183,7 @@ Files that differ from the pinned Shopanda commit outside `plugins/metaldogs/` a
 | `.gitignore` | Union of upstream ignores with Metal Dogs IDE/binary entries (`/app`, `.idea/`) | F0 |
 | `RUNBOOK.md` | Metal Dogs runbook index; Shopanda operator detail via pinned GitHub URLs (full upstream RUNBOOK not retained) | F0-fix |
 | `PLUGINS.md` | Guide/diagram hrefs rewritten to pinned upstream blob URLs; COMMERCIAL stays local | F0-fix |
-| `plugins/*/README.md` (demos) | Same upstream guide URL rewrite where they linked `docs/guides/*` | F0-fix |
+| `plugins/*/README.md` (demos + b2b) | Guide hrefs/backticks rewritten to pinned upstream blob URLs (including fragment links) | F0-fix |
 | `.github/scripts/check-product-docs-links.sh` | Skip missing paths; scan Metal Dogs docs; forbid relative links to non-vendored guide/diagram **files** | F0-fix |
 | `.cursor/rules/pr-documentation-checklist.mdc` | Metal Dogs main-only / CR-round checklist (not Shopanda `dev` + `docs/phase-*`) | F0-fix |
 | `docs/**` (product) | Metal Dogs roadmap/ADRs/architecture/runbooks/cr-rounds | F0 |

@@ -51,5 +51,7 @@ Source inspection at the pin (not a full runtime contract suite unless noted):
 ## Follow-ups filed
 
 - `F1`: register plugin behind flag; `Migrator` + health route; accept ADR-0003 with runtime verification notes.
-- Planned upgrade slice: bump pin to current `upstream/main` (Phase 17 packaging) after F0 is green on CI.
+- Planned upgrade slice: bump pin to current `upstream/main` (Phase 17 packaging) after F0 is green on CI; run the pin-URL rewrite sweep in `shopanda-upgrade.md`.
+- Rename GHCR / release image from `shopanda` to a Metal Dogs product name **before the first version tag**.
+- Prove `./app setup` + `./app dev` against compose Postgres 17; treat full CI (`unit` / `integration` / `govuln`) as the real merge gate on first push.
 - Track E public SDK: wait until Metal Dogs has a working external plugin (upstream intent).

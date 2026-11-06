@@ -42,18 +42,35 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
    - **`AGENTS.md`** — keep Metal Dogs project rules; refresh the build/test command section from upstream if commands changed.
    - **`cmd/api/register_plugins.go`** — re-apply the `metaldogs` registration line if upstream touched the file.
    - All other conflicts: prefer upstream unless listed under "Upstream deviations" in `docs/architecture/overview.md`.
-4. Update [`docs/UPSTREAM_PIN.md`](../UPSTREAM_PIN.md) to the new SHA.
+4. Update the pin **everywhere** (not only `UPSTREAM_PIN.md`). Pin SHAs are hardcoded in product-facing markdown that links upstream guides:
+
+   ```bash
+   OLD=<previous-sha>
+   NEW=<new-sha>
+   # Rewrite blob/ and tree/ URLs (README, PLUGINS, RUNBOOK, stubs, plugins/*/README.md, …)
+   rg -l "github.com/akarso/shopanda/(blob|tree)/${OLD}" -g '*.md' \
+     | xargs -r sed -i "s|github.com/akarso/shopanda/blob/${OLD}|github.com/akarso/shopanda/blob/${NEW}|g; s|github.com/akarso/shopanda/tree/${OLD}|github.com/akarso/shopanda/tree/${NEW}|g"
+   # Also edit docs/UPSTREAM_PIN.md pin table by hand (subject/date).
+   # Must be empty:
+   rg -n "${OLD}" -g '*.md' || true
+   test -z "$(rg -l "github.com/akarso/shopanda/(blob|tree)/${OLD}" -g '*.md' || true)"
+   ```
+
+   Refresh `docs/guides/README.md` and `docs/diagrams/README.md` if they still mention the old SHA. Re-run `bash .github/scripts/check-product-docs-links.sh`.
 5. Build and test:
 
    ```bash
    go build -o app ./cmd/api
    go test ./plugins/ -run ImportBoundary -count=1
+   bash .github/scripts/check-product-docs-links.sh
    # then the full suite / contract tests for extension points we use
    ```
 6. Run plugin migrations against a copy of the production schema; confirm expand/contract compatibility if workers may run mixed versions (`./app migrate`).
 7. Deploy to staging; run the E2E flow with the fake provider; run the game-day subset for snapshots and fulfilment.
-8. Update `docs/ROADMAP.md §1` if any verified capability changed; update ADR statuses if a decision is affected.
+8. Update `docs/ROADMAP.md §1` if any inspected capability changed; update ADR statuses if a decision is affected.
 9. Deploy with the usual rollback plan (previous image; migrations are compatible by rule).
+
+**Named follow-up (not this runbook alone):** GHCR / release image name is still `shopanda` in inherited workflows — change it before the first Metal Dogs version tag so product images are not published as `ghcr.io/<owner>/shopanda`.
 
 ## Verification
 
