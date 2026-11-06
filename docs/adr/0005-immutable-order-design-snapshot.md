@@ -13,7 +13,7 @@ Project principle 4: every order is bound to an immutable version of the approve
 
 1. **Approval creates a `DesignVersion`** (append-only): approved artwork asset id + SHA-256, template id + version, texts, provider, model, prompt version, generation parameters, approved-at. A design has at most one approved version; approving again is idempotent and returns it.
 2. After approval the design is **immutable**: no text edits, no photo replacement, no regeneration. "Change it" clones the design into a new draft with a new owner token.
-3. Production artwork is prepared **asynchronously from the approved version** (`metaldogs.prepare_production_artwork`) and attached to the `DesignVersion` with its own checksum. Preview assets are never used for production.
+3. Production artwork is prepared **asynchronously from the approved version** (`integration.sync.metaldogs.prepare_production_artwork`) and attached to the `DesignVersion` with its own checksum. Preview assets are never used for production.
 4. The cart line carries only `metaldogs.design_id`. **At order creation**, the plugin creates an `OrderDesignSnapshot` per order line that **copies** the version's identifying data (not just a foreign key): artwork asset id and checksum, production asset id and checksum (nullable until ready), template slug and version, texts, provider/model/prompt version, variant SKU. Unique on `order_line_id`.
 5. Assets referenced by a snapshot are excluded from retention until the fulfilment record is `shipped` plus the grace period; approved and production artwork retention after that is a policy decision in `O2`.
 6. Templates are versioned; publishing a changed template increments the version. In-flight designs keep their pinned version; nothing is migrated.

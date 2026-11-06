@@ -97,7 +97,7 @@ sequenceDiagram
     UI->>UI: persist design_id + token in sessionStorage
     UI->>API: POST /designs/{id}/generate (Idempotency-Key, token)
     API->>API: attempts < limit, cost cap ok, no active job
-    API->>Q: enqueue metaldogs.generate (job_id, correlation_id)
+    API->>Q: enqueue integration.sync.metaldogs.generate (job_id, correlation_id)
     API-->>UI: 202 job_id
     loop poll with backoff and jitter
         UI->>API: GET /generation-jobs/{job_id} (token)
@@ -128,7 +128,7 @@ sequenceDiagram
     Cust->>UI: approve
     UI->>API: POST /designs/{id}/approve (token, idempotent)
     API->>API: freeze DesignVersion (checksum, versions)
-    API->>Q: enqueue metaldogs.prepare_production_artwork
+    API->>Q: enqueue integration.sync.metaldogs.prepare_production_artwork
     API-->>UI: approved, version_id
     Cust->>UI: choose size
     UI->>API: POST /designs/{id}/add-to-cart {variant_sku} (token)

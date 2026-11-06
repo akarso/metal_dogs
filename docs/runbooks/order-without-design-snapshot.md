@@ -7,7 +7,7 @@
 
 ## Symptom
 
-- Alert from the `metaldogs.reconcile_snapshots` scheduler task: orders containing lines with `metaldogs.design_id` and no snapshot older than the grace period.
+- Alert from the `integration.sync.metaldogs.reconcile_snapshots` scheduler task: orders containing lines with `metaldogs.design_id` and no snapshot older than the grace period.
 - Operator cannot find artwork for an order in admin (`E5`).
 
 ## Impact
@@ -17,7 +17,7 @@ Fulfilment is blocked for that order. The approved artwork still exists as a `De
 ## Diagnosis
 
 1. Identify the order and line ids from the alert.
-2. Check whether the `order.created` handler ran: search logs by `order_id` for `snapshot_order_design` enqueue; check the job: `./app jobs:list --type=metaldogs.snapshot_order_design`.
+2. Check whether the `order.created` handler ran: search logs by `order_id` for `snapshot_order_design` enqueue; check the job: `./app jobs:list --type=integration.sync.metaldogs.snapshot_order_design`.
 3. Check the design: does `metaldogs_designs.approved_version_id` exist for the `design_id` on the line? Is the design `approved` or `ordered`?
 4. If the design version is missing or its assets are deleted, this is a data-loss incident: escalate and check [`backup-and-restore.md`](backup-and-restore.md).
 

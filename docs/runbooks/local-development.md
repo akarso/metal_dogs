@@ -1,7 +1,7 @@
 # Runbook: local development environment
 
 - **Introduced by slice:** `F0`, `F2`
-- **Last exercised:** 2026-11-05 (`F0` build + ImportBoundary only)
+- **Last exercised:** 2026-11-06 — `go build`, `ImportBoundary`, docs-policy + govuln baseline presence, `./app help` with the `.env` edits below (Postgres not required for `help`). Full `./app setup` / `./app dev` still need a running Postgres 17 (compose).
 - **Severity when triggered:** low
 - **Owner:** every developer
 
@@ -11,43 +11,64 @@ Bring up Shopanda with the (future) `metaldogs` plugin, PostgreSQL, local object
 
 ## Prerequisites
 
-- Go toolchain version: **1.26.0** (matches root `go.mod` at the upstream pin).
-- PostgreSQL: use the version from upstream `.env.example` / Docker Compose at the pin (typically current stable PostgreSQL 16+).
+- Go toolchain: **1.26.x** (matches root `go.mod`).
+- PostgreSQL **17** (matches `docker-compose.yml` / CI image). Native Postgres is fine if you match that major.
 - Object storage: local filesystem adapter by default; MinIO optional for S3 contract tests (`F4`).
 - No AI or POD credentials are needed; providers default to `fake` once generation lands.
 
-## Remotes
+## Remotes and branches
 
 ```bash
 git remote -v
-# origin    → github.com/akarso/metal_dogs   (this product)
-# upstream  → github.com/akarso/shopanda     (Shopanda; fetch upgrades only)
+# origin    → git@github.com:akarso/metal_dogs.git   (this product; push here)
+# upstream  → https://github.com/akarso/shopanda.git (Shopanda; fetch upgrades only)
 ```
+
+Metal Dogs is **main-only**. Do not create a Shopanda-style `dev` branch or run `scripts/promote-dev-to-main.sh` here (upstream tooling; unused).
 
 Pin: [`docs/UPSTREAM_PIN.md`](../UPSTREAM_PIN.md).
 
-## Bring-up
+## Bring-up (copy-paste)
 
 ```bash
 cp .env.example .env
-# Required for local CLI/boot with the stock example values:
-#   SHOPANDA_DEV_MODE=true
-#   SHOPANDA_AUTH_JWT_SECRET=$(openssl rand -hex 32)
-# PostgreSQL must be reachable (docker compose up -d postgres, or native).
+
+# JWT is always required (even when DEV_MODE is false).
+# DEV_MODE=true is required for the example DB password + sslmode=disable.
+# Generate a secret, then set both:
+SECRET="$(openssl rand -hex 32)"
+sed -i "s|^SHOPANDA_AUTH_JWT_SECRET=.*|SHOPANDA_AUTH_JWT_SECRET=${SECRET}|" .env
+grep -q '^SHOPANDA_DEV_MODE=' .env \
+  && sed -i 's|^SHOPANDA_DEV_MODE=.*|SHOPANDA_DEV_MODE=true|' .env \
+  || echo 'SHOPANDA_DEV_MODE=true' >> .env
+
+# Postgres 17 (compose) — or point .env at a native instance
+docker compose up -d postgres
+
 go build -o app ./cmd/api
-./app setup                     # connectivity check, migrations, seed
+./app help                      # needs the .env edits above; DB optional
+./app setup                     # migrate + seed (needs Postgres)
 ./app dev                       # HTTP + embedded worker + scheduler
-./app help                      # live command list (needs a valid local .env)
 ```
 
-Open the default Shopanda storefront on the configured HTTP port (see `.env.example`). `docker compose up -d` is the upstream-supported path for Postgres + app processes.
+Open the default Shopanda storefront on the configured HTTP port (see `.env.example`).
 
 Plugin enablement (`plugins.metaldogs.enabled`) lands in `F1`. Until then `plugins/metaldogs` is an empty placeholder and is not registered.
+
+### Why stock `.env.example` alone fails
+
+| Check | Behaviour |
+| --- | --- |
+| Empty `SHOPANDA_AUTH_JWT_SECRET` | Always rejected |
+| Example DB password / `sslmode=disable` | Rejected unless `SHOPANDA_DEV_MODE=true` |
 
 ## Running tests
 
 ```bash
 go test ./plugins/ -run ImportBoundary -count=1
+bash .github/scripts/check-product-docs-links.sh
+# govuln (needs pinned govulncheck on PATH, as in CI):
+# bash .github/scripts/run-govulncheck.sh
 ```
 
 - Broader Go unit/feature harness: `F2`.
@@ -62,7 +83,8 @@ go test ./plugins/ -run ImportBoundary -count=1
 ## Known pitfalls
 
 - Do not develop Metal Dogs by editing a separate local Shopanda clone and copying files — merge via `upstream` only.
-- Metal Dogs owns `docs/`; upstream documentation for the pin lives on GitHub, not in this tree.
+- Metal Dogs owns product docs under `docs/`; upstream guides are linked at the pin on GitHub (`docs/guides/README.md`).
+- Before the next upstream upgrade: ensure this clone is **not shallow** (`test ! -f .git/shallow` or `git fetch --unshallow upstream`).
 
 ## Prevention / follow-up
 

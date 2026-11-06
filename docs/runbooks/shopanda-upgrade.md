@@ -20,6 +20,8 @@ Current pin: [`docs/UPSTREAM_PIN.md`](../UPSTREAM_PIN.md).
 
 Do **not** merge from a local Shopanda working tree. Always `git fetch upstream` from GitHub so WIP checkouts elsewhere cannot contaminate Metal Dogs.
 
+**Shallow clone prerequisite:** if `.git/shallow` exists, run `git fetch --unshallow upstream` (or re-clone with full history) **before** merging. A shallow pin hides parent history and makes conflict diagnosis and `git merge-base` unreliable.
+
 ## Impact
 
 Risk of contract drift in extension points (cart hook, checkout step, extension fields, events, job queue / sync jobs, storage port, shipment updater) and in migrations ordering. Metal Dogs owns `docs/`; upstream `docs/` changes must not overwrite product docs.

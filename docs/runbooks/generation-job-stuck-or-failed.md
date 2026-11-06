@@ -7,7 +7,7 @@
 
 ## Symptom
 
-- Alert: `metaldogs.generate` queue depth above threshold, or job failure rate above threshold, or p95 job duration above threshold.
+- Alert: `integration.sync.metaldogs.generate` queue depth above threshold, or job failure rate above threshold, or p95 job duration above threshold.
 - Customer report: progress screen never completes, or shows "temporarily unavailable".
 - Admin: `DesignVersion.production_status = failed` count rising (production artwork variant).
 
@@ -19,8 +19,8 @@ Customers cannot reach preview or approval; each failed attempt may have cost mo
 
 1. Is the worker running? Check the `app worker` process/health. If no worker leases jobs, everything sits in `queued`.
 2. List recent jobs (upstream CLI, verify against pinned tag):
-   `./app jobs:list --type=metaldogs.generate --status=failed --limit=50`
-   `./app jobs:list --type=metaldogs.generate --status=processing --limit=50`
+   `./app jobs:list --type=integration.sync.metaldogs.generate --status=failed --limit=50`
+   `./app jobs:list --type=integration.sync.metaldogs.generate --status=processing --limit=50`
 3. Inspect one: `./app jobs:show <job_id>`. Read `attempt`, `terminal_reason`, `error_code`, `provider`, `latency_ms`.
 4. Classify by `terminal_reason`:
    - `provider_timeout` / `provider_error` / `provider_rate_limited` across many jobs → provider incident; go to [`ai-provider-outage-and-cost-cap.md`](ai-provider-outage-and-cost-cap.md).

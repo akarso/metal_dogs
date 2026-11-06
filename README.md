@@ -15,8 +15,8 @@ Git remotes: `origin` → `akarso/metal_dogs` (this product); `upstream` → `ak
 
 # Shopanda (upstream baseline)
 
-[![CI](https://github.com/akarso/shopanda/actions/workflows/ci.yml/badge.svg)](https://github.com/akarso/shopanda/actions/workflows/ci.yml)
-[![Release](https://github.com/akarso/shopanda/actions/workflows/release.yml/badge.svg)](https://github.com/akarso/shopanda/actions/workflows/release.yml)
+[![CI](https://github.com/akarso/metal_dogs/actions/workflows/ci.yml/badge.svg)](https://github.com/akarso/metal_dogs/actions/workflows/ci.yml)
+[![Release](https://github.com/akarso/metal_dogs/actions/workflows/release.yml/badge.svg)](https://github.com/akarso/metal_dogs/actions/workflows/release.yml)
 
 Shopanda is a **developer-first ecommerce engine** built with Go and PostgreSQL.
 
@@ -157,11 +157,11 @@ type Plugin interface {
 
 Extension mechanisms (events, pricing/checkout/composition pipelines, permissions, plugin CLI, public HTTP routes) are wired through `PluginRegistry` at startup. Plugins register at **compile time** via `register_plugins.go` — there is no runtime `.so` discovery. See [PLUGINS.md](PLUGINS.md#deferred-capabilities) for why `.so` loading stays deferred.
 
-See [Developer Guide](docs/guides/DEVELOPER.md) for how to enable core plugins and add an external plugin. Reference implementation: [`plugins/example/`](plugins/example/).
+See [Developer Guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEVELOPER.md) for how to enable core plugins and add an external plugin. Reference implementation: [`plugins/example/`](plugins/example/).
 
 **Not yet supported:** `.so` dynamic loading, plugin marketplace, plugin hot reload. Theme templates reload in `SHOPANDA_DEV_MODE`.
 
-Phases 1–12 and 14 are shipped (Phase 12 still has VAT / configurable / assignment-CSV / linked-parent storefront caveats). Phase 13 (plugin-owned schema + on-demand jobs) remains the **site-ready gate** before a real merchant site. Working notes live on the `dev` branch under `docs/phase-*` — see [docs/README.md](docs/README.md).
+Phases 1–12 and 14 are shipped (Phase 12 still has VAT / configurable / assignment-CSV / linked-parent storefront caveats). Phase 13 (plugin-owned schema + on-demand jobs) is **done** on the upstream pin. Metal Dogs product notes live in [`docs/`](docs/README.md); Shopanda phase working history is on upstream `dev`, not this repo.
 
 ## Default stack
 
@@ -181,7 +181,7 @@ Shopanda uses a minimal default stack (Tier 1 only — no optional services requ
 | **Storefront** | SSR templates | — |
 | **Data exchange** | CSV import/export | — |
 
-Enable optional backends via YAML or environment variables — see [Deployment Guide](docs/guides/DEPLOYMENT.md) and `configs/config.example.yaml`.
+Enable optional backends via YAML or environment variables — see [Deployment Guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEPLOYMENT.md) and `configs/config.example.yaml`.
 
 ## Project status
 
@@ -226,7 +226,7 @@ go build -o app ./cmd/api
 
 `./install.sh` is an interactive helper that writes a complete `.env` file. If you prefer to edit configuration manually, skip it and copy `.env.example` yourself.
 
-For a complete operator-focused setup, including Docker, health checks, and environment variables, see [docs/guides/DEPLOYMENT.md](docs/guides/DEPLOYMENT.md).
+For a complete operator-focused setup, including Docker, health checks, and environment variables, see [docs/guides/DEPLOYMENT.md](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEPLOYMENT.md).
 
 ### CLI commands
 
@@ -285,34 +285,19 @@ Run `./app help` for the live command list from the current binary.
 
 ## Documentation
 
-Index: [`docs/README.md`](docs/README.md). Product guides live in [`docs/guides/`](docs/guides/). Working history (phase roadmaps, PR specs) lives on the `dev` branch under `docs/phase-*`.
+**Metal Dogs product docs:** [`docs/README.md`](docs/README.md) (roadmap, ADRs, architecture, runbooks).
 
-### Guides
+**Shopanda platform docs** (not vendored; pinned commit `5681894658c44ce344b2df930effecda7ffd43c4`):
 
-- [Merchant Guide](docs/guides/MERCHANT.md) — day-to-day store operations, admin UI, orders, and catalog workflows
-- [Deployment Guide](docs/guides/DEPLOYMENT.md) — Docker, GHCR releases (`sha-<commit>` / digest pins), bare metal, TLS, backups, and monitoring
-- [Developer Guide](docs/guides/DEVELOPER.md) — three-tier plugin model, extension points, events, pipelines, and API integration
-- [Runtime Modes](docs/guides/RUNTIME_MODES.md) — dev vs production process layout (`serve`, `worker`, `scheduler`, `app dev`)
-- [EU Compliance](docs/guides/COMPLIANCE_EU.md) — Omnibus, WEEE, EPR, GPSR mapping
-- [Integrator Platform](docs/guides/INTEGRATOR_PLATFORM.md) — ports, CSV/ERP seams, precedence
-- [Theme author guide](docs/guides/THEME_SLOTS.md) — child themes, slots, `theme:init`
-- [Headless storefront](docs/guides/HEADLESS.md) — REST client notes + [`examples/headless-vanilla`](examples/headless-vanilla)
-- [Extension Points](docs/guides/EXTENSION_POINTS.md) — which mechanism to use (events, hooks, pipelines, workflows, registries)
-- [Plugin Composition](docs/guides/PLUGIN_COMPOSITION.md) — multi-plugin ordering and precedence
-- [Plugin Authoring Guide](PLUGINS.md) — core vs external boundaries, extension mechanisms, deferred capabilities
-- [Runbook](RUNBOOK.md) — incident response, probes, and operator troubleshooting
+- Guides: https://github.com/akarso/shopanda/tree/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides
+- Runbook: https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/RUNBOOK.md
+- Plugin authoring: [`PLUGINS.md`](PLUGINS.md) (local copy; guide links point upstream)
+- Commercial licensing: [`docs/COMMERCIAL.md`](docs/COMMERCIAL.md)
+- Govuln baseline: [`docs/GOVULN_BASELINE.md`](docs/GOVULN_BASELINE.md)
+- C4 diagrams: https://github.com/akarso/shopanda/tree/5681894658c44ce344b2df930effecda7ffd43c4/docs/diagrams
 
-### Reference
+Upstream pin: [`docs/UPSTREAM_PIN.md`](docs/UPSTREAM_PIN.md). Metal Dogs uses a **main-only** branch policy (no `dev` / promote flow).
 
-- [Commercial Licensing](docs/COMMERCIAL.md) — open core (GPL) vs paid B2B module
-- [C4 Context Diagram](docs/diagrams/c4-context.md) — system context
-- [C4 Container Diagram](docs/diagrams/c4-container.md) — runtime containers
-- [C4 Component Diagram](docs/diagrams/c4-component.md) — major component boundaries
-- [C4 Code Diagram](docs/diagrams/c4-code.md) — code-level structure
-
-### Working history
-
-Phase roadmaps, PR specs, and historical design dumps stay on the `dev` branch under `docs/phase-*`. They are stripped when promoting to `main`; old `main` bookmarks under that prefix 404 by design.
 
 ## License
 

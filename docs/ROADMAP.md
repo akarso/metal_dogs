@@ -10,22 +10,22 @@ No calendar dates are given. Ordering is expressed through dependencies and mile
 
 ## 1. Ground truth this plan is built on
 
-Verified against Shopanda at pin [`5681894658c44ce344b2df930effecda7ffd43c4`](UPSTREAM_PIN.md) (`upstream/main`, 2026-11-05). Re-verify on every upstream upgrade.
+Inspected against Shopanda source at pin [`5681894658c44ce344b2df930effecda7ffd43c4`](UPSTREAM_PIN.md) (`upstream/main` at F0 close). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
 
 | Capability | Status | Consequence for Metal Dogs |
 | --- | --- | --- |
-| Go + PostgreSQL single binary; runtime modes `serve`, `worker`, `scheduler`, `dev` | Verified | No separate service; generation worker is a Shopanda worker process |
-| Extensions are in-module, **compile-time** plugins registered in `cmd/api/register_plugins.go` | Verified | Metal Dogs backend is an external plugin `plugins/metaldogs` in a Shopanda fork tracked against upstream ([ADR-0001](adr/0001-metal-dogs-as-shopanda-external-plugin.md)) |
-| Plugins may own tables (scoped, via `Bootstrap.DB`), register public HTTP routes, events (`Bus.On`/`OnAsync`), cart hooks, checkout steps, extension fields, permissions, admin config, CLI commands | Verified | Customizer API, snapshot creation, and admin tooling are all plugin-level; no core forks |
-| Import boundary: plugins must not import `internal/infrastructure` or `internal/interfaces` (test-enforced) | Verified | Our hexagonal layout sits inside the plugin; Shopanda ports are consumed through `plugin.Bootstrap` |
-| PostgreSQL job queue with admin API and `jobs:*` CLI; cron scheduler | Verified | Generation, artwork preparation, retention sweeps run as queue jobs ([ADR-0003](adr/0003-async-generation-pg-job-queue-polling.md)) |
-| Plugin on-demand enqueue + handlers | Verified (Phase 13 PR-1087–1088) | Use `RegisterManual` + `Enqueue`; queue types are `integration.sync.metaldogs.<name>` (no free-form `metaldogs.*` types — deferred upstream) |
-| Plugin-owned schema migrations | Verified (Phase 13 PR-1084–1086) | Implement `plugin.Migrator`; versions `plugin:<name>:<basename>`; applied by `app migrate` / boot `InitAll` with advisory lock |
-| Extension fields with cart → order snapshot at checkout | Verified | Line-level (`cart_item` / `order_item`); `design_id` attach via [ADR-0005](adr/0005-immutable-order-design-snapshot.md) |
-| Guest checkout, Stripe core plugin, S3 core plugin, media storage port | Verified | No account required for MVP; private S3 bucket ([ADR-0004](adr/0004-private-object-storage-signed-urls.md)) |
-| SSR storefront with themes, UI slots, asset manifest | Verified | Cart and checkout pages are reused from Shopanda; only the customizer is custom ([ADR-0002](adr/0002-storefront-customizer-and-shopanda-checkout.md)) |
-| `order.created` / `order.failed` published | Verified (PR-1088) | Prefer `order.paid` for fulfilment; tolerate `order.created` followed by `order.failed` if checkout compensates |
-| Plugin shipment status update | Verified (PR-1400) | `IntegrationShipmentStatusUpdater.ApplyShipmentStatus` for POD status sync (track P) |
+| Go + PostgreSQL single binary; runtime modes `serve`, `worker`, `scheduler`, `dev` | Inspected at pin; `go build` exercised | No separate service; generation worker is a Shopanda worker process |
+| Extensions are in-module, **compile-time** plugins registered in `cmd/api/register_plugins.go` | Inspected at pin | Metal Dogs backend is an external plugin `plugins/metaldogs` in a Shopanda fork tracked against upstream ([ADR-0001](adr/0001-metal-dogs-as-shopanda-external-plugin.md)) |
+| Plugins may own tables (scoped, via `Bootstrap.DB`), register public HTTP routes, events (`Bus.On`/`OnAsync`), cart hooks, checkout steps, extension fields, permissions, admin config, CLI commands | Inspected at pin | Customizer API, snapshot creation, and admin tooling are all plugin-level; no core forks |
+| Import boundary: plugins must not import `internal/infrastructure` or `internal/interfaces` (test-enforced) | Contract-tested (`ImportBoundary`) | Our hexagonal layout sits inside the plugin; Shopanda ports are consumed through `plugin.Bootstrap` |
+| PostgreSQL job queue with admin API and `jobs:*` CLI; cron scheduler | Inspected at pin | Generation, artwork preparation, retention sweeps run as queue jobs ([ADR-0003](adr/0003-async-generation-pg-job-queue-polling.md)) |
+| Plugin on-demand enqueue + handlers | Inspected at pin (Phase 13 PR-1087–1088) | Use `RegisterManual` + `Enqueue`; queue types are `integration.sync.metaldogs.<name>` (no free-form `metaldogs.*` types) |
+| Plugin-owned schema migrations | Inspected at pin (Phase 13 PR-1084–1086) | Implement `plugin.Migrator`; versions `plugin:<name>:<basename>`; applied by `app migrate` / boot `InitAll` with advisory lock |
+| Extension fields with cart → order snapshot at checkout | Inspected at pin | Line-level (`cart_item` / `order_item`); `design_id` attach via [ADR-0005](adr/0005-immutable-order-design-snapshot.md) |
+| Guest checkout, Stripe core plugin, S3 core plugin, media storage port | Inspected at pin | No account required for MVP; private S3 bucket ([ADR-0004](adr/0004-private-object-storage-signed-urls.md)) |
+| SSR storefront with themes, UI slots, asset manifest | Inspected at pin | Cart and checkout pages are reused from Shopanda; only the customizer is custom ([ADR-0002](adr/0002-storefront-customizer-and-shopanda-checkout.md)) |
+| `order.created` / `order.failed` published | Inspected at pin (PR-1088) | Prefer `order.paid` for fulfilment; tolerate `order.created` followed by `order.failed` if checkout compensates |
+| Plugin shipment status update | Inspected at pin (PR-1400) | `IntegrationShipmentStatusUpdater.ApplyShipmentStatus` for POD status sync (track P) |
 
 Product assumptions still open (section 10 of the project description) are resolved by slices `G1`, `P0`, `O1`, and `S6`; each closes with an ADR.
 
@@ -311,7 +311,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### G5 · Production artwork preparation — size M
 
 - **Goal:** From the approved artwork, produce the production file matching the POD specification from P0 (resolution, dimensions, transparency, colour profile), compute checksum, store as `production` asset linked to the approved design version.
-- **Scope:** Upscaling policy decided (reject vs upscale) based on P0; validation against spec; job `metaldogs.prepare_production_artwork`.
+- **Scope:** Upscaling policy decided (reject vs upscale) based on P0; validation against spec; job `integration.sync.metaldogs.prepare_production_artwork`.
 - **Tests:** Unit tests for spec validation; feature test: approve → job → production asset recorded with checksum; failure path marks `production_failed` with reason.
 - **Safe delivery:** Runs only for approved designs; failures are visible in admin (E5) and do not block checkout until P2 requires it.
 - **Docs:** `architecture/flows/checkout-snapshot-and-fulfillment.md`; runbook `production-artwork-failed.md` section inside `generation-job-stuck-or-failed.md`.
@@ -342,7 +342,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 #### C4 · Generate job and status polling — size L
 
-- **Goal:** `POST /api/customizer/designs/{id}/generate` (with `Idempotency-Key`) creates a `GenerationJob`, enqueues `metaldogs.generate`, moves design to `generating`; `GET /api/customizer/generation-jobs/{id}` returns status, attempt, user-facing error code, `retry_after`. Worker: prepare input → provider call (fake by default) → validation (G3) → store artwork asset → `preview_ready` or `generation_failed`.
+- **Goal:** `POST /api/customizer/designs/{id}/generate` (with `Idempotency-Key`) creates a `GenerationJob`, enqueues `integration.sync.metaldogs.generate`, moves design to `generating`; `GET /api/customizer/generation-jobs/{id}` returns status, attempt, user-facing error code, `retry_after`. Worker: prepare input → provider call (fake by default) → validation (G3) → store artwork asset → `preview_ready` or `generation_failed`.
 - **Scope:** Retry policy (transient only, bounded, backoff); per-design mutex so two jobs cannot run concurrently; provider/model/prompt version recorded on the job; cost and latency recorded.
 - **Tests:** Unit: job state machine, retry classification; feature: HTTP → job row → worker run with fake provider → preview_ready; duplicate request with same key returns same job; concurrent requests create one job; permanent failure terminal; worker crash mid-job (simulated) is recovered by queue lease expiry.
 - **Safe delivery:** Flagged; provider `fake` unless `plugins.metaldogs.provider` set.
@@ -356,7 +356,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 #### C6 · Approve — size M
 
-- **Goal:** `POST /api/customizer/designs/{id}/approve` (idempotent) freezes the current artwork as `DesignVersion` with checksum, template version, texts, provider/model/prompt versions; design → `approved`; enqueues `metaldogs.prepare_production_artwork` (G5, if P0 closed; otherwise job type registered but handler no-ops with a `pending_spec` log). Approved designs reject further edits and regeneration; "change it" creates a new design cloned from the approved one.
+- **Goal:** `POST /api/customizer/designs/{id}/approve` (idempotent) freezes the current artwork as `DesignVersion` with checksum, template version, texts, provider/model/prompt versions; design → `approved`; enqueues `integration.sync.metaldogs.prepare_production_artwork` (G5, if P0 closed; otherwise job type registered but handler no-ops with a `pending_spec` log). Approved designs reject further edits and regeneration; "change it" creates a new design cloned from the approved one.
 - **Tests:** Unit: approve only from `preview_ready`; immutability enforced; feature: double approve returns same version; clone creates new draft with new token.
 - **Safe delivery:** Flagged.
 - **Docs:** ADR-0005 → Accepted.
@@ -461,7 +461,7 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 
 #### P2 · Automated submission — size L
 
-- **Goal:** `FulfillmentProvider` port + adapter; job `metaldogs.submit_fulfillment` after payment confirmed and production artwork ready; idempotent on snapshot id; configurable manual-approval gate (default on) before submission.
+- **Goal:** `FulfillmentProvider` port + adapter; job `integration.sync.metaldogs.submit_fulfillment` after payment confirmed and production artwork ready; idempotent on snapshot id; configurable manual-approval gate (default on) before submission.
 - **Tests:** Contract tests with sanitized fixtures; feature: paid order → job → `submitted` with external id; provider 5xx → retry; 4xx validation → `submission_failed` terminal with reason.
 - **Safe delivery:** Flag off; gate on when flag first enabled.
 - **Docs:** runbook `pod-submission-failed.md`.

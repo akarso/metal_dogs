@@ -7,7 +7,7 @@
 
 ## Purpose
 
-The `metaldogs.retention_sweep` scheduler task applies the policy table in `docs/architecture/domain-model.md` to `metaldogs_assets` and `metaldogs_designs`: it deletes storage objects, marks asset rows `deleted_at`, and moves never-ordered designs to `expired`. Assets referenced by an `OrderDesignSnapshot` with incomplete fulfilment are never deleted. Deletions are logged with ids only.
+The `integration.sync.metaldogs.retention_sweep` scheduler task applies the policy table in `docs/architecture/domain-model.md` to `metaldogs_assets` and `metaldogs_designs`: it deletes storage objects, marks asset rows `deleted_at`, and moves never-ordered designs to `expired`. Assets referenced by an `OrderDesignSnapshot` with incomplete fulfilment are never deleted. Deletions are logged with ids only.
 
 ## Routine checks
 
@@ -16,9 +16,9 @@ The `metaldogs.retention_sweep` scheduler task applies the policy table in `docs
 
 ## Symptom: sweep failing
 
-1. `./app schedule:list` and the scheduler logs for `metaldogs.retention_sweep`.
+1. `./app schedule:list` and the scheduler logs for `integration.sync.metaldogs.retention_sweep`.
 2. Typical causes: storage credentials, a storage object already missing (should be tolerated and logged, not fatal), long-running query.
-3. Fix the cause; the sweep is idempotent and resumes next run. `./app schedule:trigger metaldogs.retention_sweep` to run immediately.
+3. Fix the cause; the sweep is idempotent and resumes next run. `./app schedule:trigger integration.sync.metaldogs.retention_sweep` to run immediately.
 
 ## Symptom: sweep deleted an ordered artwork
 

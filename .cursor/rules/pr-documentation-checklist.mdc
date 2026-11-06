@@ -1,49 +1,26 @@
 ---
-description: Mandatory documentation updates when finishing a PR
+description: Mandatory documentation updates when finishing a Metal Dogs PR
 alwaysApply: true
 ---
 
-# PR completion — documentation checklist
+# PR completion — documentation checklist (Metal Dogs)
 
-**First: which branch does this PR target?**
+Metal Dogs is **main-only**. There is no product `dev` branch and no `docs/phase-*` working history in this repository. Do **not** run `scripts/promote-dev-to-main.sh` here (upstream Shopanda tooling).
 
-- **`main` (hotfix or promote):** product docs only (guides, C4, runbook, README, PLUGINS.md). Do **not** create or edit `docs/phase-*`. Stop here for working-history files. Never raw-merge `dev` into `main`; use `scripts/promote-dev-to-main.sh`.
-- **`dev` (default for features):** PR spec + phase index/roadmap + product docs as applicable. See below.
+## Before marking work done
 
-Product docs (guides, current C4, runbook) ship on **`main`**. Working history (`docs/phase-*`) lives on **`dev` only**. See `docs/README.md`.
+1. Update **`docs/ROADMAP.md`** if a slice closed or a verify/inspect row changed.
+2. Update architecture / ADR / runbook files touched by the change (see `docs/cr-rounds/README.md` closure checklist when closing a CR round).
+3. Keep **`AGENTS.md`** build/test commands accurate when tooling lands.
+4. Keep **`docs/UPSTREAM_PIN.md`** and upstream deviations in `docs/architecture/overview.md` accurate on Shopanda upgrades.
+5. Do **not** vendor full upstream `docs/guides/*` or `docs/diagrams/*` files; link the pinned commit on GitHub or keep stub READMEs only.
+6. Preserve fail-closed **`docs/GOVULN_BASELINE.md`** (empty allowlist is fine; deleting the file breaks CI).
+7. Run locally before push when docs or CI scripts change:
 
-## PRs targeting `dev`
+```bash
+bash .github/scripts/check-product-docs-links.sh
+```
 
-Before marking work done:
+## Shopanda upstream PRs
 
-1. Write/update **`docs/phase-<n>-<name>/prs/PR-<id>.md`** — status `done`, summary, scope, out of scope, validation commands.
-2. Update **`docs/phase-<n>-<name>/prs/README.md`** — row status + link.
-3. Update **`docs/phase-<n>-<name>/ROADMAP.md`** — PR status / index table if applicable.
-
-### When applicable (do not skip silently — note N/A in PR spec)
-
-| Change type | Update |
-| --- | --- |
-| New/changed **component, port, integration** | `docs/diagrams/c4-*.md` (context → container → component → code, as needed) |
-| New **plugin port** or reference plugin | `PLUGINS.md`, `docs/guides/DEVELOPER.md`, `docs/guides/PLUGIN_COMPOSITION.md`, `plugins/<name>/README.md` |
-| New **config / env vars** | `configs/config.example.yaml`, `docs/guides/DEPLOYMENT.md`, `RUNBOOK.md` |
-| **Operator / runtime** behavior | `RUNBOOK.md` |
-| New **CLI** or major product surface | root `README.md` |
-| Track or phase milestone | phase `README.md` |
-
-Living operator/CI artifacts belong in `docs/guides/`, `docs/diagrams/`, or `docs/GOVULN_BASELINE.md` — never nest them under `docs/phase-*`.
-
-## PRs targeting `main`
-
-Update **product docs only**. Do **not** add `docs/phase-*`. `CI / docs-main` fails if those paths are present (required on `main` only).
-
-## Quality bar
-
-- Validation section lists exact `go test` / `go build` commands that were run.
-- If an artifact needs no change, write **“No change — …”** in the PR spec (e.g. “No C4 change — no new container or component”).
-- Match existing doc tone: tables, short bullets, runnable commands.
-- Do **not** defer doc updates to a follow-up PR unless the user explicitly asks.
-
-## Example (plugin port PR targeting `dev`)
-
-PR-862-style: PR spec + phase index/roadmap + `plugins/promodemo/README.md` + config example + `register_plugins` note in PLUGINS.md + C4 component note for `EvaluatorRegistry` / pricing pipeline if architecture changed.
+If you are contributing **to Shopanda itself**, use Shopanda’s own `dev` / `docs/phase-*` checklist in that repository — not this file.

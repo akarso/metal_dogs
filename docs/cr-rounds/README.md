@@ -52,3 +52,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | Round | Slices | Milestone | Record |
 | --- | --- | --- | --- |
 | CR-00 | roadmap bootstrap (documentation only) | — | [`CR-00-roadmap-bootstrap.md`](CR-00-roadmap-bootstrap.md) |
+| CR-01 | F0 Shopanda baseline (+ F0-fix docs/CI contract) | M0 → 1/6 | [`CR-01-f0-shopanda-baseline.md`](CR-01-f0-shopanda-baseline.md) |

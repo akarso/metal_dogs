@@ -1,6 +1,6 @@
 # Flow: asynchronous generation pipeline
 
-The pipeline runs inside the Shopanda worker as the `metaldogs.generate` job type ([ADR-0003](../../adr/0003-async-generation-pg-job-queue-polling.md)). Stages are separate functions so each can be tested with fixtures and swapped independently: input preparation, provider call, output validation, mockup composition.
+The pipeline runs inside the Shopanda worker as the `integration.sync.metaldogs.generate` job type ([ADR-0003](../../adr/0003-async-generation-pg-job-queue-polling.md)). Stages are separate functions so each can be tested with fixtures and swapped independently: input preparation, provider call, output validation, mockup composition.
 
 ## Swimlane
 
@@ -16,7 +16,7 @@ flowchart LR
         r7[202 job_id]
     end
 
-    subgraph worker[Worker · metaldogs.generate]
+    subgraph worker[Worker · integration.sync.metaldogs.generate]
         w0[Lease job, set running, log correlation_id]
         w1[Load design, template at pinned version, source asset]
         w2[Prepare input: resize/normalize photo, reference pattern, prompt vN with texts]

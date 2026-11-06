@@ -34,7 +34,7 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 
 Symptom: `validation_failed` or low quality clustered on one `template_slug` after publish.
 
-1. Confirm with `jobs:list --type=metaldogs.generate --status=failed` filtered by template (`TBD`: filter support).
+1. Confirm with `jobs:list --type=integration.sync.metaldogs.generate --status=failed` filtered by template (`TBD`: filter support).
 2. Re-publish the previous version (`TBD (G2)` command `metaldogs:templates publish <slug> --version=N`). This is safe: versions are immutable.
 3. Fix the definition offline; repeat the change procedure.
 

@@ -8,14 +8,18 @@ Read `docs/PROJECT_DESCRIPTION.md` before making architectural or product decisi
 
 Plan work from `docs/ROADMAP.md` (tracks, vertical slices, per-slice tests and safe-delivery rules) and, when closing a change-request round, run the documentation checklist in `docs/cr-rounds/README.md`.
 
-### Remotes and upstream pin
+### Remotes, branches, and upstream pin
 
 | Remote | Repository | Role |
 | --- | --- | --- |
-| `origin` | `https://github.com/akarso/metal_dogs` | Product repo (push here) |
-| `upstream` | `https://github.com/akarso/shopanda` | Shopanda; fetch and merge on planned upgrade slices only |
+| `origin` | `git@github.com:akarso/metal_dogs.git` | Product repo (push here) |
+| `upstream` | `https://github.com/akarso/shopanda.git` | Shopanda; fetch and merge on planned upgrade slices only |
 
-Pinned commit and upgrade rules: `docs/UPSTREAM_PIN.md`, `docs/runbooks/shopanda-upgrade.md`. Never merge from a local Shopanda working tree.
+**Branch policy:** Metal Dogs is **main-only**. Do not maintain a Shopanda-style `dev` branch or run `scripts/promote-dev-to-main.sh` in this repo. Upstream may keep `dev` for its own working history; we only consume published `upstream/main` (or an explicit SHA) on upgrade slices.
+
+Pinned commit and upgrade rules: `docs/UPSTREAM_PIN.md`, `docs/runbooks/shopanda-upgrade.md`. Never merge from a local Shopanda working tree. Ensure the clone is not shallow before upgrading (`git fetch --unshallow upstream` if needed).
+
+Documentation model: product docs under `docs/` (roadmap, ADRs, CR rounds). Shopanda `docs/phase-*`, promote, and living-guide workflow apply **upstream only**; this tree keeps `docs/GOVULN_BASELINE.md` + stub `docs/guides` / `docs/diagrams` for CI and link honesty.
 
 ### Build and test commands (F0)
 

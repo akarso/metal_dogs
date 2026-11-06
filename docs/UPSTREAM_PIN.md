@@ -2,13 +2,16 @@
 
 | Field | Value |
 | --- | --- |
-| Upstream remote | `upstream` → https://github.com/akarso/shopanda.git |
-| Origin (this product) | `origin` → https://github.com/akarso/metal_dogs.git |
-| Pinned ref | `upstream/main` |
+| Upstream remote | `upstream` → `https://github.com/akarso/shopanda.git` |
+| Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
+| Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
+| Pinned ref | commit SHA (Shopanda has no release tags yet) |
 | Pinned commit | `5681894658c44ce344b2df930effecda7ffd43c4` |
 | Pinned subject | Merge pull request #565 from akarso/dev |
-| Verified locally | 2026-11-05 |
+| Verified locally | 2026-11-05 (F0 baseline); docs/CI contract repaired 2026-11-06 |
 
-Shopanda has no release tags yet; pin by commit SHA. Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
+Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
 
-Metal Dogs owns this repository's `docs/`. Upstream Shopanda documentation is **not** vendored here — read it at the pinned commit on GitHub, e.g. https://github.com/akarso/shopanda/tree/5681894658c44ce344b2df930effecda7ffd43c4/docs
+Metal Dogs owns product documentation under `docs/` (roadmap, ADRs, architecture, runbooks). Upstream Shopanda guides/diagrams/phase history are **not** vendored as full trees; stubs under `docs/guides/` and `docs/diagrams/` point at this pin on GitHub. Inherited fail-closed artefacts kept in-tree: `docs/GOVULN_BASELINE.md`, `docs/COMMERCIAL.md`.
+
+Before merging a newer `upstream` tip: ensure this clone is not shallow (`test ! -f .git/shallow`). If it is, `git fetch --unshallow upstream` first.

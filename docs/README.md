@@ -8,7 +8,10 @@ This directory is the source of truth for product scope, architecture, decisions
 | --- | --- | --- |
 | [`PROJECT_DESCRIPTION.md`](PROJECT_DESCRIPTION.md) | Product concept, principles, domain concepts, open questions | Product decisions |
 | [`ROADMAP.md`](ROADMAP.md) | Tracks, vertical slices, milestones, dependency graph, definition of done | Every CR round |
-| [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) | Pinned Shopanda commit + remotes | Every Shopanda upgrade slice |
+| [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) | Pinned Shopanda commit + remotes + branch policy | Every Shopanda upgrade slice |
+| [`GOVULN_BASELINE.md`](GOVULN_BASELINE.md) | Fail-closed govuln allowlist (CI) | New baseline exceptions |
+| [`COMMERCIAL.md`](COMMERCIAL.md) | GPL vs B2B commercial boundary (inherited) | Licensing changes |
+| [`guides/`](guides/README.md), [`diagrams/`](diagrams/README.md) | Stubs → pinned upstream Shopanda docs | Pin bump |
 | [`architecture/`](architecture/) | Context/container/module diagrams, domain model, state machines, swimlane flows | Any change to boundaries, contracts, or status transitions |
 | [`adr/`](adr/) | Architecture Decision Records | A decision is taken, revisited, or superseded |
 | [`runbooks/`](runbooks/) | Operational procedures for known failure modes and routine tasks | A new async boundary, external dependency, or incident class appears |

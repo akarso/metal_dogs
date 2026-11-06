@@ -2,7 +2,7 @@
 
 Shopanda extends through **in-process Go plugins** — no separate services, no dynamic discovery in v1.
 
-This document describes the **three-tier model**, extension boundaries, and what authors can do today. For step-by-step integration, see [Developer Guide](docs/guides/DEVELOPER.md). The original Phase 1 authoring dump lives on the `dev` branch under `docs/phase-1-core/specs/PLUGINS.md`.
+This document describes the **three-tier model**, extension boundaries, and what authors can do today. For step-by-step integration, see [Developer Guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEVELOPER.md). The original Phase 1 authoring dump lives on the `dev` branch under `docs/phase-1-core/specs/PLUGINS.md`.
 
 ---
 
@@ -90,7 +90,7 @@ This is an **in-module** plugin model (same Go module, compile-time registration
 
 ## Extension mechanisms
 
-Not sure which mechanism fits your task? [EXTENSION_POINTS.md](docs/guides/EXTENSION_POINTS.md) is a decision guide with a picker, real code snippets, and the full registry catalog. This section is the flat API reference once you already know what you're looking for.
+Not sure which mechanism fits your task? [EXTENSION_POINTS.md](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/EXTENSION_POINTS.md) is a decision guide with a picker, real code snippets, and the full registry catalog. This section is the flat API reference once you already know what you're looking for.
 
 Available today through `plugin.App`:
 
@@ -169,13 +169,13 @@ app.Slots("acme/badges").RegisterRenderer("pdp.info", slots.PlacementAppend, 100
 
 Theme markers use `{{slot_container "anchor"}}…{{/slot_container}}` or explicit `{{slot . "anchor" "placement"}}`. Nested `slot_container` blocks are supported (depth-aware matching). Missing markers are a silent no-op — plugins do not auto-inject. Global CSS/JS belongs in the **asset manifest**, not slots.
 
-**Stable v0 contracts:** use [`pkg/extapi`](pkg/extapi) for hook/slot names, placements, and handler types (`HookHandler`, `SlotRenderer`). See [Extension API guide](docs/guides/EXTENSION_API.md). Theme authors: [Theme slots & inheritance guide](docs/guides/THEME_SLOTS.md) (`parent:` in `theme.yaml`, partials, preserving anchors).
+**Stable v0 contracts:** use [`pkg/extapi`](pkg/extapi) for hook/slot names, placements, and handler types (`HookHandler`, `SlotRenderer`). See [Extension API guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/EXTENSION_API.md). Theme authors: [Theme slots & inheritance guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/THEME_SLOTS.md) (`parent:` in `theme.yaml`, partials, preserving anchors).
 
 **Reference plugin:** [plugins/slotsdemo](plugins/slotsdemo/README.md) — layout + PDP slot renderers with integration tests.
 
-For combining multiple plugins (ordering, shared context, cart/import/ERP patterns): [Multi-Plugin Composition](docs/guides/PLUGIN_COMPOSITION.md).
+For combining multiple plugins (ordering, shared context, cart/import/ERP patterns): [Multi-Plugin Composition](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/PLUGIN_COMPOSITION.md).
 
-**Integrator / ERP work:** cart rules, CSV import transforms, SAP-style inbound REST, warehouse/PIM sync — see [Integrator Platform spec](docs/guides/INTEGRATOR_PLATFORM.md). Use explicit ports and pipeline hooks; do not fork core importers or patch `main.go` when `RegisterPublicRoute` suffices.
+**Integrator / ERP work:** cart rules, CSV import transforms, SAP-style inbound REST, warehouse/PIM sync — see [Integrator Platform spec](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/INTEGRATOR_PLATFORM.md). Use explicit ports and pipeline hooks; do not fork core importers or patch `main.go` when `RegisterPublicRoute` suffices.
 
 ---
 
@@ -200,7 +200,7 @@ plugins:
     enabled: true              # default: false — read-only catalog API at POST /api/v1/graphql
 ```
 
-See `configs/config.example.yaml` and [Deployment Guide](docs/guides/DEPLOYMENT.md).
+See `configs/config.example.yaml` and [Deployment Guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEPLOYMENT.md).
 
 ---
 
@@ -263,13 +263,13 @@ Plugin settings (string, int, bool) can be registered with `RegisterConfig` and 
 
 ## Reference links
 
-- [Developer Guide](docs/guides/DEVELOPER.md) — architecture, examples, API usage
-- [Integrator Platform spec](docs/guides/INTEGRATOR_PLATFORM.md) — cart/pricing, CSV import hooks, ERP integration
+- [Developer Guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEVELOPER.md) — architecture, examples, API usage
+- [Integrator Platform spec](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/INTEGRATOR_PLATFORM.md) — cart/pricing, CSV import hooks, ERP integration
 - [Example external plugin](plugins/example/README.md) — pricing step, event listener, permission
 - [Promotion rule reference plugin](plugins/promodemo/README.md) — custom catalog promotion JSON rule types (PR-862)
 - [Commercial licensing](docs/COMMERCIAL.md) — OSS vs B2B module boundary
 - [B2B plugin scaffold](plugins/b2b/README.md)
-- [C4 component diagram](docs/diagrams/c4-component.md) — registry wiring
+- [C4 component diagram](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/diagrams/c4-component.md) — registry wiring
 - Working history (phase roadmaps, PR-544 research, historical specs): the `dev` branch under `docs/phase-*` (those paths are not on `main`)
 
 ---

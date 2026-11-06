@@ -48,10 +48,10 @@ flowchart TB
     end
 
     subgraph worker["app worker"]
-        gen[metaldogs.generate]
-        prod[metaldogs.prepare_production_artwork]
-        snap[metaldogs.snapshot_order_design]
-        ful[metaldogs.submit_fulfillment]
+        gen[integration.sync.metaldogs.generate]
+        prod[integration.sync.metaldogs.prepare_production_artwork]
+        snap[integration.sync.metaldogs.snapshot_order_design]
+        ful[integration.sync.metaldogs.submit_fulfillment]
     end
 
     subgraph scheduler["app scheduler"]
@@ -174,12 +174,23 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 
 ## Upstream deviations
 
-Files that differ from the pinned Shopanda commit outside `plugins/metaldogs/`, `storefront/`, and `docs/` must be listed here and re-checked on every upgrade.
+Files that differ from the pinned Shopanda commit outside `plugins/metaldogs/` and `storefront/` must be listed here and re-checked on every upgrade. Treat this table as the upgrade conflict allowlist together with [`../runbooks/shopanda-upgrade.md`](../runbooks/shopanda-upgrade.md).
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
-| `README.md` | Metal Dogs banner and remotes table prepended; upstream Shopanda README retained below | F0 |
-| `AGENTS.md` | Metal Dogs agent rules + pinned build commands (replaces upstream AGENTS.md) | F0 |
+| `README.md` | Metal Dogs banner, remotes, badges → this repo; documentation section points at Metal Dogs docs + pinned upstream guides | F0 / F0-fix |
+| `AGENTS.md` | Metal Dogs agent rules, remotes, **main-only** branch policy, build commands (replaces upstream AGENTS.md / phase-* workflow) | F0 / F0-fix |
 | `.gitignore` | Union of upstream ignores with Metal Dogs IDE/binary entries (`/app`, `.idea/`) | F0 |
+| `RUNBOOK.md` | Metal Dogs runbook index; Shopanda operator detail via pinned GitHub URLs (full upstream RUNBOOK not retained) | F0-fix |
+| `PLUGINS.md` | Guide/diagram hrefs rewritten to pinned upstream blob URLs; COMMERCIAL stays local | F0-fix |
+| `plugins/*/README.md` (demos) | Same upstream guide URL rewrite where they linked `docs/guides/*` | F0-fix |
+| `.github/scripts/check-product-docs-links.sh` | Skip missing paths; scan Metal Dogs docs; forbid relative links to non-vendored guide/diagram **files** | F0-fix |
+| `.cursor/rules/pr-documentation-checklist.mdc` | Metal Dogs main-only / CR-round checklist (not Shopanda `dev` + `docs/phase-*`) | F0-fix |
+| `docs/**` (product) | Metal Dogs roadmap/ADRs/architecture/runbooks/cr-rounds | F0 |
+| `docs/GOVULN_BASELINE.md` | Restored for fail-closed `govuln` CI (empty allowlist at pin) | F0-fix |
+| `docs/COMMERCIAL.md` | Restored (B2B licensing boundary inherited with the GPL tree) | F0-fix |
+| `docs/guides/README.md`, `docs/diagrams/README.md` | Stubs pointing at pinned upstream trees (full guides/diagrams not vendored) | F0-fix |
 
-`cmd/api/register_plugins.go` is unchanged in F0 (plugin not registered yet).
+`cmd/api/register_plugins.go` is unchanged in F0 (plugin not registered yet). Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics; Metal Dogs ignores promote tooling until an upgrade deliberately adapts it.
+
+Architecture diagrams in this directory describe the **target** plugin layout and job names (`integration.sync.metaldogs.*`). `plugins/metaldogs` is empty until F1.
