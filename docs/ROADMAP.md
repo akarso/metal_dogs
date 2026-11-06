@@ -256,7 +256,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### F3 · Observability baseline — size S — **BLOCKED on Shopanda** ([shopanda#568](https://github.com/akarso/shopanda/pull/568))
 
 - **Goal:** Structured logging with `correlation_id` propagated from HTTP request to enqueued job; metrics hooks for job duration/attempts; health endpoint reports queue depth for `metaldogs.*` job types.
-- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — see upstream `docs/guides/SYNC_JOB_OBSERVABILITY.md` (PR-568). Do **not** reimplement these in the plugin.
+- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — see [shopanda#568](https://github.com/akarso/shopanda/pull/568) and [`SYNC_JOB_OBSERVABILITY.md`](https://github.com/akarso/shopanda/blob/pr-observability-sync-jobs/docs/guides/SYNC_JOB_OBSERVABILITY.md) (retarget blob to the pin SHA after merge). Do **not** reimplement these in the plugin.
 - **Vendor (Metal Dogs) — minimum after pin bump:** alias `correlation_id` = platform `request_id` in MD log lines / runbooks; `GET /api/customizer/health` facade over `CountsByType` for registered `integration.sync.metaldogs.*` types; optional `obs.ping` sample job.
 - **Tests:** Unit test that log fields are present on a sample job; feature test for correlation propagation (against pinned platform APIs).
 - **Safe delivery:** Additive.
