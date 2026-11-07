@@ -72,6 +72,8 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
 # GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)
 # GET /api/v1/admin/customizer/health → depths (jobs.read)
+# Local AssetStore (F4): var/metaldogs-assets + HMAC shim GET /api/customizer/dev-assets/{token}
+#   SHOPANDA_PLUGINS_METALDOGS_ASSETS_PATH / SHOPANDA_PLUGINS_METALDOGS_ASSET_SIGN_SECRET
 # (not k8s probes — use /healthz and /readyz)
 ```
 
