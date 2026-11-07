@@ -264,11 +264,11 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 #### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; #570 absorb)
 
-- **Goal:** S3-compatible storage configured (core plugin) with a **private** bucket for Metal Dogs assets; plugin `AssetStore` port with `Put`, `Head`, `SignedGetURL(ttl)`, `Delete`.
-- **Scope:** Opaque keys `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (ADR-0004); wrap platform `media.SignedURLStorage` only (local HMAC at `/api/v1/media/local-signed/{token}` or S3 presign). No product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570)).
-- **Tests:** Mediastore wrap fake; `ObjectKey` under `PrivateBlobsPrefix`; Init requires registered SignedURLStorage.
-- **Safe delivery:** Nothing writes yet (no Put call sites; metadata/EXIF deferred to C2+).
-- **Docs:** ADR-0004 → Accepted; CR-05.
+- **Goal:** Plugin `AssetStore` over platform `media.SignedURLStorage` with namespaced private keys.
+- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570)). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
+- **Tests:** Prefix reject; localfs ObjectKey→Put→GET contract; Init on fake SignedURLStorage.
+- **Safe delivery:** Nothing writes yet. ADR notes remaining ops limits (S3 bucket policy, log redaction).
+- **Docs:** ADR-0004 Accepted (with honest limits); CR-05.
 
 ### Track G — Generation quality
 

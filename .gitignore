@@ -35,7 +35,6 @@ shopanda
 /app
 
 # Metal Dogs local AssetStore root (F4)
-/var/metaldogs-assets/
 
 # Editor/IDE / OS
 .DS_Store

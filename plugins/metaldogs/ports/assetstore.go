@@ -8,12 +8,21 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/akarso/shopanda/internal/domain/media"
 )
+
+// AssetKeyPrefix is the required key namespace for Metal Dogs private objects.
+// Must stay under Shopanda media.PrivateBlobsPrefix so S3 Save stays private.
+const AssetKeyPrefix = "private/blobs/metaldogs/"
+
+// MaxSignedGetTTL caps bearer signed URLs for customer assets (ADR-0004).
+const MaxSignedGetTTL = 15 * time.Minute
+
+// DefaultSignedGetTTL is used when callers pass ttl <= 0.
+const DefaultSignedGetTTL = 60 * time.Second
 
 // AssetStore is the Metal Dogs private object-storage port (ADR-0004).
 // Implementations must not expose permanent public URLs; use SignedGetURL.
+// Keys must be under AssetKeyPrefix (enforced by the mediastore adapter).
 type AssetStore interface {
 	Put(ctx context.Context, key string, r io.Reader, contentType string) error
 	Head(ctx context.Context, key string) error
@@ -21,11 +30,9 @@ type AssetStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// ObjectKey builds an opaque storage key under Shopanda's private blob prefix:
+// ObjectKey builds an opaque storage key:
 // private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}
 // Keys never include dog names, customer IDs, or original filenames.
-// The private/blobs/ prefix keeps S3 Save private (IsPrivatePath) even when
-// media.s3.public_acl is on.
 func ObjectKey(assetType, assetID, ext string, at time.Time) (string, error) {
 	assetType = strings.TrimSpace(assetType)
 	assetID = strings.TrimSpace(assetID)
@@ -48,13 +55,23 @@ func ObjectKey(assetType, assetID, ext string, at time.Time) (string, error) {
 		at = at.UTC()
 	}
 	return path.Join(
-		strings.TrimSuffix(media.PrivateBlobsPrefix, "/"),
-		"metaldogs",
+		strings.TrimSuffix(AssetKeyPrefix, "/"),
 		assetType,
 		at.Format("2006"),
 		at.Format("01"),
 		assetID+"."+ext,
 	), nil
+}
+
+// CapSignedGetTTL clamps ttl into (0, MaxSignedGetTTL]; zero/negative → DefaultSignedGetTTL.
+func CapSignedGetTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return DefaultSignedGetTTL
+	}
+	if ttl > MaxSignedGetTTL {
+		return MaxSignedGetTTL
+	}
+	return ttl
 }
 
 func validateKeySegment(s string) error {

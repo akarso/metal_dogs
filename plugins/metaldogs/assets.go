@@ -9,22 +9,16 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
-// resolveAssetStore wraps the composition-root media backend. Core
-// storagelocal/s3 register SignedURLStorage during InitAll (before this
-// plugin). Prefer BoundMediaStorage when already bound; otherwise the
-// registered MediaStorage instance (same object BindMediaStorage will bind).
-// No product-side HMAC shim — local signed GETs are platform
-// GET /api/v1/media/local-signed/{token}.
+// resolveAssetStore wraps the media backend registered by core storagelocal/s3
+// during InitAll (before this plugin). Production Init runs before
+// BindMediaStorage, so we use MediaStorage() here — the same instance the
+// composition root will bind. No product-side HMAC shim.
 func resolveAssetStore(app *plugin.App) (ports.AssetStore, error) {
 	if app == nil {
 		return nil, fmt.Errorf("metaldogs: app required")
 	}
-	var st media.Storage
-	if bound, ok := app.BoundMediaStorage(); ok {
-		st = bound
-	} else if registered, ok := app.MediaStorage(); ok {
-		st = registered
-	} else {
+	st, ok := app.MediaStorage()
+	if !ok {
 		return nil, fmt.Errorf("metaldogs: media storage not registered (enable core storagelocal or storages3)")
 	}
 	signer, ok := media.AsSignedURLStorage(st)

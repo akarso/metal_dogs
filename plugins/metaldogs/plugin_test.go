@@ -1,19 +1,60 @@
 package metaldogs_test
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
-	"github.com/akarso/shopanda/internal/infrastructure/localfs"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
+
+// fakeSigned is a minimal SignedURLStorage for Init wiring (no *localfs.Storage).
+type fakeSigned struct {
+	objects map[string][]byte
+}
+
+func (f *fakeSigned) Name() string { return "fake" }
+func (f *fakeSigned) Save(path string, file io.Reader) error {
+	b, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	if f.objects == nil {
+		f.objects = map[string][]byte{}
+	}
+	f.objects[path] = b
+	return nil
+}
+func (f *fakeSigned) Delete(path string) error {
+	delete(f.objects, path)
+	return nil
+}
+func (f *fakeSigned) URL(string) string { return "" }
+func (f *fakeSigned) Head(_ context.Context, path string) error {
+	if _, ok := f.objects[path]; !ok {
+		return os.ErrNotExist
+	}
+	return nil
+}
+func (f *fakeSigned) SignedURL(_ context.Context, path string, _ media.SignURLOptions) (string, error) {
+	if _, ok := f.objects[path]; !ok {
+		return "", os.ErrNotExist
+	}
+	return "https://signed.example/" + path, nil
+}
+
+var _ media.SignedURLStorage = (*fakeSigned)(nil)
 
 func testApp(t *testing.T, enabled bool) *plugin.App {
 	t.Helper()
@@ -28,11 +69,7 @@ func testApp(t *testing.T, enabled bool) *plugin.App {
 		},
 	}
 	if enabled {
-		st, err := localfs.NewWithSecret(t.TempDir(), "/media", []byte("unit-test-sign-secret-32-bytes!!"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		app.RegisterMediaStorage(st)
+		app.RegisterMediaStorage(&fakeSigned{})
 	}
 	return app
 }
@@ -133,5 +170,15 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	enabled.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("enabled status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json: %v body=%s", err, rec.Body.String())
+	}
+	if body["status"] != "ok" || body["plugin"] != "metaldogs" {
+		t.Fatalf("body = %#v", body)
 	}
 }

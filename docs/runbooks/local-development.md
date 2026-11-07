@@ -72,9 +72,10 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
 # GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)
 # GET /api/v1/admin/customizer/health → depths (jobs.read)
-# F4 assets use platform media (local SignedURL or S3). With media.storage=local
-# outside DEV set SHOPANDA_MEDIA_LOCAL_SIGN_SECRET (≥32 bytes), e.g.:
-#   export SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"
+# F4 assets use platform media (local SignedURL or S3). Recommended local:
+#   SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media   # not under a static web root
+#   SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"  # required outside DEV
+# Never FileServer base_path / base_url — private/blobs keys live there too.
 # (not k8s probes — use /healthz and /readyz)
 ```
 

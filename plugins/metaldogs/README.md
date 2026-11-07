@@ -50,9 +50,9 @@ Sync job (F3 sample): `integration.sync.metaldogs.obs.ping` — platform injects
 ## Private assets (F4 / ADR-0004)
 
 - Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). **No writers yet.**
-- Keys: `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` via `ports.ObjectKey` (`media.IsPrivatePath`).
-- Delivery: wrap core `media.SignedURLStorage` (local HMAC at `GET /api/v1/media/local-signed/{token}`, or S3 presign). No product shim.
-- Local non-DEV: set `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) or `SHOPANDA_DEV_MODE=true`.
+- Keys: `private/blobs/metaldogs/...` via `ports.ObjectKey`; mediastore **rejects** any other key.
+- Delivery: wrap core `media.SignedURLStorage` (inline signed GET; TTL capped ≤15m). No product shim.
+- Local: `SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media` (never FileServer); `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) outside DEV.
 
 ## Test harness (F2)
 
