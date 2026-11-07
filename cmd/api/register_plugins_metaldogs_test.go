@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
+	"github.com/akarso/shopanda/internal/infrastructure/localfs"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -90,6 +91,11 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	}
 
 	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
+	st, err := localfs.NewWithSecret(t.TempDir(), "/media", []byte("unit-test-sign-secret-32-bytes!!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.RegisterMediaStorage(st)
 	if err := p.Init(app); err != nil {
 		t.Fatalf("Init registered plugin: %v", err)
 	}

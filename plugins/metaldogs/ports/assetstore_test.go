@@ -15,7 +15,7 @@ func TestObjectKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "metaldogs/source/2026/11/asset-1.jpg"
+	want := "private/blobs/metaldogs/source/2026/11/asset-1.jpg"
 	if got != want {
 		t.Fatalf("ObjectKey = %q, want %q", got, want)
 	}

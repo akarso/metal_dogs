@@ -1,47 +1,35 @@
 package metaldogs
 
 import (
-	"crypto/rand"
 	"fmt"
-	"os"
 
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/platform/plugin"
-	"github.com/akarso/shopanda/plugins/metaldogs/adapters/localfs"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/mediastore"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
-const defaultAssetsPath = "var/metaldogs-assets"
-
-// resolveAssetStore prefers platform SignedURLStorage (private S3 via core
-// storages3). Otherwise uses a local private root + HMAC shim for dev/test.
-func resolveAssetStore(app *plugin.App) (ports.AssetStore, *localfs.AssetStore, error) {
-	if app != nil {
-		if st, ok := app.MediaStorage(); ok {
-			if signer, ok := st.(media.SignedURLStorage); ok {
-				wrapped, err := mediastore.New(signer)
-				if err != nil {
-					return nil, nil, err
-				}
-				return wrapped, nil, nil
-			}
-		}
+// resolveAssetStore wraps the composition-root media backend. Core
+// storagelocal/s3 register SignedURLStorage during InitAll (before this
+// plugin). Prefer BoundMediaStorage when already bound; otherwise the
+// registered MediaStorage instance (same object BindMediaStorage will bind).
+// No product-side HMAC shim — local signed GETs are platform
+// GET /api/v1/media/local-signed/{token}.
+func resolveAssetStore(app *plugin.App) (ports.AssetStore, error) {
+	if app == nil {
+		return nil, fmt.Errorf("metaldogs: app required")
 	}
-	root := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_ASSETS_PATH")
-	if root == "" {
-		root = defaultAssetsPath
+	var st media.Storage
+	if bound, ok := app.BoundMediaStorage(); ok {
+		st = bound
+	} else if registered, ok := app.MediaStorage(); ok {
+		st = registered
+	} else {
+		return nil, fmt.Errorf("metaldogs: media storage not registered (enable core storagelocal or storages3)")
 	}
-	secret := []byte(os.Getenv("SHOPANDA_PLUGINS_METALDOGS_ASSET_SIGN_SECRET"))
-	if len(secret) == 0 {
-		secret = make([]byte, 32)
-		if _, err := rand.Read(secret); err != nil {
-			return nil, nil, fmt.Errorf("metaldogs: asset sign secret: %w", err)
-		}
+	signer, ok := media.AsSignedURLStorage(st)
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: media storage %q does not implement SignedURLStorage", st.Name())
 	}
-	local, err := localfs.NewAssetStore(root, secret, "")
-	if err != nil {
-		return nil, nil, err
-	}
-	return local, local, nil
+	return mediastore.New(signer)
 }

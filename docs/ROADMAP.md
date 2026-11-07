@@ -262,11 +262,11 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
 - **Docs:** runbook diagnosis; CR-04. Guide lands upstream with #568 — link the PR, not a disposable branch blob.
 
-#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07)
+#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; #570 absorb)
 
-- **Goal:** S3-compatible storage configured (core plugin) with a **private** bucket for Metal Dogs assets; plugin `AssetStore` port with `Put`, `Head`, `SignedGetURL(ttl)`, `Delete`; local filesystem adapter for dev/test.
-- **Scope:** Opaque keys `metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (ADR-0004); wrap `media.SignedURLStorage` when present, else local HMAC shim at `GET /api/customizer/dev-assets/{token}`.
-- **Tests:** Local adapter contract (Put/Head/SignedGetURL/expired/missing); mediastore wrap fake; key helper.
+- **Goal:** S3-compatible storage configured (core plugin) with a **private** bucket for Metal Dogs assets; plugin `AssetStore` port with `Put`, `Head`, `SignedGetURL(ttl)`, `Delete`.
+- **Scope:** Opaque keys `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (ADR-0004); wrap platform `media.SignedURLStorage` only (local HMAC at `/api/v1/media/local-signed/{token}` or S3 presign). No product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570)).
+- **Tests:** Mediastore wrap fake; `ObjectKey` under `PrivateBlobsPrefix`; Init requires registered SignedURLStorage.
 - **Safe delivery:** Nothing writes yet (no Put call sites; metadata/EXIF deferred to C2+).
 - **Docs:** ADR-0004 → Accepted; CR-05.
 

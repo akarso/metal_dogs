@@ -72,8 +72,9 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
 # GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)
 # GET /api/v1/admin/customizer/health → depths (jobs.read)
-# Local AssetStore (F4): var/metaldogs-assets + HMAC shim GET /api/customizer/dev-assets/{token}
-#   SHOPANDA_PLUGINS_METALDOGS_ASSETS_PATH / SHOPANDA_PLUGINS_METALDOGS_ASSET_SIGN_SECRET
+# F4 assets use platform media (local SignedURL or S3). With media.storage=local
+# outside DEV set SHOPANDA_MEDIA_LOCAL_SIGN_SECRET (≥32 bytes), e.g.:
+#   export SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"
 # (not k8s probes — use /healthz and /readyz)
 ```
 
@@ -83,6 +84,7 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 | --- | --- |
 | Empty `SHOPANDA_AUTH_JWT_SECRET` | Always rejected |
 | Example DB password / `sslmode=disable` | Rejected unless `SHOPANDA_DEV_MODE=true` |
+| `media.storage=local` without sign secret | Rejected unless `SHOPANDA_DEV_MODE=true` (set `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET`, ≥32 bytes) |
 
 ## Running tests
 

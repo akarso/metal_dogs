@@ -5,7 +5,6 @@ import (
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/plugin"
-	"github.com/akarso/shopanda/plugins/metaldogs/adapters/localfs"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -42,7 +41,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
 	}
 
-	store, local, err := resolveAssetStore(app)
+	store, err := resolveAssetStore(app)
 	if err != nil {
 		return fmt.Errorf("metaldogs plugin: asset store: %w", err)
 	}
@@ -56,11 +55,6 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
-	}
-	if local != nil {
-		if err := app.RegisterPublicRoute("GET "+localfs.DevAssetsPath+"{token}", httpapi.DevAssets(local)); err != nil {
-			return fmt.Errorf("metaldogs plugin: dev-assets route: %w", err)
-		}
 	}
 	if err := registerObsPing(app); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)

@@ -43,7 +43,7 @@ func (q *memQueue) snapshot() []jobs.Job {
 
 func TestObsPing_EnqueuePropagatesRequestID(t *testing.T) {
 	var logBuf bytes.Buffer
-	app := testApp(true)
+	app := testApp(t, true)
 	app.Logger = logger.NewWithWriter(&logBuf, "info")
 	queue := &memQueue{}
 	if err := app.BindQueue(queue); err != nil {
@@ -100,7 +100,7 @@ func findObsHandler(t *testing.T, app *plugin.App) extapi.SyncJobHandler {
 }
 
 func TestPlugin_Init_RegistersHealthAndObsPing(t *testing.T) {
-	app := testApp(true)
+	app := testApp(t, true)
 	app.Logger = logger.NewWithWriter(io.Discard, "error")
 	if err := metaldogs.New().Init(app); err != nil {
 		t.Fatalf("Init: %v", err)

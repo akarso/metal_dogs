@@ -205,6 +205,6 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts | F2 |
 | Platform sync-job observability (Enqueue `request_id`, `SyncJobContext.Attempts`, `JobResult`, `CountsByType`, `BoundQueue`, related tests) | Forward-port of [shopanda#568](https://github.com/akarso/shopanda/pull/568); pin still pre-merge (`UPSTREAM_PIN.md`) | F3 |
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only | F3 |
-| `plugins/metaldogs` AssetStore (`ports`, `adapters/localfs`, `adapters/mediastore`, dev-assets shim) | Private object storage port; nothing writes yet | F4 |
+| `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; nothing writes yet | F4 |
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface.

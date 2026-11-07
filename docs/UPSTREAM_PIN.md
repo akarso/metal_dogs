@@ -16,4 +16,7 @@ Metal Dogs owns product documentation under `docs/` (roadmap, ADRs, architecture
 
 Before merging a newer `upstream` tip: ensure this clone is not shallow (`test ! -f .git/shallow`). If it is, `git fetch --unshallow upstream` first.
 
-**F3 note:** Metal Dogs currently carries a forward-port of [shopanda#568](https://github.com/akarso/shopanda/pull/568) (sync-job observability) ahead of this pin. Absorb on the next upgrade slice after #568 lands on the consumed ref; expect conflicts with in-tree platform edits until then.
+**Forward-ports ahead of this pin** (absorb on the next upgrade slice; expect conflicts with in-tree platform edits until then):
+
+- [shopanda#568](https://github.com/akarso/shopanda/pull/568) — sync-job observability (F3)
+- [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage, `BindMediaStorage`, `PrivateBlobsPrefix` (F4; product HMAC shim removed)

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/akarso/shopanda/internal/domain/media"
 )
 
 // AssetStore is the Metal Dogs private object-storage port (ADR-0004).
@@ -19,9 +21,11 @@ type AssetStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// ObjectKey builds an opaque storage key:
-// metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}
+// ObjectKey builds an opaque storage key under Shopanda's private blob prefix:
+// private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}
 // Keys never include dog names, customer IDs, or original filenames.
+// The private/blobs/ prefix keeps S3 Save private (IsPrivatePath) even when
+// media.s3.public_acl is on.
 func ObjectKey(assetType, assetID, ext string, at time.Time) (string, error) {
 	assetType = strings.TrimSpace(assetType)
 	assetID = strings.TrimSpace(assetID)
@@ -44,6 +48,7 @@ func ObjectKey(assetType, assetID, ext string, at time.Time) (string, error) {
 		at = at.UTC()
 	}
 	return path.Join(
+		strings.TrimSuffix(media.PrivateBlobsPrefix, "/"),
 		"metaldogs",
 		assetType,
 		at.Format("2006"),

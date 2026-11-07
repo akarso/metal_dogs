@@ -21,17 +21,16 @@ Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also regist
 ```text
 plugins/metaldogs/
 ├── plugin.go              # Init + Name + AssetStore wiring
-├── assets.go              # resolve local vs SignedURLStorage wrap
+├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
 ├── migrations.go          # plugin.Migrator + MigrationFS
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
-├── httpapi/               # enabled, health, local dev-assets shim
+├── httpapi/               # enabled + health
 ├── observability/         # correlation_id alias helpers
 ├── domain/                # domain model (empty until C*)
 ├── application/           # use cases (empty until C*)
 ├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore
 ├── adapters/postgres/     # MetaStore adapter (F2 harness exercise)
-├── adapters/localfs/      # private AssetStore + HMAC signed GET
 ├── adapters/mediastore/   # wrap media.SignedURLStorage
 └── testutil/              # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
 ```
@@ -43,7 +42,6 @@ plugins/metaldogs/
 | `GET` | `/api/customizer/enabled` | public | `{"status":"ok","plugin":"metaldogs"}` |
 | `GET` | `/api/customizer/health` | public | BoundQueue/Reader readiness only; generic `degraded` reason; HTTP 503 when degraded |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
-| `GET` | `/api/customizer/dev-assets/{token}` | public HMAC | Local AssetStore shim only (not registered when using SignedURLStorage) |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon).
 
@@ -52,9 +50,9 @@ Sync job (F3 sample): `integration.sync.metaldogs.obs.ping` — platform injects
 ## Private assets (F4 / ADR-0004)
 
 - Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). **No writers yet.**
-- Keys: `metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` via `ports.ObjectKey`.
-- Production: core `storages3` private bucket → `media.SignedURLStorage` wrap.
-- Dev/test: `var/metaldogs-assets` (override `SHOPANDA_PLUGINS_METALDOGS_ASSETS_PATH`) + HMAC secret (`SHOPANDA_PLUGINS_METALDOGS_ASSET_SIGN_SECRET`; random per process if unset).
+- Keys: `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` via `ports.ObjectKey` (`media.IsPrivatePath`).
+- Delivery: wrap core `media.SignedURLStorage` (local HMAC at `GET /api/v1/media/local-signed/{token}`, or S3 presign). No product shim.
+- Local non-DEV: set `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) or `SHOPANDA_DEV_MODE=true`.
 
 ## Test harness (F2)
 
