@@ -53,8 +53,15 @@ func TestPlugin_Init_Disabled(t *testing.T) {
 func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	t.Parallel()
 	app := testApp(true)
-	if err := metaldogs.New().Init(app); err != nil {
+	p := metaldogs.New()
+	if p.AssetStore() != nil {
+		t.Fatal("AssetStore before Init must be nil")
+	}
+	if err := p.Init(app); err != nil {
 		t.Fatalf("Init: %v", err)
+	}
+	if p.AssetStore() == nil {
+		t.Fatal("AssetStore after Init must be set")
 	}
 	routes := app.PublicRoutes()
 	patterns := map[string]bool{}
@@ -63,6 +70,9 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	}
 	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] {
 		t.Fatalf("PublicRoutes = %+v, want enabled + health", routes)
+	}
+	if !patterns["GET /api/customizer/dev-assets/{token}"] {
+		t.Fatalf("PublicRoutes = %+v, want local dev-assets shim", routes)
 	}
 	admins := app.AdminRoutes()
 	foundAdmin := false
