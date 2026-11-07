@@ -198,10 +198,12 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `cmd/api/register_plugins.go` | Registers `metaldogs.New()` when `plugins.metaldogs.enabled` | F1 |
 | `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
-| `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator + `/api/customizer/enabled`) | F1 |
+| `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
 | `cmd/api/cache_control_prefixes.go` | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts | F2 |
+| Platform sync-job observability (Enqueue `request_id`, `SyncJobContext.Attempts`, `JobResult`, `CountsByType`, `BoundQueue`, related tests) | Forward-port of [shopanda#568](https://github.com/akarso/shopanda/pull/568); pin still pre-merge (`UPSTREAM_PIN.md`) | F3 |
+| `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only | F3 |
 
-Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F1 ships the skeleton + health; F2 adds the PostgreSQL test harness.
+Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface.

@@ -12,6 +12,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/internal/platform/requestctx"
 	"github.com/akarso/shopanda/pkg/extapi"
 )
 
@@ -87,6 +88,7 @@ func RegisterSyncJobCronTriggers(app *plugin.App, queue jobs.Queue, sched schedu
 }
 
 func enqueueSyncJob(ctx context.Context, queue jobs.Queue, reg plugin.SyncJobRegistration, trigger string, payload map[string]interface{}, log logger.Logger) error {
+	payload = plugin.InjectRequestID(ctx, payload)
 	job, err := plugin.NewSyncJobEnvelope(reg, trigger, payload)
 	if err != nil {
 		return err
@@ -95,11 +97,15 @@ func enqueueSyncJob(ctx context.Context, queue jobs.Queue, reg plugin.SyncJobReg
 		return err
 	}
 	if log != nil {
-		log.Info("integration.sync_job.enqueued", map[string]interface{}{
+		fields := map[string]interface{}{
 			"job_id":   job.ID,
 			"job_type": job.Type,
 			"trigger":  trigger,
-		})
+		}
+		if rid, _ := payload["request_id"].(string); rid != "" {
+			fields["request_id"] = rid
+		}
+		log.Info("integration.sync_job.enqueued", fields)
 	}
 	return nil
 }
@@ -128,14 +134,24 @@ func (h *syncJobHandler) Handle(ctx context.Context, job jobs.Job) error {
 	pluginSlug, _ := job.Payload["plugin"].(string)
 	name, _ := job.Payload["name"].(string)
 
+	// Re-inject payload request_id into ctx so handlers that call
+	// requestctx.RequestID / product CorrelationID(ctx) see the same value
+	// Enqueue stored (worker poll ctx has no HTTP middleware). Skip when ctx
+	// already has an ID — do not clobber a future worker-scoped ID even if it
+	// differs from the payload.
+	if rid, _ := payload["request_id"].(string); rid != "" && requestctx.RequestID(ctx) == "" {
+		ctx = requestctx.WithRequestID(ctx, rid)
+	}
+
 	req := extapi.SyncJobContext{
-		JobID:   job.ID,
-		Plugin:  pluginSlug,
-		Name:    name,
-		Trigger: trigger,
-		Payload: payload,
-		DB:      h.db,
-		Logger:  h.log,
+		JobID:    job.ID,
+		Plugin:   pluginSlug,
+		Name:     name,
+		Trigger:  trigger,
+		Attempts: job.Attempts,
+		Payload:  payload,
+		DB:       h.db,
+		Logger:   h.log,
 	}
 	return h.handler(ctx, req)
 }

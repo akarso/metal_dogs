@@ -15,6 +15,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/internal/platform/requestctx"
 	"github.com/akarso/shopanda/pkg/extapi"
 )
 
@@ -160,6 +161,47 @@ func TestRegisterSyncJobHandlers_RegistersWorkerHandler(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
+func TestRegisterSyncJobHandlers_InjectsPayloadRequestIDIntoCtx(t *testing.T) {
+	log := logger.NewWithWriter(io.Discard, "error")
+	var sawID string
+	app := &plugin.App{
+		Logger:    log,
+		Bootstrap: &plugin.Bootstrap{DB: &sql.DB{}},
+	}
+	if err := app.Integration("acme").RegisterSyncJob(extapi.SyncJob{
+		Name:    "pull.stock",
+		Trigger: extapi.Manual(),
+		Handler: func(ctx context.Context, _ extapi.SyncJobContext) error {
+			sawID = requestctx.RequestID(ctx)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterSyncJob: %v", err)
+	}
+
+	queue := &memQueue{}
+	worker := jobs.NewWorker(queue, log, time.Second)
+	if err := integrationApp.RegisterSyncJobHandlers(app, worker); err != nil {
+		t.Fatalf("RegisterSyncJobHandlers: %v", err)
+	}
+
+	envelope, err := plugin.NewSyncJobEnvelope(app.SyncJobs()[0], extapi.SyncTriggerManual, map[string]interface{}{
+		"request_id": "corr-from-payload",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Enqueue(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !worker.ProcessOne(context.Background()) {
+		t.Fatal("ProcessOne expected a job")
+	}
+	if sawID != "corr-from-payload" {
+		t.Fatalf("RequestID(ctx) = %q, want payload reinjected", sawID)
 	}
 }
 

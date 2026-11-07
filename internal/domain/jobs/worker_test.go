@@ -99,12 +99,27 @@ func (l *mockLogger) Error(msg string, _ error, _ map[string]interface{}) {
 type mockMetrics struct {
 	mu       sync.Mutex
 	failures []string
+	results  []struct {
+		jobType  string
+		outcome  string
+		duration time.Duration
+	}
 }
 
 func (m *mockMetrics) JobFailure(jobType string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failures = append(m.failures, jobType)
+}
+
+func (m *mockMetrics) JobResult(jobType, outcome string, d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.results = append(m.results, struct {
+		jobType  string
+		outcome  string
+		duration time.Duration
+	}{jobType, outcome, d})
 }
 
 // --- tests ---
@@ -271,12 +286,16 @@ func TestWorker_FailsUnknownType_RecordsMetric(t *testing.T) {
 	if len(m.failures) != 1 || m.failures[0] != "unknown" {
 		t.Errorf("failures = %v, want [unknown]", m.failures)
 	}
+	if len(m.results) != 1 || m.results[0].jobType != "unknown" || m.results[0].outcome != "failed" {
+		t.Errorf("results = %+v, want [{unknown failed …}]", m.results)
+	}
 }
 
 // TestWorker_CompleteFailure_RecordsMetric pins the gap where a handler
 // succeeds but queue.Complete fails: the job may be redelivered (e.g.
 // duplicate webhook sends) while dashboards previously showed zero errors
-// because only the log recorded it.
+// because only the log recorded it. JobResult must be "failed", never
+// "success", when Complete fails.
 func TestWorker_CompleteFailure_RecordsMetric(t *testing.T) {
 	q := &mockQueue{
 		completeFn: func(string) error { return errors.New("complete failed: connection reset") },
@@ -304,6 +323,9 @@ func TestWorker_CompleteFailure_RecordsMetric(t *testing.T) {
 	if len(m.failures) != 1 || m.failures[0] != "ok_job" {
 		t.Errorf("failures = %v, want [ok_job] — queue.Complete failing after a successful handler must still be counted", m.failures)
 	}
+	if len(m.results) != 1 || m.results[0].outcome != "failed" || m.results[0].jobType != "ok_job" {
+		t.Errorf("results = %+v, want failed for ok_job (not success before Complete)", m.results)
+	}
 }
 
 func TestWorker_SuccessfulJob_DoesNotRecordFailureMetric(t *testing.T) {
@@ -330,6 +352,36 @@ func TestWorker_SuccessfulJob_DoesNotRecordFailureMetric(t *testing.T) {
 	defer m.mu.Unlock()
 	if len(m.failures) != 0 {
 		t.Errorf("failures = %v, want none for a successful job", m.failures)
+	}
+	if len(m.results) != 1 || m.results[0].outcome != "success" || m.results[0].jobType != "ok_job" {
+		t.Errorf("results = %+v, want success for ok_job after Complete", m.results)
+	}
+}
+
+func TestWorker_HandlerError_RecordsJobResultFailed(t *testing.T) {
+	q := &mockQueue{}
+	log := &mockLogger{}
+	m := &mockMetrics{}
+
+	handler := &mockHandler{
+		jobType:  "fail_job",
+		handleFn: func(_ context.Context, _ jobs.Job) error { return errors.New("boom") },
+	}
+
+	w := jobs.NewWorker(q, log, 50*time.Millisecond).WithMetrics(m)
+	w.Register(handler)
+
+	job, _ := jobs.NewJob("j1", "fail_job", nil)
+	_ = q.Enqueue(context.Background(), job)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	w.Start(ctx)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.results) != 1 || m.results[0].outcome != "failed" || m.results[0].jobType != "fail_job" {
+		t.Errorf("results = %+v, want failed for fail_job", m.results)
 	}
 }
 

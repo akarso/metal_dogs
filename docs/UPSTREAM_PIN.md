@@ -15,3 +15,5 @@ Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md
 Metal Dogs owns product documentation under `docs/` (roadmap, ADRs, architecture, runbooks). Upstream Shopanda guides/diagrams/phase history are **not** vendored as full trees; stubs under `docs/guides/` and `docs/diagrams/` point at this pin on GitHub. Inherited fail-closed artefacts kept in-tree: `docs/GOVULN_BASELINE.md`, `docs/COMMERCIAL.md`.
 
 Before merging a newer `upstream` tip: ensure this clone is not shallow (`test ! -f .git/shallow`). If it is, `git fetch --unshallow upstream` first.
+
+**F3 note:** Metal Dogs currently carries a forward-port of [shopanda#568](https://github.com/akarso/shopanda/pull/568) (sync-job observability) ahead of this pin. Absorb on the next upgrade slice after #568 lands on the consumed ref; expect conflicts with in-tree platform edits until then.
