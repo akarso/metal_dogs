@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -93,12 +94,43 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 		t.Fatalf("Init registered plugin: %v", err)
 	}
 	routes := app.PublicRoutes()
-	if len(routes) != 1 || routes[0].Pattern != "GET /api/customizer/enabled" {
-		t.Fatalf("PublicRoutes = %+v, want GET /api/customizer/enabled", routes)
+	patterns := map[string]bool{}
+	for _, r := range routes {
+		patterns[r.Pattern] = true
+	}
+	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] {
+		t.Fatalf("PublicRoutes = %+v, want enabled + health", routes)
+	}
+	foundAdminHealth := false
+	for _, r := range app.AdminRoutes() {
+		if r.Pattern == "GET /api/v1/admin/customizer/health" {
+			foundAdminHealth = true
+			if r.Permission != rbac.JobsRead {
+				t.Fatalf("admin health perm = %q, want %q", r.Permission, rbac.JobsRead)
+			}
+		}
+	}
+	if !foundAdminHealth {
+		t.Fatalf("AdminRoutes = %+v, want admin customizer health", app.AdminRoutes())
+	}
+	var enabled plugin.PublicRoute
+	for _, r := range routes {
+		if r.Pattern == "GET /api/customizer/enabled" {
+			enabled = r
+		}
 	}
 	rec := httptest.NewRecorder()
-	routes[0].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
+	enabled.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
+	}
+	foundPing := false
+	for _, reg := range app.SyncJobs() {
+		if reg.JobType == "integration.sync.metaldogs.obs.ping" {
+			foundPing = true
+		}
+	}
+	if !foundPing {
+		t.Fatalf("SyncJobs = %+v, want obs.ping", app.SyncJobs())
 	}
 }

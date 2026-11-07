@@ -163,6 +163,23 @@ func (a *App) Queue() (jobs.Queue, bool) {
 	return a.queue, true
 }
 
+// BoundQueue returns the composition-root enqueue queue when BindQueue has
+// run, otherwise the plugin RegisterQueue instance. Prefer this for read
+// paths (health depth) that must see the same queue workers and Enqueue use
+// — postgres fallback wires BindQueue without RegisterQueue.
+func (a *App) BoundQueue() (jobs.Queue, bool) {
+	if a == nil {
+		return nil, false
+	}
+	if a.boundQueue != nil {
+		return a.boundQueue, true
+	}
+	if a.queue != nil {
+		return a.queue, true
+	}
+	return nil, false
+}
+
 // PaymentRegistry returns the registered payment providers, if any.
 func (a *App) PaymentRegistry() *payment.ProviderRegistry {
 	return a.paymentRegistry

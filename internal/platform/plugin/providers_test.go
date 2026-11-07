@@ -213,6 +213,29 @@ func TestApp_RegisterQueue(t *testing.T) {
 	}
 }
 
+func TestApp_BoundQueue_PrefersBindThenRegister(t *testing.T) {
+	boundOnly := &plugin.App{}
+	bq := stubQueue{}
+	if err := boundOnly.BindQueue(bq); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := boundOnly.BoundQueue()
+	if !ok || got != bq {
+		t.Fatalf("Bound-only BoundQueue() = (%v, %v)", got, ok)
+	}
+	if _, ok := boundOnly.Queue(); ok {
+		t.Fatal("Queue() should be empty when only BindQueue ran")
+	}
+
+	registered := &plugin.App{}
+	rq := stubQueue{}
+	registered.RegisterQueue(rq)
+	got, ok = registered.BoundQueue()
+	if !ok || got != rq {
+		t.Fatalf("register-only BoundQueue() = (%v, %v)", got, ok)
+	}
+}
+
 func TestApp_RegisterQueue_NilPanics(t *testing.T) {
 	defer func() {
 		if recover() == nil {

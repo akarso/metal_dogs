@@ -58,7 +58,7 @@ go tool cover -func=coverage-metaldogs-nodsn.out
 COVERPROFILE=coverage-metaldogs-integration.out bash .github/scripts/run-metaldogs-integration-tests.sh
 ```
 
-Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`. Then `GET /api/customizer/enabled` (not `/healthz`).
+Enable Metal Dogs (default off): `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true` or `plugins.metaldogs.enabled: true`. Then `GET /api/customizer/enabled`, coarse `GET /api/customizer/health`, and admin depths at `GET /api/v1/admin/customizer/health` (not `/healthz` / `/readyz`).
 
 Harness helpers: `plugins/metaldogs/testutil` (`OpenIsolated` pins `search_path` on every pool conn, `FakeClock`, `NewSeqGenerator`). Product `Clock` / `IDGenerator` are in `ports/`.
 

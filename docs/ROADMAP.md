@@ -253,14 +253,14 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Docs:** `runbooks/local-development.md` test section; `AGENTS.md` commands.
 - **Open gate:** Origin Actions billing still blocks live green proof of `CI / integration-metaldogs` on `origin`. When billing returns: require that check name on `main` branch protection, confirm green, then close CR-03. Shopanda DSN reds cannot fail this job.
 
-#### F3 · Observability baseline — size S — **BLOCKED on Shopanda** ([shopanda#568](https://github.com/akarso/shopanda/pull/568))
+#### F3 · Observability baseline — size S — **DONE (vendor)** / **blocked (pin absorb)** (CR-04, 2026-11-06)
 
-- **Goal:** Structured logging with `correlation_id` propagated from HTTP request to enqueued job; metrics hooks for job duration/attempts; health endpoint reports queue depth for `metaldogs.*` job types.
-- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — see [shopanda#568](https://github.com/akarso/shopanda/pull/568) and [`SYNC_JOB_OBSERVABILITY.md`](https://github.com/akarso/shopanda/blob/pr-observability-sync-jobs/docs/guides/SYNC_JOB_OBSERVABILITY.md) (retarget blob to the pin SHA after merge). Do **not** reimplement these in the plugin.
-- **Vendor (Metal Dogs) — minimum after pin bump:** alias `correlation_id` = platform `request_id` in MD log lines / runbooks; `GET /api/customizer/health` facade over `CountsByType` for registered `integration.sync.metaldogs.*` types; optional `obs.ping` sample job.
-- **Tests:** Unit test that log fields are present on a sample job; feature test for correlation propagation (against pinned platform APIs).
-- **Safe delivery:** Additive.
-- **Docs:** `runbooks/generation-job-stuck-or-failed.md` diagnosis section references the log fields.
+- **Goal:** Structured logging with `correlation_id` propagated from HTTP request to enqueued job; metrics hooks for job duration/attempts; health reports queue readiness (depths on admin).
+- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — [shopanda#568](https://github.com/akarso/shopanda/pull/568). Forward-ported into this tree; pin still `56818946…` until #568 merges and an upgrade slice absorbs it (`docs/UPSTREAM_PIN.md`).
+- **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
+- **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
+- **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
+- **Docs:** runbook diagnosis; CR-04. Guide lands upstream with #568 — link the PR, not a disposable branch blob.
 
 #### F4 · Private object storage — size S
 

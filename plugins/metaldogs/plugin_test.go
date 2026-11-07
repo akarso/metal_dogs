@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -56,11 +57,43 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	routes := app.PublicRoutes()
-	if len(routes) != 1 || routes[0].Pattern != "GET /api/customizer/enabled" {
-		t.Fatalf("PublicRoutes = %+v", routes)
+	patterns := map[string]bool{}
+	for _, r := range routes {
+		patterns[r.Pattern] = true
+	}
+	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] {
+		t.Fatalf("PublicRoutes = %+v, want enabled + health", routes)
+	}
+	admins := app.AdminRoutes()
+	foundAdmin := false
+	for _, r := range admins {
+		if r.Pattern == "GET /api/v1/admin/customizer/health" {
+			foundAdmin = true
+			if r.Permission != rbac.JobsRead {
+				t.Fatalf("admin health perm = %q, want %q", r.Permission, rbac.JobsRead)
+			}
+		}
+	}
+	if !foundAdmin {
+		t.Fatalf("AdminRoutes = %+v, want admin customizer health", admins)
+	}
+	foundPing := false
+	for _, reg := range app.SyncJobs() {
+		if reg.JobType == "integration.sync.metaldogs.obs.ping" {
+			foundPing = true
+		}
+	}
+	if !foundPing {
+		t.Fatalf("SyncJobs missing obs.ping: %+v", app.SyncJobs())
+	}
+	var enabled plugin.PublicRoute
+	for _, r := range routes {
+		if r.Pattern == "GET /api/customizer/enabled" {
+			enabled = r
+		}
 	}
 	rec := httptest.NewRecorder()
-	routes[0].Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
+	enabled.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}

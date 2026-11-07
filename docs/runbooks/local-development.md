@@ -70,7 +70,9 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # or YAML: plugins.metaldogs.enabled: true
 ./app dev
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
-# (not a k8s probe — use /healthz and /readyz)
+# GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)
+# GET /api/v1/admin/customizer/health → depths (jobs.read)
+# (not k8s probes — use /healthz and /readyz)
 ```
 
 ### Why stock `.env.example` alone fails
