@@ -35,7 +35,7 @@ go test ./plugins/ -run ImportBoundary -count=1
 go test ./plugins/metaldogs/... -count=1
 bash .github/scripts/check-product-docs-links.sh
 
-# G0 offline eval (plugin enabled; media registered for Init):
+# G0 offline eval (plugin enabled; media optional):
 # ./app metaldogs:eval -template … -photos … -out … -provider fake
 ```
 

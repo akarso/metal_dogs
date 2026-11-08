@@ -3,8 +3,6 @@ package generation
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -25,8 +23,8 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 	if err := ctx.Err(); err != nil {
 		return GenerationResult{}, err
 	}
-	if len(req.PhotoJPEG) == 0 && len(req.PhotoName) == 0 {
-		return GenerationResult{}, &ProviderError{Class: ErrorRejectedInput, Message: "photo required"}
+	if len(req.PhotoBytes) == 0 {
+		return GenerationResult{}, &ProviderError{Class: ErrorRejectedInput, Message: "photo bytes required"}
 	}
 	if req.Prompt == "" {
 		return GenerationResult{}, &ProviderError{Class: ErrorRejectedInput, Message: "prompt required"}
@@ -34,20 +32,23 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 
 	params := req.Parameters
 	params.Normalize()
+	if err := params.Validate(); err != nil {
+		return GenerationResult{}, err
+	}
 
 	start := time.Now()
-	img, err := renderFakePNG(req, params)
+	img, hasAlpha, err := renderFakePNG(req, params)
 	if err != nil {
 		return GenerationResult{}, &ProviderError{Class: ErrorPermanent, Message: err.Error()}
 	}
 	latency := time.Since(start)
 
-	sum := sha256.Sum256(append(append([]byte(req.PromptVersion), req.PhotoName...), byte(params.Seed)))
-	reqID := fmt.Sprintf("fake-%x", sum[:8])
+	digest := requestDigest(req, params)
+	reqID := fmt.Sprintf("fake-%x", digest)
 
 	return GenerationResult{
 		ImagePNG:       img,
-		HasAlpha:       true,
+		HasAlpha:       hasAlpha,
 		Latency:        latency,
 		CostMinorUnits: 0,
 		ProviderReqID:  reqID,
@@ -55,23 +56,15 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 	}, nil
 }
 
-func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, error) {
-	h := sha256.New()
-	_, _ = h.Write([]byte(req.Prompt))
-	_, _ = h.Write([]byte(req.PromptVersion))
-	_, _ = h.Write([]byte(req.DogName))
-	_, _ = h.Write([]byte(req.PhotoName))
-	var seedBuf [8]byte
-	binary.LittleEndian.PutUint64(seedBuf[:], uint64(params.Seed))
-	_, _ = h.Write(seedBuf[:])
-	_, _ = h.Write(req.PhotoJPEG)
-	digest := h.Sum(nil)
+func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, error) {
+	digest := requestDigest(req, params)
 
 	r, g, b := digest[0], digest[1], digest[2]
 	a := digest[3]
 	if a < 200 {
-		a = 255 // keep mostly opaque for print-ish fixtures; still marks HasAlpha
+		a = 255 // print-ish fixtures stay mostly opaque
 	}
+	hasAlpha := a < 255
 
 	img := image.NewRGBA(image.Rect(0, 0, params.Width, params.Height))
 	c := color.RGBA{R: r, G: g, B: b, A: a}
@@ -93,7 +86,7 @@ func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, error) {
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), hasAlpha, nil
 }

@@ -41,11 +41,18 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
 	}
 
-	store, err := resolveAssetStore(app)
-	if err != nil {
-		return fmt.Errorf("metaldogs plugin: asset store: %w", err)
+	// Media is optional so offline metaldogs:eval works without object storage.
+	// HTTP customizer routes still register; AssetStore stays nil until media is wired.
+	if store, err := resolveAssetStore(app); err != nil {
+		if app.Logger != nil {
+			app.Logger.Warn("metaldogs: media storage unavailable; AssetStore unset (CLI eval still registered)", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+		p.assets = nil
+	} else {
+		p.assets = store
 	}
-	p.assets = store
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)

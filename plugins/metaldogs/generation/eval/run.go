@@ -55,8 +55,8 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if len(photos) == 0 {
 		return Report{}, fmt.Errorf("eval: no photos in %s (want .jpg/.jpeg/.png)", opts.PhotosDir)
 	}
-	if err := os.MkdirAll(opts.OutDir, 0o750); err != nil {
-		return Report{}, fmt.Errorf("eval: mkdir out: %w", err)
+	if err := ensureEmptyOutDir(opts.OutDir); err != nil {
+		return Report{}, err
 	}
 
 	report := Report{
@@ -64,13 +64,16 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		TemplateID:    def.ID,
 		PromptVersion: def.PromptVersion,
 		Provider:      provider.Name(),
+		Model:         def.Model,
 		DogName:       def.DogName,
+		Parameters:    def.Parameters,
 		OutDir:        opts.OutDir,
 		Samples:       make([]SampleResult, 0, len(photos)),
 	}
 
+	written := map[string]string{} // outName → photo that claimed it
 	for _, photoPath := range photos {
-		sample := runOne(ctx, provider, def, photoPath, opts.OutDir)
+		sample := runOne(ctx, provider, def, photoPath, opts.OutDir, written)
 		report.Samples = append(report.Samples, sample)
 	}
 
@@ -80,7 +83,21 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	return report, nil
 }
 
-func runOne(ctx context.Context, provider generation.ImageProvider, def TemplateDef, photoPath, outDir string) SampleResult {
+func ensureEmptyOutDir(outDir string) error {
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
+		return fmt.Errorf("eval: mkdir out: %w", err)
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		return fmt.Errorf("eval: read out: %w", err)
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("eval: --out %s is not empty; refuse to mix with stale artifacts", outDir)
+	}
+	return nil
+}
+
+func runOne(ctx context.Context, provider generation.ImageProvider, def TemplateDef, photoPath, outDir string, written map[string]string) SampleResult {
 	base := filepath.Base(photoPath)
 	sample := SampleResult{
 		PhotoName: base,
@@ -97,7 +114,7 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	}
 
 	req := generation.GenerationRequest{
-		PhotoJPEG:     raw, // bytes as provided; fake does not decode
+		PhotoBytes:    raw,
 		PhotoName:     base,
 		Prompt:        def.Prompt,
 		PromptVersion: def.PromptVersion,
@@ -109,21 +126,32 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	res, err := provider.Generate(ctx, req)
 	if err != nil {
 		sample.Error = err.Error()
-		if pe, ok := err.(*generation.ProviderError); ok {
-			sample.ErrorClass = string(pe.Class)
-		} else {
-			sample.ErrorClass = string(generation.ErrorPermanent)
-		}
+		sample.ErrorClass = string(generation.ClassifyError(err))
 		return sample
 	}
 
-	outName := strings.TrimSuffix(base, filepath.Ext(base)) + ".png"
+	outName := outputPNGName(base)
+	if prev, ok := written[outName]; ok {
+		sample.Error = fmt.Sprintf("output name collision: %q already written for %q", outName, prev)
+		sample.ErrorClass = string(generation.ErrorPermanent)
+		return sample
+	}
 	outPath := filepath.Join(outDir, outName)
+	if _, err := os.Stat(outPath); err == nil {
+		sample.Error = fmt.Sprintf("output path already exists: %s", outName)
+		sample.ErrorClass = string(generation.ErrorPermanent)
+		return sample
+	} else if !os.IsNotExist(err) {
+		sample.Error = err.Error()
+		sample.ErrorClass = string(generation.ErrorPermanent)
+		return sample
+	}
 	if err := os.WriteFile(outPath, res.ImagePNG, 0o640); err != nil {
 		sample.Error = err.Error()
 		sample.ErrorClass = string(generation.ErrorPermanent)
 		return sample
 	}
+	written[outName] = base
 	sample.OutputFile = outName
 	sample.ProviderReqID = res.ProviderReqID
 	sample.Model = res.Model
@@ -131,6 +159,12 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	sample.CostMinorUnits = res.CostMinorUnits
 	sample.HasAlpha = res.HasAlpha
 	return sample
+}
+
+// outputPNGName keeps the original basename (including extension) so dog.jpg and
+// dog.jpeg cannot overwrite each other.
+func outputPNGName(photoBase string) string {
+	return photoBase + ".png"
 }
 
 func listPhotos(dir string) ([]string, error) {

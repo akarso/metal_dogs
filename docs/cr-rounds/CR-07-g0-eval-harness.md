@@ -6,23 +6,23 @@
 
 ## What shipped
 
-- `plugins/metaldogs/generation`: `ImageProvider` port, `GenerationRequest` / `GenerationResult`, `ProviderError` classes, `Lookup` (`fake` only)
-- `fake` adapter: deterministic PNG from prompt/photo/seed; rejects empty prompt/photo
-- `generation/eval`: load JSON/YAML template stub, run photos dir → PNGs + `report.json` (validation status `skipped` until G3)
-- CLI `metaldogs:eval` (`RequiresDB: false`); registered on plugin Init when enabled
+- `plugins/metaldogs/generation`: `ImageProvider` port, `GenerationRequest` (`PhotoBytes`), `GenerationResult`, `ProviderError` classes (+ `canceled`), `Lookup` (`fake` only)
+- `fake` adapter: deterministic PNG from length-prefixed digest (full `int64` seed); rejects empty photo bytes / empty prompt / oversize canvas (`MaxDimension`); `ProviderReqID` = `fake-<sha256 hex>`
+- `generation/eval`: JSON/YAML template stub; outputs `photo.ext.png` (no stem collisions); refuses non-empty `--out`; `report.json` includes root `parameters` + `model`; validation `skipped` until G3
+- CLI `metaldogs:eval` (`RequiresDB: false`); Init registers CLI even when media is unset (AssetStore nil)
 
 ## Verification results
 
 | Item | Result |
 | --- | --- |
-| Fake determinism / reject | `generation` tests |
-| Template + report + run | `generation/eval` tests |
-| CLI register + fake run | `TestCLI_Eval_FakeProvider` |
+| Fake determinism / seed 1 vs 257 / empty photo / cancel / oversize | `generation` tests |
+| Distinct output names / non-empty out / report parameters / cancel class | `generation/eval` tests |
+| CLI register (with/without media) + fake run + non-zero on sample fail | plugin tests |
 | ImportBoundary / existing metaldogs | Pass |
 
 ## Flags / migrations / rollback
 
-- No new flags/migrations. Command only appears when `plugins.metaldogs.enabled` and Init succeeds (media still required for Init).
+- No new flags/migrations. Command appears when plugin enabled; media optional for Init (eval-only).
 - Rollback: revert CR; no HTTP surface.
 
 ## Documentation updated

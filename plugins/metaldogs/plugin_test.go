@@ -113,9 +113,12 @@ func TestPlugin_Init_Disabled(t *testing.T) {
 	}
 }
 
-func TestPlugin_Init_RequiresMediaStorage(t *testing.T) {
+func TestPlugin_Init_WithoutMedia_RegistersCLI(t *testing.T) {
 	t.Parallel()
-	log := logger.NewWithWriter(io.Discard, "error")
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
+	p := metaldogs.New()
+	reg.Register(p)
+	log := logger.NewWithWriter(io.Discard, "warn")
 	app := &plugin.App{
 		Logger: log,
 		Bus:    event.NewBus(log),
@@ -125,8 +128,15 @@ func TestPlugin_Init_RequiresMediaStorage(t *testing.T) {
 			},
 		},
 	}
-	if err := metaldogs.New().Init(app); err == nil {
-		t.Fatal("Init() expected error without media storage")
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v", summary)
+	}
+	if p.AssetStore() != nil {
+		t.Fatal("AssetStore must stay nil without media")
+	}
+	if _, ok := reg.CLIRegistry().Get(metaldogs.CommandEval); !ok {
+		t.Fatal("metaldogs:eval must register without media")
 	}
 }
 
@@ -254,5 +264,42 @@ func TestCLI_Eval_FakeProvider(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "report.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCLI_Eval_NonZeroOnSampleFailure(t *testing.T) {
+	t.Parallel()
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
+	reg.Register(metaldogs.New())
+	app := testApp(t, true)
+	if summary := reg.InitAll(app); summary.Failed > 0 {
+		t.Fatalf("InitAll: %+v", summary)
+	}
+	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandEval)
+	if !ok {
+		t.Fatal("metaldogs:eval not registered")
+	}
+
+	root := t.TempDir()
+	tpl := filepath.Join(root, "t.json")
+	photos := filepath.Join(root, "photos")
+	out := filepath.Join(root, "out")
+	if err := os.MkdirAll(photos, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tpl, []byte(`{"id":"cli","prompt":"p","parameters":{"width":4,"height":4}}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photos, "empty.jpg"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cmd.Run(cli.Context{Ctx: context.Background(), Logger: app.Logger, Config: app.Config}, []string{
+		"-template", tpl,
+		"-photos", photos,
+		"-out", out,
+	})
+	if err == nil {
+		t.Fatal("expected non-zero exit when samples fail")
 	}
 }

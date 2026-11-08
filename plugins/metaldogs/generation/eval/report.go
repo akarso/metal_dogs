@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 )
 
 // ValidationResult is a placeholder slot for G3 checks (skipped in G0).
@@ -31,13 +33,15 @@ type SampleResult struct {
 
 // Report is the JSON summary written next to output images.
 type Report struct {
-	GeneratedAt   time.Time      `json:"generated_at"`
-	TemplateID    string         `json:"template_id"`
-	PromptVersion string         `json:"prompt_version"`
-	Provider      string         `json:"provider"`
-	DogName       string         `json:"dog_name,omitempty"`
-	OutDir        string         `json:"out_dir"`
-	Samples       []SampleResult `json:"samples"`
+	GeneratedAt   time.Time             `json:"generated_at"`
+	TemplateID    string                `json:"template_id"`
+	PromptVersion string                `json:"prompt_version"`
+	Provider      string                `json:"provider"`
+	Model         string                `json:"model,omitempty"`
+	DogName       string                `json:"dog_name,omitempty"`
+	Parameters    generation.Parameters `json:"parameters"`
+	OutDir        string                `json:"out_dir"`
+	Samples       []SampleResult        `json:"samples"`
 }
 
 // WriteReport encodes report as indented JSON at outDir/report.json.

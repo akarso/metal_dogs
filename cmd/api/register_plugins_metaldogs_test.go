@@ -108,8 +108,13 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 
 	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
 	app.RegisterMediaStorage(stubSignedMedia{})
-	if err := p.Init(app); err != nil {
-		t.Fatalf("Init registered plugin: %v", err)
+	// InitAll wires cliRegistry before Init (RegisterCommand for metaldogs:eval).
+	// Use a fresh registry so other registerPlugins entries do not fail Init.
+	initReg := plugin.NewRegistry(log)
+	initReg.Register(p)
+	summary := initReg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v", summary)
 	}
 	routes := app.PublicRoutes()
 	patterns := map[string]bool{}

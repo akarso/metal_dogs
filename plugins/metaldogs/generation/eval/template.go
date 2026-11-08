@@ -51,5 +51,8 @@ func LoadTemplate(path string) (TemplateDef, error) {
 		def.Model = "unset"
 	}
 	def.Parameters.Normalize()
+	if err := def.Parameters.Validate(); err != nil {
+		return TemplateDef{}, fmt.Errorf("eval: template parameters: %w", err)
+	}
 	return def, nil
 }
