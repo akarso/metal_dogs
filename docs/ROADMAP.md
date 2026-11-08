@@ -273,13 +273,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 ### Track G — Generation quality
 
-#### G0 · Offline evaluation harness — size M
+#### G0 · Offline evaluation harness — size M — **DONE** (CR-07, 2026-11-08)
 
 - **Goal:** A CLI (`metaldogs:eval`) that takes a template definition, a set of local photos, and a provider name, runs generation, writes outputs + a JSON report (latency, cost if reported, validation results) to a local folder. Default provider is `fake` (returns deterministic fixture images).
-- **Scope:** `generation` module skeleton: `ImageProvider` port, `fake` adapter, request/response types, deterministic seed handling.
-- **Tests:** Unit tests for request assembly and report writing; CLI feature test with the fake provider.
-- **Safe delivery:** CLI only, not reachable via HTTP.
-- **Docs:** ADR-0008 drafted as Proposed with evaluation criteria.
+- **Scope:** `plugins/metaldogs/generation`: `ImageProvider` port, `fake` adapter, `PhotoBytes` + dimension cap, length-prefixed digest/`ProviderReqID`; `generation/eval` runner + JSON report (root parameters); CLI `metaldogs:eval` (no DB). Template file stub (JSON/YAML) until G2.
+- **Tests:** Fake determinism / seed collision / empty photo bytes / cancel; distinct output names; CLI registration (media optional) + non-zero exit on sample fail.
+- **Safe delivery:** CLI only for eval. Without media: eval CLI registers, customizer HTTP/AssetStore stay off (fail-closed). With media: full plugin surface.
+- **Docs:** ADR-0008 remains Proposed (provider TBD at G1); evaluation criteria unchanged; CR-07.
 
 #### G1 · Provider spike on real photos — size M (opt-in, paid)
 

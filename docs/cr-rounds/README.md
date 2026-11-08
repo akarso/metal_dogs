@@ -58,3 +58,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-04 | F3 observability (Shopanda platform + MD facade) | M0 → 4/6 | [`CR-04-f3-observability.md`](CR-04-f3-observability.md) |
 | CR-05 | F4 private object storage (AssetStore + local shim) | M0 → 5/6 | [`CR-05-f4-private-object-storage.md`](CR-05-f4-private-object-storage.md) |
 | CR-06 | Shopanda pin absorb `a8cbcb18` (#568/#570/#571) | M0 pin current | [`CR-06-shopanda-pin-a8cbcb18.md`](CR-06-shopanda-pin-a8cbcb18.md) |
+| CR-07 | G0 offline eval harness (`metaldogs:eval` + fake provider) | M1 → 1/3 | [`CR-07-g0-eval-harness.md`](CR-07-g0-eval-harness.md) |

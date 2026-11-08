@@ -24,12 +24,13 @@ func New() *Plugin { return &Plugin{} }
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
 
-// AssetStore returns the private object store wired during Init (nil before Init).
+// AssetStore returns the private object store wired during Init (nil before Init
+// or when Init ran in eval-only mode without media).
 func (p *Plugin) AssetStore() ports.AssetStore { return p.assets }
 
-// Init registers public HTTP routes, obs.ping, and the AssetStore when
-// plugins.metaldogs.enabled is true.
-// Registration in cmd/api/register_plugins.go is also gated on that flag.
+// Init registers CLI always when enabled. HTTP routes, obs.ping, and AssetStore
+// require media SignedURLStorage (F4 fail-closed). Without media, Init still
+// succeeds so offline metaldogs:eval works, but no customizer HTTP is mounted.
 func (p *Plugin) Init(app *plugin.App) error {
 	if app == nil {
 		return fmt.Errorf("metaldogs plugin: app not configured")
@@ -41,9 +42,17 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
 	}
 
+	registerCLICommands(app)
+
 	store, err := resolveAssetStore(app)
 	if err != nil {
-		return fmt.Errorf("metaldogs plugin: asset store: %w", err)
+		p.assets = nil
+		if app.Logger != nil {
+			app.Logger.Warn("metaldogs: media unavailable; eval CLI only (no customizer HTTP / AssetStore)", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+		return nil
 	}
 	p.assets = store
 

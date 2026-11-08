@@ -49,9 +49,7 @@ func TestObsPing_EnqueuePropagatesRequestID(t *testing.T) {
 	if err := app.BindQueue(queue); err != nil {
 		t.Fatal(err)
 	}
-	if err := metaldogs.New().Init(app); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
+	initMetalDogs(t, app)
 
 	ctx := requestctx.WithRequestID(context.Background(), "corr-42")
 	if err := app.Integration(metaldogs.PluginName).Enqueue(ctx, "obs.ping", map[string]interface{}{"k": 1}); err != nil {
@@ -102,9 +100,7 @@ func findObsHandler(t *testing.T, app *plugin.App) extapi.SyncJobHandler {
 func TestPlugin_Init_RegistersHealthAndObsPing(t *testing.T) {
 	app := testApp(t, true)
 	app.Logger = logger.NewWithWriter(io.Discard, "error")
-	if err := metaldogs.New().Init(app); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
+	initMetalDogs(t, app)
 	routes := app.PublicRoutes()
 	patterns := map[string]bool{}
 	for _, r := range routes {

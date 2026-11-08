@@ -21,10 +21,13 @@ Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also regist
 ```text
 plugins/metaldogs/
 ├── plugin.go              # Init + Name + AssetStore wiring
+├── cli.go                 # metaldogs:eval (G0)
 ├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
 ├── migrations.go          # plugin.Migrator + MigrationFS
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
+├── generation/            # ImageProvider port + fake (ADR-0008 / G0)
+│   └── eval/              # offline runner + report.json
 ├── httpapi/               # enabled + health
 ├── observability/         # correlation_id alias helpers
 ├── domain/                # domain model (empty until C*)
@@ -64,3 +67,20 @@ go test ./plugins/metaldogs/... -count=1
 `testutil.OpenIsolated` — unique schema per call, forced `search_path`. CI: `integration-metaldogs` canaries.
 
 Later job types: `integration.sync.metaldogs.<name>` (ADR-0003).
+
+## Offline eval (G0)
+
+With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
+
+- **With media:** full Init — `AssetStore`, customizer HTTP, obs.ping, and `metaldogs:eval`.
+- **Without media (eval-only):** Init still succeeds and registers `metaldogs:eval` only — no customizer HTTP / AssetStore (F4 fail-closed for HTTP).
+
+```bash
+./app metaldogs:eval \
+  -template plugins/metaldogs/generation/eval/testdata/template.json \
+  -photos /path/to/photos \
+  -out /tmp/metaldogs-eval \
+  -provider fake
+```
+
+Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; validation `skipped` until G3). `--out` must have no non-dot entries. Default provider is `fake` (deterministic). Canvas ≤2048²; photo ≤20MiB. Non-zero exit if any sample fails.

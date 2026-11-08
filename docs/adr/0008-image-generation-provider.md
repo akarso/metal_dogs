@@ -12,7 +12,7 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 ## Decision (structure, decided now)
 
 1. The `generation` module defines an `ImageProvider` port:
-   `Generate(ctx, GenerationRequest) (GenerationResult, error)` where the request carries the normalized photo, reference pattern, prompt text with `prompt_version`, and typed parameters; the result carries image bytes, declared alpha support, provider-reported cost/latency, and a provider request id for support.
+   `Generate(ctx, GenerationRequest) (GenerationResult, error)` where the request carries photo bytes (`PhotoBytes`, not JPEG-only), reference pattern, prompt text with `prompt_version`, and typed parameters (canvas capped at `MaxDimension`); the result carries image bytes, declared alpha support, provider-reported cost/latency, and a provider request id for support.
 2. Exactly two adapters exist at any time: `fake` (deterministic fixtures; default everywhere) and the one real provider. Switching is a config value (`plugins.metaldogs.generation.provider`).
 3. Prompts live with the template definition and are versioned (`prompt_version`); every job records provider, model, prompt version, and parameters.
 4. Provider errors are classified by the adapter into `transient` / `permanent` / `rejected_input` / `rate_limited`; raw payloads never leave the adapter.
@@ -43,6 +43,10 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 - Monochrome output within validation tolerance — ≥ 95 %.
 - Usable alpha or clean background for removal — ≥ 90 %.
 - Cost per accepted artwork (including failed attempts) under the per-order budget set by the operator.
+
+## Harness (G0)
+
+Offline CLI `metaldogs:eval` writes PNGs + `report.json` (latency, cost slot, validation placeholder `skipped` until G3). Default provider `fake` is deterministic. Real-provider spike still G1; this ADR stays Proposed until that close.
 
 ## Alternatives considered
 

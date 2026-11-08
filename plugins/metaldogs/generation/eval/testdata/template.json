@@ -1,0 +1,12 @@
+{
+  "id": "g0-demo",
+  "prompt": "monochrome metal-themed dog portrait for black tee print",
+  "prompt_version": "g0-v1",
+  "dog_name": "Burek",
+  "model": "fake-g0-v1",
+  "parameters": {
+    "width": 64,
+    "height": 64,
+    "seed": 42
+  }
+}
