@@ -26,6 +26,9 @@ const DefaultDimension = 64
 // MaxDimension caps template/provider canvas size (OOM guard).
 const MaxDimension = 2048
 
+// MaxPhotoBytes caps inbound photo payload size before hashing/holding bytes.
+const MaxPhotoBytes = 20 << 20 // 20 MiB
+
 // ProviderError is returned by adapters instead of leaking raw provider payloads.
 type ProviderError struct {
 	Class   ErrorClass

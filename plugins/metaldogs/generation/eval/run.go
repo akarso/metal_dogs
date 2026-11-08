@@ -64,7 +64,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		TemplateID:    def.ID,
 		PromptVersion: def.PromptVersion,
 		Provider:      provider.Name(),
-		Model:         def.Model,
+		TemplateModel: def.Model,
 		DogName:       def.DogName,
 		Parameters:    def.Parameters,
 		OutDir:        opts.OutDir,
@@ -91,8 +91,11 @@ func ensureEmptyOutDir(outDir string) error {
 	if err != nil {
 		return fmt.Errorf("eval: read out: %w", err)
 	}
-	if len(entries) > 0 {
-		return fmt.Errorf("eval: --out %s is not empty; refuse to mix with stale artifacts", outDir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue // allow .gitkeep / editor crumbs
+		}
+		return fmt.Errorf("eval: --out %s is not empty (%s); use a fresh empty directory", outDir, e.Name())
 	}
 	return nil
 }
@@ -110,6 +113,11 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	if err != nil {
 		sample.Error = err.Error()
 		sample.ErrorClass = string(generation.ErrorPermanent)
+		return sample
+	}
+	if len(raw) > generation.MaxPhotoBytes {
+		sample.Error = fmt.Sprintf("photo exceeds %d bytes", generation.MaxPhotoBytes)
+		sample.ErrorClass = string(generation.ErrorRejectedInput)
 		return sample
 	}
 
@@ -154,7 +162,7 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	written[outName] = base
 	sample.OutputFile = outName
 	sample.ProviderReqID = res.ProviderReqID
-	sample.Model = res.Model
+	sample.ProviderModel = res.Model
 	sample.LatencyMS = res.Latency.Milliseconds()
 	sample.CostMinorUnits = res.CostMinorUnits
 	sample.HasAlpha = res.HasAlpha

@@ -75,7 +75,7 @@ func TestRun_FakeProvider_WritesReportAndPNG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.TemplateID != "eval-demo" || report.Provider != "fake" || report.Model != "tpl-model" {
+	if report.TemplateID != "eval-demo" || report.Provider != "fake" || report.TemplateModel != "tpl-model" {
 		t.Fatalf("report = %+v", report)
 	}
 	if report.Parameters.Seed != 1 || report.Parameters.Width != 8 {
@@ -84,6 +84,9 @@ func TestRun_FakeProvider_WritesReportAndPNG(t *testing.T) {
 	sample := report.Samples[0]
 	if sample.Error != "" || sample.OutputFile != "dog.jpg.png" || sample.Validation.Status != "skipped" {
 		t.Fatalf("sample = %+v", sample)
+	}
+	if sample.ProviderModel != "fake-g0-v1" {
+		t.Fatalf("provider_model = %q", sample.ProviderModel)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "dog.jpg.png")); err != nil {
 		t.Fatal(err)
@@ -176,6 +179,36 @@ func TestRun_RejectsNonEmptyOut(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected non-empty out error")
+	}
+}
+
+func TestRun_AllowsDotfilesInOut(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tplPath := filepath.Join(root, "t.json")
+	photosDir := filepath.Join(root, "photos")
+	outDir := filepath.Join(root, "out")
+	if err := os.MkdirAll(photosDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tplPath, []byte(`{"id":"a","prompt":"p","parameters":{"width":4,"height":4}}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photosDir, "a.jpg"), []byte{1}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, ".gitkeep"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eval.Run(context.Background(), eval.Options{
+		TemplatePath: tplPath,
+		PhotosDir:    photosDir,
+		OutDir:       outDir,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -78,10 +78,10 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # Never FileServer base_path / base_url — private/blobs keys live there too.
 # First private Save may chmod the media root (and ancestors) to 0700.
 # (not k8s probes — use /healthz and /readyz)
-# G0 offline eval (CLI only; plugin enabled; media optional for Init):
+# G0 offline eval (plugin enabled; without media = eval CLI only, no customizer HTTP):
 #   ./app metaldogs:eval -template plugins/metaldogs/generation/eval/testdata/template.json \
 #     -photos /path/to/photos -out /tmp/metaldogs-eval -provider fake
-#   (--out must be empty; outputs photo.ext.png + report.json)
+#   (--out: no non-dot entries; outputs photo.ext.png + report.json)
 ```
 
 For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.

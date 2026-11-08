@@ -70,7 +70,10 @@ Later job types: `integration.sync.metaldogs.<name>` (ADR-0003).
 
 ## Offline eval (G0)
 
-With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`). Media is optional for Init — without it `AssetStore` stays nil but `metaldogs:eval` still registers:
+With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
+
+- **With media:** full Init — `AssetStore`, customizer HTTP, obs.ping, and `metaldogs:eval`.
+- **Without media (eval-only):** Init still succeeds and registers `metaldogs:eval` only — no customizer HTTP / AssetStore (F4 fail-closed for HTTP).
 
 ```bash
 ./app metaldogs:eval \
@@ -80,4 +83,4 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`). Media is op
   -provider fake
 ```
 
-Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (parameters/seed, latency / cost slot; validation `skipped` until G3). `--out` must be empty. Default provider is `fake` (deterministic). Canvas capped at 2048². Empty photo bytes are rejected. No HTTP route. Non-zero exit if any sample fails.
+Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; validation `skipped` until G3). `--out` must have no non-dot entries. Default provider is `fake` (deterministic). Canvas ≤2048²; photo ≤20MiB. Non-zero exit if any sample fails.

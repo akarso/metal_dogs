@@ -22,7 +22,7 @@ type SampleResult struct {
 	PhotoName      string           `json:"photo_name"`
 	OutputFile     string           `json:"output_file,omitempty"`
 	ProviderReqID  string           `json:"provider_request_id,omitempty"`
-	Model          string           `json:"model,omitempty"`
+	ProviderModel  string           `json:"provider_model,omitempty"`
 	LatencyMS      int64            `json:"latency_ms"`
 	CostMinorUnits int64            `json:"cost_minor_units"`
 	HasAlpha       bool             `json:"has_alpha"`
@@ -37,7 +37,7 @@ type Report struct {
 	TemplateID    string                `json:"template_id"`
 	PromptVersion string                `json:"prompt_version"`
 	Provider      string                `json:"provider"`
-	Model         string                `json:"model,omitempty"`
+	TemplateModel string                `json:"template_model,omitempty"`
 	DogName       string                `json:"dog_name,omitempty"`
 	Parameters    generation.Parameters `json:"parameters"`
 	OutDir        string                `json:"out_dir"`

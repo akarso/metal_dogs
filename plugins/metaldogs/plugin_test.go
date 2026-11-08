@@ -113,7 +113,7 @@ func TestPlugin_Init_Disabled(t *testing.T) {
 	}
 }
 
-func TestPlugin_Init_WithoutMedia_RegistersCLI(t *testing.T) {
+func TestPlugin_Init_WithoutMedia_EvalOnly_NoHTTP(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
 	p := metaldogs.New()
@@ -137,6 +137,12 @@ func TestPlugin_Init_WithoutMedia_RegistersCLI(t *testing.T) {
 	}
 	if _, ok := reg.CLIRegistry().Get(metaldogs.CommandEval); !ok {
 		t.Fatal("metaldogs:eval must register without media")
+	}
+	if len(app.PublicRoutes()) != 0 || len(app.AdminRoutes()) != 0 {
+		t.Fatalf("HTTP routes without media = public %#v admin %#v", app.PublicRoutes(), app.AdminRoutes())
+	}
+	if len(app.SyncJobs()) != 0 {
+		t.Fatalf("SyncJobs without media = %#v", app.SyncJobs())
 	}
 }
 

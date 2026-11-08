@@ -107,6 +107,19 @@ func TestFake_Generate_RejectsOversize(t *testing.T) {
 	}
 }
 
+func TestFake_Generate_RejectsHugePhoto(t *testing.T) {
+	t.Parallel()
+	huge := make([]byte, generation.MaxPhotoBytes+1)
+	_, err := generation.Fake().Generate(context.Background(), generation.GenerationRequest{
+		PhotoBytes: huge,
+		Prompt:     "p",
+		Parameters: generation.Parameters{Width: 4, Height: 4},
+	})
+	if generation.ClassifyError(err) != generation.ErrorRejectedInput {
+		t.Fatalf("err = %v, want rejected_input", err)
+	}
+}
+
 func TestFake_Generate_ContextCanceled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())

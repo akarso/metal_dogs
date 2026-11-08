@@ -26,6 +26,12 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 	if len(req.PhotoBytes) == 0 {
 		return GenerationResult{}, &ProviderError{Class: ErrorRejectedInput, Message: "photo bytes required"}
 	}
+	if len(req.PhotoBytes) > MaxPhotoBytes {
+		return GenerationResult{}, &ProviderError{
+			Class:   ErrorRejectedInput,
+			Message: fmt.Sprintf("photo exceeds %d bytes", MaxPhotoBytes),
+		}
+	}
 	if req.Prompt == "" {
 		return GenerationResult{}, &ProviderError{Class: ErrorRejectedInput, Message: "prompt required"}
 	}
@@ -37,26 +43,23 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 	}
 
 	start := time.Now()
-	img, hasAlpha, err := renderFakePNG(req, params)
+	img, hasAlpha, digest, err := renderFakePNG(req, params)
 	if err != nil {
 		return GenerationResult{}, &ProviderError{Class: ErrorPermanent, Message: err.Error()}
 	}
 	latency := time.Since(start)
-
-	digest := requestDigest(req, params)
-	reqID := fmt.Sprintf("fake-%x", digest)
 
 	return GenerationResult{
 		ImagePNG:       img,
 		HasAlpha:       hasAlpha,
 		Latency:        latency,
 		CostMinorUnits: 0,
-		ProviderReqID:  reqID,
+		ProviderReqID:  fmt.Sprintf("fake-%x", digest),
 		Model:          fakeModel,
 	}, nil
 }
 
-func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, error) {
+func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, []byte, error) {
 	digest := requestDigest(req, params)
 
 	r, g, b := digest[0], digest[1], digest[2]
@@ -86,7 +89,7 @@ func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, erro
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
-		return nil, false, err
+		return nil, false, nil, err
 	}
-	return buf.Bytes(), hasAlpha, nil
+	return buf.Bytes(), hasAlpha, digest, nil
 }
