@@ -262,13 +262,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
 - **Docs:** runbook diagnosis; CR-04. Guide lands upstream with #568 — link the PR, not a disposable branch blob.
 
-#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; #570 absorb)
+#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; #570+#571 absorb)
 
 - **Goal:** Plugin `AssetStore` over platform `media.SignedURLStorage` with namespaced private keys.
-- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570)). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
+- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570) + [shopanda#571](https://github.com/akarso/shopanda/pull/571) merge `a8cbcb18`). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
 - **Tests:** Prefix reject; localfs ObjectKey→Put→GET contract; Init on fake SignedURLStorage.
 - **Safe delivery:** Nothing writes yet. ADR notes remaining ops limits (S3 bucket policy, log redaction).
-- **Docs:** ADR-0004 Accepted (with honest limits); CR-05.
+- **Docs:** ADR-0004 Accepted (with honest limits); CR-05. Pin still pre-`a8cbcb18` until upgrade slice.
 
 ### Track G — Generation quality
 

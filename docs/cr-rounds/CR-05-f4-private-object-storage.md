@@ -32,9 +32,9 @@
 
 ## Documentation updated
 
-- [x] ROADMAP / ADR-0004 (honest limits) / CR-05 / local-dev / README / UPSTREAM_PIN #570
+- [x] ROADMAP / ADR-0004 (honest limits) / CR-05 / local-dev / README / UPSTREAM_PIN (#570 + #571)
 
 ## Follow-ups
 
 - C2+: writers, EXIF, ownership 404, log redaction lint, S3 public-policy fail-closed if detectable
-- Pin absorb: include [shopanda#571](https://github.com/akarso/shopanda/pull/571) (not #570 merge alone). #570 on `dev` lacks `install.sh`→`./var/media`, token v1, and the DEPLOYMENT rollout note until #571 lands.
+- Pin absorb: next upgrade must include [shopanda#571](https://github.com/akarso/shopanda/pull/571) merge [`a8cbcb18`](https://github.com/akarso/shopanda/commit/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512) (not #570/`50f812d6` alone). #571 is already on Shopanda `dev`; product tree still forward-ports until that pin bump.
