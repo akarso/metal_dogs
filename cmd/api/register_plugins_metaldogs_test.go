@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
@@ -13,6 +16,20 @@ import (
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
+
+type stubSignedMedia struct{}
+
+func (stubSignedMedia) Name() string                              { return "stub" }
+func (stubSignedMedia) Save(string, io.Reader) error              { return nil }
+func (stubSignedMedia) Delete(string) error                       { return nil }
+func (stubSignedMedia) URL(string) string                         { return "" }
+func (stubSignedMedia) Head(context.Context, string) error        { return os.ErrNotExist }
+func (stubSignedMedia) SignedURL(context.Context, string, media.SignURLOptions) (string, error) {
+	return "", os.ErrNotExist
+}
+
+var _ media.SignedURLStorage = stubSignedMedia{}
+
 
 func findPlugin(t *testing.T, registry *plugin.Registry, name string) plugin.Plugin {
 	t.Helper()
@@ -90,6 +107,7 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	}
 
 	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
+	app.RegisterMediaStorage(stubSignedMedia{})
 	if err := p.Init(app); err != nil {
 		t.Fatalf("Init registered plugin: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 // PluginName is the stable plugin identity and Migrator namespace
@@ -13,7 +14,9 @@ import (
 const PluginName = "metaldogs"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
-type Plugin struct{}
+type Plugin struct {
+	assets ports.AssetStore
+}
 
 // New returns the Metal Dogs plugin.
 func New() *Plugin { return &Plugin{} }
@@ -21,7 +24,10 @@ func New() *Plugin { return &Plugin{} }
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
 
-// Init registers public HTTP routes and the obs.ping sync job when
+// AssetStore returns the private object store wired during Init (nil before Init).
+func (p *Plugin) AssetStore() ports.AssetStore { return p.assets }
+
+// Init registers public HTTP routes, obs.ping, and the AssetStore when
 // plugins.metaldogs.enabled is true.
 // Registration in cmd/api/register_plugins.go is also gated on that flag.
 func (p *Plugin) Init(app *plugin.App) error {
@@ -34,6 +40,12 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if !app.Config.Plugins.MetalDogs.Enabled {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
 	}
+
+	store, err := resolveAssetStore(app)
+	if err != nil {
+		return fmt.Errorf("metaldogs plugin: asset store: %w", err)
+	}
+	p.assets = store
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)

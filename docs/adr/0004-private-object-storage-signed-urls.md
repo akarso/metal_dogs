@@ -1,40 +1,38 @@
 # ADR-0004: Private S3-compatible storage with short-lived signed URLs
 
-- **Status:** Proposed (to be Accepted at close of `F4`)
+- **Status:** Accepted for port wiring (F4 / CR-05); isolation/enforcement incomplete until C2 writers + ops checks below
 - **Date:** 2026-10-15
 - **Related slices:** `F4`, `C2`, `C5`, `E5`, `E6`, `O2`, `O6`
 - **Related ADRs:** [ADR-0007](0007-guest-design-ownership-tokens.md)
 
 ## Context
 
-Uploaded photos are private personal data. The project description requires private storage, short-lived signed URLs, EXIF stripping, no personal data in public addresses, and a retention policy. Shopanda ships an S3-compatible storage core plugin and a `media.Storage` port; its default is local filesystem.
+Uploaded photos are private personal data. Shopanda provides `media.SignedURLStorage` for S3 and local (`GET /api/v1/media/local-signed/{token}`), `PrivateBlobsPrefix` / `IsPrivatePath`, and `BindMediaStorage` ([shopanda#570](https://github.com/akarso/shopanda/pull/570)).
 
 ## Decision
 
-1. All Metal Dogs assets (source photos, artwork, mockups, production files, template reference patterns) are stored in a **private** S3-compatible bucket with no public ACLs and server-side encryption where available. Template thumbnails may be served through a public CDN path if they contain no customer data.
-2. Object keys are opaque: `metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}`. Keys never contain dog names, customer identifiers, or original file names.
-3. Assets are delivered to clients only through **signed GET URLs** with TTLs: previews ≤ 15 minutes, admin/production downloads ≤ 10 minutes, order-confirmation thumbnails ≤ 7 days (or inlined). URLs are never logged or persisted.
-4. The plugin accesses storage through its own `AssetStore` port (`Put`, `Head`, `SignedGetURL`, `Delete`). Adapters: Shopanda `media.Storage` if it exposes signing, otherwise a direct S3 adapter inside the plugin; local filesystem adapter with a signing shim for dev/test.
-5. Every stored object has a row in `metaldogs_assets` with checksum, dimensions, MIME, and `delete_after`; the storage object is never the source of truth for metadata.
-6. Uploads are re-encoded server-side (EXIF and other metadata removed) before being written.
+1. Metal Dogs assets use core media storage (local or S3). No second product registry or HMAC route.
+2. Object keys: `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (`ports.AssetKeyPrefix`). The mediastore adapter **rejects** any other key for Put/Head/Delete/SignedGetURL.
+3. Delivery via short-lived signed URLs (`SignedGetURL` caps TTL ≤ 15m, default 60s). Inline disposition only for allowlisted image extensions (`jpg/jpeg/png/webp`); other keys force attachment. Caller `Content-Type` outside that allowlist is overridden. URLs must not be logged.
+4. Plugin `AssetStore` wraps `media.SignedURLStorage` only.
+5. `metaldogs_assets` metadata + EXIF strip + ownership 404s: **C2+**.
+6. Local layout: config default and examples use `./var/media` (not under a static web root). Private keys share that root — operators must **never** FileServer `base_path` / `base_url`. Platform localfs uses `0700`/`0600` (chmod ancestors on private write), EvalSymlinks containment, and versioned HMAC tokens with v0 compat parse.
+
+## Honest limits (not yet fail-closed)
+
+- S3 “private” is ACL/Cache-Control under `IsPrivatePath`; a public bucket policy can still expose keys — production IAM/bucket policy is operator-owned (runbook / C2+).
+- Log redaction of `local-signed/` / `X-Amz-Signature` is policy, not automated yet.
+- No Put call sites until C2; port + prefix guard + contract tests ship in F4.
 
 ## Alternatives considered
 
 | Alternative | Why not |
 | --- | --- |
-| Public bucket with unguessable keys | Still public; violates the project's privacy requirement |
-| Serve bytes through the API | Doubles bandwidth through Go; signed URLs offload to storage |
-| Store in PostgreSQL | Large binaries in the database complicate backups and retention |
-| Local filesystem in production | Not durable across hosts; no signing |
+| Public bucket with unguessable keys | Still public |
+| Product `/api/customizer/dev-assets` HMAC | Superseded by platform #570 |
+| Serve all bytes through the API | Bandwidth; signed URLs preferred |
 
 ## Consequences
 
-- Positive: a leaked URL expires; storage can be rotated independently; retention is a key-delete.
-- Negative: signed URL generation needs credentials in the API process. Mitigation: scoped IAM keys, never exposed to the frontend.
-- Negative: dev/test need a signing shim. Mitigation: local adapter serves `/dev-assets/{token}` with an HMAC check.
-
-## Compliance
-
-- Feature test: requesting an asset of a design you do not own returns `404`; expired URL returns `403` from storage.
-- Grep check: no `http` logging of URLs containing `X-Amz-Signature` or the local shim token.
-- Unit test: uploaded JPEG with GPS EXIF → stored object has no EXIF segment.
+- Positive: namespace isolation at the adapter; platform local/S3 signing; preview-friendly inline disposition.
+- Negative: local privacy still depends on not statically serving the media root; S3 public policies remain an ops footgun until detectable fail-closed checks land.

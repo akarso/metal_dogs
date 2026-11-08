@@ -16,4 +16,8 @@ Metal Dogs owns product documentation under `docs/` (roadmap, ADRs, architecture
 
 Before merging a newer `upstream` tip: ensure this clone is not shallow (`test ! -f .git/shallow`). If it is, `git fetch --unshallow upstream` first.
 
-**F3 note:** Metal Dogs currently carries a forward-port of [shopanda#568](https://github.com/akarso/shopanda/pull/568) (sync-job observability) ahead of this pin. Absorb on the next upgrade slice after #568 lands on the consumed ref; expect conflicts with in-tree platform edits until then.
+**Forward-ports ahead of this pin** (absorb on the next upgrade slice; expect conflicts with in-tree platform edits until then):
+
+- [shopanda#568](https://github.com/akarso/shopanda/pull/568) — sync-job observability (F3). Merged to `dev` as `e1903b5c`.
+- [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage, `BindMediaStorage`, `PrivateBlobsPrefix` (F4; product HMAC shim removed). Merged to `dev` as `50f812d6` (**stops at** `09642d99`; not sufficient alone).
+- [shopanda#571](https://github.com/akarso/shopanda/pull/571) — **required** #570 CR closes: `./var/media` Load/`install.sh` default, HMAC token v1 + DEPLOYMENT handler-first rollout, private mode/symlink tests. Merged to `dev` as [`a8cbcb18`](https://github.com/akarso/shopanda/commit/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512) (contains `39684035`). Next pin/upgrade absorb must land at **≥ `a8cbcb18`** (or any tip that includes it)—do not absorb #570 without #571.

@@ -102,7 +102,7 @@ timeline
 
 | Milestone | Closes when these slices are done | User-visible result |
 | --- | --- | --- |
-| **M0** | F0 F1 F2 F3 F4 D0 | Nothing visible; deployable fork with inert plugin |
+| **M0** | F0 F1 F2 F3 F4 D0 | Nothing visible; deployable fork with inert plugin (F0–F4 closed; D0 open) |
 | **M1** | G0 G1 G2 | Internal: evaluation report, accepted provider ADR, template format v1 |
 | **M2** | C1 C2 C3 C4 C5 S1 S2 S3 S4 G3 G4 O1 | Hidden `/customize` flow works end to end with previews |
 | **M3** | C6 C7 E1 E2 E3 E4 E5 S5 S6 G5 P0 P1 O2 O4 | Customers can buy; orders carry immutable artwork; fulfilment manual |
@@ -262,13 +262,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
 - **Docs:** runbook diagnosis; CR-04. Guide lands upstream with #568 — link the PR, not a disposable branch blob.
 
-#### F4 · Private object storage — size S
+#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; #570+#571 absorb)
 
-- **Goal:** S3-compatible storage configured (core plugin) with a **private** bucket for Metal Dogs assets; plugin `AssetStore` port with `Put`, `Head`, `SignedGetURL(ttl)`, `Delete`; local filesystem adapter for dev/test.
-- **Scope:** Key scheme `designs/{design_id}/{asset_type}/{asset_id}.{ext}`; no public ACLs; server-side encryption if provider supports.
-- **Tests:** Contract test against local adapter; opt-in integration test against MinIO or real bucket.
-- **Safe delivery:** Nothing writes yet.
-- **Docs:** ADR-0004 → Accepted.
+- **Goal:** Plugin `AssetStore` over platform `media.SignedURLStorage` with namespaced private keys.
+- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570) + [shopanda#571](https://github.com/akarso/shopanda/pull/571) merge `a8cbcb18`). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
+- **Tests:** Prefix reject; localfs ObjectKey→Put→GET contract; Init on fake SignedURLStorage.
+- **Safe delivery:** Nothing writes yet. ADR notes remaining ops limits (S3 bucket policy, log redaction).
+- **Docs:** ADR-0004 Accepted (with honest limits); CR-05. Pin still pre-`a8cbcb18` until upgrade slice.
 
 ### Track G — Generation quality
 

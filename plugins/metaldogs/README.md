@@ -20,17 +20,19 @@ Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also regist
 
 ```text
 plugins/metaldogs/
-├── plugin.go          # Init + Name
-├── sync_obs.go        # obs.ping RegisterManual
-├── migrations.go      # plugin.Migrator + MigrationFS
-├── migrations/        # SQL (namespaced plugin:metaldogs:*)
-├── httpapi/           # enabled + health
-├── observability/     # correlation_id alias helpers
-├── domain/            # domain model (empty until C*)
-├── application/       # use cases (empty until C*)
-├── ports/             # Clock, IDGenerator, MetaStore (+ later C*/G*)
-├── adapters/postgres/ # MetaStore adapter (F2 harness exercise)
-└── testutil/          # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
+├── plugin.go              # Init + Name + AssetStore wiring
+├── assets.go              # wrap Bound/registered SignedURLStorage
+├── sync_obs.go            # obs.ping RegisterManual
+├── migrations.go          # plugin.Migrator + MigrationFS
+├── migrations/            # SQL (namespaced plugin:metaldogs:*)
+├── httpapi/               # enabled + health
+├── observability/         # correlation_id alias helpers
+├── domain/                # domain model (empty until C*)
+├── application/           # use cases (empty until C*)
+├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore
+├── adapters/postgres/     # MetaStore adapter (F2 harness exercise)
+├── adapters/mediastore/   # wrap media.SignedURLStorage
+└── testutil/              # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
 ```
 
 ## Current surface
@@ -44,6 +46,13 @@ plugins/metaldogs/
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon).
 
 Sync job (F3 sample): `integration.sync.metaldogs.obs.ping` — platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) (guide merges with that PR; pin absorb still open).
+
+## Private assets (F4 / ADR-0004)
+
+- Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). **No writers yet.**
+- Keys: `private/blobs/metaldogs/...` via `ports.ObjectKey`; mediastore **rejects** any other key.
+- Delivery: wrap core `media.SignedURLStorage` (inline signed GET; TTL capped ≤15m). No product shim.
+- Local: `SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media` (never FileServer); `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) outside DEV.
 
 ## Test harness (F2)
 

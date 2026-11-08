@@ -72,8 +72,15 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
 # GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)
 # GET /api/v1/admin/customizer/health → depths (jobs.read)
+# F4 assets use platform media (local SignedURL or S3). Recommended local:
+#   SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media   # not under a static web root
+#   SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"  # required outside DEV
+# Never FileServer base_path / base_url — private/blobs keys live there too.
+# First private Save may chmod the media root (and ancestors) to 0700.
 # (not k8s probes — use /healthz and /readyz)
 ```
+
+For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEPLOYMENT.md) ([shopanda#571](https://github.com/akarso/shopanda/pull/571) merge `a8cbcb18`): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform. Do not absorb #570 alone — that tip still defaults `install.sh` to `./public/media`.
 
 ### Why stock `.env.example` alone fails
 
@@ -81,6 +88,7 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 | --- | --- |
 | Empty `SHOPANDA_AUTH_JWT_SECRET` | Always rejected |
 | Example DB password / `sslmode=disable` | Rejected unless `SHOPANDA_DEV_MODE=true` |
+| `media.storage=local` without sign secret | Rejected unless `SHOPANDA_DEV_MODE=true` (set `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET`, ≥32 bytes) |
 
 ## Running tests
 
