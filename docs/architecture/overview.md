@@ -203,8 +203,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts | F2 |
-| Platform sync-job observability (Enqueue `request_id`, `SyncJobContext.Attempts`, `JobResult`, `CountsByType`, `BoundQueue`, related tests) | Forward-port of [shopanda#568](https://github.com/akarso/shopanda/pull/568); pin still pre-merge (`UPSTREAM_PIN.md`) | F3 |
-| `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only | F3 |
+| `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only (platform sync-job observability absorbed at pin `a8cbcb18`) | F3 |
 | `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; nothing writes yet | F4 |
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface.

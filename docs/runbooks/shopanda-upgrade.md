@@ -1,7 +1,7 @@
 # Runbook: upgrading the pinned Shopanda version
 
 - **Introduced by slice:** `F0`
-- **Last exercised:** never (baseline set 2026-11-05)
+- **Last exercised:** 2026-11-08 (pin → `a8cbcb18`; absorb #568/#570/#571 from `upstream/dev`)
 - **Severity when triggered:** medium (planned change with regression risk)
 - **Owner:** backend maintainer
 

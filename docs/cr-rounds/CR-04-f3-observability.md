@@ -1,12 +1,12 @@
 # CR-04: F3 observability baseline
 
-- Closed: 2026-11-06 (vendor facade); pin absorb still open
+- Closed: 2026-11-06 (vendor facade); pin absorb 2026-11-08 (`a8cbcb18`)
 - Slices: `F3`
-- Milestone progress: M0 → 4/6 slices (`F0`–`F3` vendor); platform absorb gated on [shopanda#568](https://github.com/akarso/shopanda/pull/568) + pin bump
+- Milestone progress: M0 → 4/6 slices (`F0`–`F3`)
 
 ## What shipped
 
-**Shopanda (platform, [PR #568](https://github.com/akarso/shopanda/pull/568)):** `request_id` injection on sync Enqueue, `SyncJobContext.Attempts`, `metrics.JobResult` (+ Prometheus, clamped outcomes), `jobs.Reader.CountsByType`, worker logs/`JobResult` after durable Complete, guide `SYNC_JOB_OBSERVABILITY.md` (upstream). Forward-ported into Metal Dogs until the next upstream pin absorbs the merge (listed under overview deviations). Current pin remains `56818946…` — next bump will conflict with in-tree platform edits until absorb.
+**Shopanda (platform, [PR #568](https://github.com/akarso/shopanda/pull/568)):** `request_id` injection on sync Enqueue, `SyncJobContext.Attempts`, `metrics.JobResult` (+ Prometheus, clamped outcomes), `jobs.Reader.CountsByType`, worker logs/`JobResult` after durable Complete, guide `SYNC_JOB_OBSERVABILITY.md` (upstream). Absorbed at pin [`a8cbcb18`](../UPSTREAM_PIN.md).
 
 **Metal Dogs (vendor minimum):**
 - `observability.CorrelationID` / `JobLogFields` (`correlation_id` = platform `request_id`); sync_runtime reinjects payload `request_id` into handler ctx
@@ -36,13 +36,11 @@ Unauthenticated depth counts would expose backlog / failure pressure. Depths and
 
 ## Documentation updated
 
-- [x] ROADMAP F3 vendor DONE / pin absorb blocked; runbook; plugin README; overview deviations
+- [x] ROADMAP F3 DONE; runbook; plugin README; overview deviations (forward-port row removed on absorb)
 - [x] This CR + log link
 
 ## Follow-ups
 
-- Absorb platform changes via Shopanda pin bump when #568 merges to the consumed ref; drop forward-port from deviations; retarget guide links to pin SHA
 - F2 billing gate / require `CI / integration-metaldogs` still open
 - Batch `CountsByType` / `(type, status)` index before many `integration.sync.metaldogs.*` types
 - Full HTTP `X-Request-ID` → middleware → Enqueue → worker → log E2E
-- `F4` private object storage
