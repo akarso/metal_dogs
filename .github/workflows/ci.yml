@@ -5,7 +5,7 @@
 #   - CI / integration (Shopanda DSN packages)
 #   - CI / integration-metaldogs (F2 harness canaries; decoupled from Shopanda reds)
 #   - CI / govuln
-#   - CI / docs-policy (product-doc relative-link check + promote replay fixture)
+#   - CI / docs-policy (MD hardened product-docs links + absorb canary; no promote)
 #   - CI / docs-main (forbids docs/phase-* on main)
 #
 # Metal Dogs is main-only. Require on main: CI / unit, CI / integration,

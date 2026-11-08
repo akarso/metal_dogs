@@ -199,7 +199,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
-| `cmd/api/cache_control_prefixes.go` (+ test) | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
+| `cmd/api/cache_control_prefixes.go` (+ test), `cmd/api/wire_routes.go` | Shared `cacheControlNoCachePrefixes()` includes `/api/customizer`; `wire_routes` calls the helper instead of an inline list | F1-fix |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts; docs-policy uses MD hardened checker (no promote step) | F2 / CR-06 |
