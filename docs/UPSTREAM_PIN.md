@@ -19,4 +19,5 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 **Forward-ports ahead of this pin** (absorb on the next upgrade slice; expect conflicts with in-tree platform edits until then):
 
 - [shopanda#568](https://github.com/akarso/shopanda/pull/568) — sync-job observability (F3)
-- [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage, `BindMediaStorage`, `PrivateBlobsPrefix` (F4; product HMAC shim removed)
+- [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage, `BindMediaStorage`, `PrivateBlobsPrefix` (F4; product HMAC shim removed). Merged to `dev` as `50f812d6` (**stops at** `09642d99`).
+- [shopanda#571](https://github.com/akarso/shopanda/pull/571) — **required** #570 CR closes: `./var/media` Load/`install.sh` default, HMAC token v1 + DEPLOYMENT handler-first rollout, private mode/symlink tests (`3d5a4f60` lineage). Do **not** treat #570 alone as “media harden done”; next pin/upgrade absorb must include the #571 merge SHA (or any `dev` tip that contains `39684035` / equivalent).

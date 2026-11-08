@@ -37,4 +37,4 @@
 ## Follow-ups
 
 - C2+: writers, EXIF, ownership 404, log redaction lint, S3 public-policy fail-closed if detectable
-- Pin absorb when #570 merges upstream
+- Pin absorb: include [shopanda#571](https://github.com/akarso/shopanda/pull/571) (not #570 merge alone). #570 on `dev` lacks `install.sh`→`./var/media`, token v1, and the DEPLOYMENT rollout note until #571 lands.

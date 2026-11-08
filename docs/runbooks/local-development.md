@@ -77,10 +77,10 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 #   SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"  # required outside DEV
 # Never FileServer base_path / base_url — private/blobs keys live there too.
 # First private Save may chmod the media root (and ancestors) to 0700.
-# Local-signed HMAC v1: upgrade all local-signed handlers before mixed-fleet
-# signers mint v1 tokens (old handlers reject v1 → 403 after ClaimDelivery).
 # (not k8s probes — use /healthz and /readyz)
 ```
+
+For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [`docs/guides/DEPLOYMENT.md`](https://github.com/akarso/shopanda/blob/dev/docs/guides/DEPLOYMENT.md) (lands with [shopanda#571](https://github.com/akarso/shopanda/pull/571)): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform. Prefer a tip that includes that follow-up — #570’s merge alone still defaults `install.sh` to `./public/media`.
 
 ### Why stock `.env.example` alone fails
 
