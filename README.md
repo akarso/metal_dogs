@@ -159,6 +159,8 @@ Extension mechanisms (events, pricing/checkout/composition pipelines, permission
 
 See [Developer Guide](https://github.com/akarso/shopanda/blob/5681894658c44ce344b2df930effecda7ffd43c4/docs/guides/DEVELOPER.md) for how to enable core plugins and add an external plugin. Reference implementation: [`plugins/example/`](plugins/example/).
 
+**Product sites** (own git remote, optional CI): [Building a product site](docs/guides/PRODUCT_SITES.md) · `bash scripts/product-init.sh --slug myproduct` · portable checks via `make check` / [`scripts/ci/`](scripts/ci/) · sample pipelines in [`ci-samples/`](ci-samples/) (opt-in; local/FTP needs none).
+
 **Not yet supported:** `.so` dynamic loading, plugin marketplace, plugin hot reload. Theme templates reload in `SHOPANDA_DEV_MODE`.
 
 Phases 1–12 and 14 are shipped (Phase 12 still has VAT / configurable / assignment-CSV / linked-parent storefront caveats). Phase 13 (plugin-owned schema + on-demand jobs) is **done** on the upstream pin. Metal Dogs product notes live in [`docs/`](docs/README.md); Shopanda phase working history is on upstream `dev`, not this repo.

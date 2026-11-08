@@ -33,7 +33,6 @@ func TestPrometheusRecorder_ExposesExpectedMetrics(t *testing.T) {
 	rec.JobFailure("webhook.deliver")
 	rec.JobResult("webhook.deliver", metrics.OutcomeSuccess, 25*time.Millisecond)
 	rec.JobResult("webhook.deliver", metrics.OutcomeFailed, 5*time.Millisecond)
-	rec.JobResult("webhook.deliver", "weird", time.Millisecond) // clamped to failed
 	rec.WebhookDelivery(metrics.OutcomeSuccess)
 	rec.RateLimitBackendError("default", "error")
 	rec.FPCRequest("/products/{slug}", metrics.FPCOutcomeHit)
@@ -58,7 +57,7 @@ func TestPrometheusRecorder_ExposesExpectedMetrics(t *testing.T) {
 		`shopanda_checkout_result_total{outcome="failed"} 1`,
 		`shopanda_job_failures_total{job_type="webhook.deliver"} 1`,
 		`shopanda_job_results_total{job_type="webhook.deliver",outcome="success"} 1`,
-		`shopanda_job_results_total{job_type="webhook.deliver",outcome="failed"} 2`,
+		`shopanda_job_results_total{job_type="webhook.deliver",outcome="failed"} 1`,
 		"shopanda_job_duration_seconds",
 		`shopanda_webhook_deliveries_total{outcome="success"} 1`,
 		`shopanda_ratelimit_backend_errors_total{limiter="default",reason="error"} 1`,
@@ -78,6 +77,24 @@ func TestPrometheusRecorder_ExposesExpectedMetrics(t *testing.T) {
 // TestPrometheusRecorder_BoundedLabelCardinality documents the bounded-label
 // contract: the same finite set of label values, called repeatedly, must
 // only ever produce one time series per combination — never one per call.
+func TestPrometheusRecorder_JobResult_ClampsOutcome(t *testing.T) {
+	rec, reg := metrics.NewPrometheusRecorder()
+	rec.JobResult("webhook.deliver", "", time.Millisecond)
+	rec.JobResult("webhook.deliver", "weird", time.Millisecond)
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	metrics.Handler(reg).ServeHTTP(w, req)
+	body := w.Body.String()
+
+	if !strings.Contains(body, `shopanda_job_results_total{job_type="webhook.deliver",outcome="failed"} 2`) {
+		t.Fatalf("expected clamped failed series, got:\n%s", body)
+	}
+	if strings.Contains(body, `outcome="weird"`) || strings.Contains(body, `outcome=""`) {
+		t.Fatalf("unexpected outcome label minted:\n%s", body)
+	}
+}
+
 func TestPrometheusRecorder_BoundedLabelCardinality(t *testing.T) {
 	rec, reg := metrics.NewPrometheusRecorder()
 	for i := 0; i < 50; i++ {
