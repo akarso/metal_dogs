@@ -8,7 +8,8 @@ Status: **scaffold ready; paid exit gate open**. No customer photos in this repo
 | --- | --- |
 | Adapter | `plugins/metaldogs/generation/openai` |
 | API | OpenAI Images `POST /v1/images/edits` (`image[]`, no `response_format`, `background=transparent`) |
-| Model (default) | `gpt-image-2.5-sunburst` (`gpt-image-1` invalid) |
+| Model (default) | `gpt-image-2.5-sunburst` (`gpt-image-1` invalid; `gpt-image-1-mini` deprecated but allowed) |
+| Size | Unset → `1024x1024`; explicit WxH must be ÷16, aspect 1:3–3:1, edges ≥256 ≤2048 |
 | Auth | `METALDOGS_OPENAI_API_KEY` (never logged) |
 | Cost fields | `usage_*_tokens` in `report.json`; `cost_minor_units` left 0 until pricing table pinned |
 | Contract tests | httptest fixtures (no network; assert MIME + no `response_format`) |

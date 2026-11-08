@@ -47,12 +47,12 @@ func LoadTemplate(path string) (TemplateDef, error) {
 	if def.PromptVersion == "" {
 		def.PromptVersion = "g0-unversioned"
 	}
-	if def.Model == "" {
-		def.Model = "unset"
-	}
-	def.Parameters.Normalize()
-	if err := def.Parameters.Validate(); err != nil {
-		return TemplateDef{}, fmt.Errorf("eval: template parameters: %w", err)
+	// Leave Model empty when omitted — providers treat empty as "use config default".
+	if def.Parameters.Width > 0 || def.Parameters.Height > 0 {
+		def.Parameters.Normalize()
+		if err := def.Parameters.Validate(); err != nil {
+			return TemplateDef{}, fmt.Errorf("eval: template parameters: %w", err)
+		}
 	}
 	return def, nil
 }

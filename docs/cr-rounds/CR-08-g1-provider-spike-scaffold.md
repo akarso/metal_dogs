@@ -7,7 +7,7 @@
 ## What shipped
 
 - `generation/openai`: Images `edits` adapter aligned to live GPT image API (`image[]`, `image/*` MIME, no `response_format`, reject shut-down `gpt-image-1`, default `gpt-image-2.5-sunburst`)
-- Template `model` + `parameters` WxH drive the call; `background=transparent` + `output_format=png`; `HasAlpha` from decode; `usage_*_tokens` in result/`report.json`
+- Template `model` (empty = config default) + WxH drive the call; unset size → `1024x1024` (not fake `64`); fail-closed size rules (÷16 / aspect / min edge); `background=transparent` + `output_format=png`; `HasAlpha`; `usage_*_tokens`
 - Contract tests (httptest: MIME, no `response_format`, 400/empty/`image[]`) + opt-in smoke (`METALDOGS_SMOKE=1`, 256² fixture)
 - `metaldogs:eval -provider openai` (+ `-openai-api-key` / `-openai-model` / `-openai-base` / `METALDOGS_OPENAI_API_KEY`)
 - Five spike templates + scorecard example + OCR name heuristic stub

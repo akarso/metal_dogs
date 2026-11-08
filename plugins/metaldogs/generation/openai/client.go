@@ -60,6 +60,9 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.Size == "" {
 		cfg.Size = DefaultSize
 	}
+	if err := validateAPISizeString(cfg.Size); err != nil {
+		return nil, err
+	}
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 120 * time.Second}
@@ -86,20 +89,17 @@ func (p *Provider) Generate(ctx context.Context, req generation.GenerationReques
 		return generation.GenerationResult{}, &generation.ProviderError{Class: generation.ErrorRejectedInput, Message: "prompt required"}
 	}
 
-	params := req.Parameters
-	params.Normalize()
-	if err := params.Validate(); err != nil {
-		return generation.GenerationResult{}, err
-	}
-
 	model := p.cfg.Model
-	if strings.TrimSpace(req.Model) != "" && req.Model != "unset" {
-		model = req.Model
+	if strings.TrimSpace(req.Model) != "" {
+		model = strings.TrimSpace(req.Model)
 	}
 	if err := rejectShutdownModel(model); err != nil {
 		return generation.GenerationResult{}, err
 	}
-	size := sizeFromParams(params, p.cfg.Size)
+	size, err := resolveAPISize(req.Parameters, p.cfg.Size)
+	if err != nil {
+		return generation.GenerationResult{}, err
+	}
 
 	prompt := req.Prompt
 	if req.DogName != "" {
@@ -108,7 +108,7 @@ func (p *Provider) Generate(ctx context.Context, req generation.GenerationReques
 
 	body, contentType, err := buildEditMultipart(req.PhotoBytes, req.PhotoName, prompt, model, size)
 	if err != nil {
-		return generation.GenerationResult{}, &generation.ProviderError{Class: generation.ErrorPermanent, Message: err.Error()}
+		return generation.GenerationResult{}, err
 	}
 
 	url := strings.TrimRight(p.cfg.BaseURL, "/") + "/images/edits"
@@ -164,8 +164,9 @@ func (p *Provider) Generate(ctx context.Context, req generation.GenerationReques
 }
 
 func rejectShutdownModel(model string) error {
+	// gpt-image-1 shut down 2026-10-23. gpt-image-1-mini remains deprecated-but-available.
 	switch model {
-	case "gpt-image-1", "gpt-image-1-mini":
+	case "gpt-image-1", "dall-e-2", "dall-e-3":
 		return &generation.ProviderError{
 			Class:   generation.ErrorRejectedInput,
 			Message: fmt.Sprintf("model %q shut down; use %s (or gpt-image-2.5-flare)", model, DefaultModel),
@@ -175,14 +176,81 @@ func rejectShutdownModel(model string) error {
 	}
 }
 
-func sizeFromParams(params generation.Parameters, fallback string) string {
-	if params.Width > 0 && params.Height > 0 {
-		return fmt.Sprintf("%dx%d", params.Width, params.Height)
+// resolveAPISize maps template WxH → API size without applying fake DefaultDimension (64).
+// Unset canvas uses config/default 1024x1024 so unpaid/paid calls never send 64x64.
+func resolveAPISize(params generation.Parameters, fallback string) (string, error) {
+	w, h := params.Width, params.Height
+	switch {
+	case w == 0 && h == 0:
+		if fallback == "" {
+			fallback = DefaultSize
+		}
+		if err := validateAPISizeString(fallback); err != nil {
+			return "", err
+		}
+		return fallback, nil
+	case w <= 0 || h <= 0:
+		return "", &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("openai size: both width and height required (got %dx%d)", w, h),
+		}
+	default:
+		if err := validateAPIDims(w, h); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%dx%d", w, h), nil
 	}
-	if fallback != "" {
-		return fallback
+}
+
+const (
+	// OpenAI GPT image 2.5 arbitrary sizes: both edges ÷16, aspect 1:3..3:1.
+	// Soft floor avoids tiny paid 400s; hard cap matches generation.MaxDimension.
+	minAPIEdge = 256
+)
+
+func validateAPISizeString(size string) error {
+	size = strings.TrimSpace(size)
+	if size == "auto" {
+		return nil
 	}
-	return DefaultSize
+	var w, h int
+	n, err := fmt.Sscanf(size, "%dx%d", &w, &h)
+	if err != nil || n != 2 || fmt.Sprintf("%dx%d", w, h) != size {
+		return &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("openai size %q invalid (want WIDTHxHEIGHT or auto)", size),
+		}
+	}
+	return validateAPIDims(w, h)
+}
+
+func validateAPIDims(w, h int) error {
+	if w < minAPIEdge || h < minAPIEdge {
+		return &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("openai size %dx%d below minimum %d", w, h, minAPIEdge),
+		}
+	}
+	if w > generation.MaxDimension || h > generation.MaxDimension {
+		return &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("openai size %dx%d exceeds max %d", w, h, generation.MaxDimension),
+		}
+	}
+	if w%16 != 0 || h%16 != 0 {
+		return &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("openai size %dx%d: edges must be divisible by 16", w, h),
+		}
+	}
+	// Aspect ratio must be between 1:3 and 3:1 inclusive.
+	if w*3 < h || h*3 < w {
+		return &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("openai size %dx%d: aspect must be between 1:3 and 3:1", w, h),
+		}
+	}
+	return nil
 }
 
 func buildEditMultipart(photo []byte, photoName, prompt, model, size string) (*bytes.Buffer, string, error) {
@@ -205,7 +273,10 @@ func buildEditMultipart(photo []byte, photoName, prompt, model, size string) (*b
 		return nil, "", err
 	}
 
-	filename, mime := imagePartMeta(photo, photoName)
+	filename, mime, err := imagePartMeta(photo, photoName)
+	if err != nil {
+		return nil, "", err
+	}
 	h := make(textproto.MIMEHeader)
 	// GPT image edits expect repeated image[] parts (docs curl examples).
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image[]"; filename="%s"`, filename))
@@ -223,9 +294,15 @@ func buildEditMultipart(photo []byte, photoName, prompt, model, size string) (*b
 	return &buf, w.FormDataContentType(), nil
 }
 
-func imagePartMeta(photo []byte, photoName string) (filename, mime string) {
+func imagePartMeta(photo []byte, photoName string) (filename, mime string, err error) {
 	filename = sanitizeFilename(photoName)
 	mime = sniffImageMIME(photo, filename)
+	if mime == "" {
+		return "", "", &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: "openai: photo must be PNG, JPEG, or WebP",
+		}
+	}
 	if filename == "" {
 		switch mime {
 		case "image/jpeg":
@@ -236,7 +313,7 @@ func imagePartMeta(photo []byte, photoName string) (filename, mime string) {
 			filename = "photo.png"
 		}
 	}
-	return filename, mime
+	return filename, mime, nil
 }
 
 func sanitizeFilename(name string) string {
@@ -272,7 +349,7 @@ func sniffImageMIME(photo []byte, filename string) string {
 	case ".png":
 		return "image/png"
 	}
-	return "image/png"
+	return ""
 }
 
 type imagesResponse struct {
@@ -327,6 +404,15 @@ func parseImagesResponse(raw []byte) ([]byte, parsedUsage, error) {
 }
 
 func pngHasAlpha(pngBytes []byte) bool {
+	// Fast path: IHDR colour type 4 (gray+alpha) or 6 (RGBA).
+	if len(pngBytes) >= 26 && bytes.Equal(pngBytes[12:16], []byte("IHDR")) {
+		switch pngBytes[25] {
+		case 4, 6:
+			return true
+		case 0, 2:
+			return false
+		}
+	}
 	img, err := png.Decode(bytes.NewReader(pngBytes))
 	if err != nil {
 		return false
