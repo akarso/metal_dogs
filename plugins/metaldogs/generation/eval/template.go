@@ -48,11 +48,16 @@ func LoadTemplate(path string) (TemplateDef, error) {
 		def.PromptVersion = "g0-unversioned"
 	}
 	// Leave Model empty when omitted — providers treat empty as "use config default".
-	if def.Parameters.Width > 0 || def.Parameters.Height > 0 {
-		def.Parameters.Normalize()
+	w, h := def.Parameters.Width, def.Parameters.Height
+	switch {
+	case w == 0 && h == 0:
+		// Unset canvas: providers apply their own default (OpenAI → 1024x1024).
+	case w > 0 && h > 0:
 		if err := def.Parameters.Validate(); err != nil {
 			return TemplateDef{}, fmt.Errorf("eval: template parameters: %w", err)
 		}
+	default:
+		return TemplateDef{}, fmt.Errorf("eval: template parameters: width and height must both be set or both omitted (got %dx%d)", w, h)
 	}
 	return def, nil
 }

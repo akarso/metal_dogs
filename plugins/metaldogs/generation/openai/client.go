@@ -165,11 +165,17 @@ func (p *Provider) Generate(ctx context.Context, req generation.GenerationReques
 
 func rejectShutdownModel(model string) error {
 	// gpt-image-1 shut down 2026-10-23. gpt-image-1-mini remains deprecated-but-available.
+	// dall-e-2 / dall-e-3 are retired and unsupported by this GPT-image edits adapter.
 	switch model {
-	case "gpt-image-1", "dall-e-2", "dall-e-3":
+	case "gpt-image-1":
 		return &generation.ProviderError{
 			Class:   generation.ErrorRejectedInput,
 			Message: fmt.Sprintf("model %q shut down; use %s (or gpt-image-2.5-flare)", model, DefaultModel),
+		}
+	case "dall-e-2", "dall-e-3":
+		return &generation.ProviderError{
+			Class:   generation.ErrorRejectedInput,
+			Message: fmt.Sprintf("model %q is retired and unsupported by this adapter; use %s", model, DefaultModel),
 		}
 	default:
 		return nil
@@ -203,8 +209,9 @@ func resolveAPISize(params generation.Parameters, fallback string) (string, erro
 }
 
 const (
-	// OpenAI GPT image 2.5 arbitrary sizes: both edges ÷16, aspect 1:3..3:1.
-	// Soft floor avoids tiny paid 400s; hard cap matches generation.MaxDimension.
+	// minAPIEdge is a local soft floor (not an OpenAI hard limit) to avoid
+	// tiny paid 400s. GPT image 2.5 also requires edges ÷16 and aspect 1:3..3:1;
+	// hard cap matches generation.MaxDimension.
 	minAPIEdge = 256
 )
 
@@ -295,14 +302,14 @@ func buildEditMultipart(photo []byte, photoName, prompt, model, size string) (*b
 }
 
 func imagePartMeta(photo []byte, photoName string) (filename, mime string, err error) {
-	filename = sanitizeFilename(photoName)
-	mime = sniffImageMIME(photo, filename)
+	mime = sniffImageMIME(photo)
 	if mime == "" {
 		return "", "", &generation.ProviderError{
 			Class:   generation.ErrorRejectedInput,
-			Message: "openai: photo must be PNG, JPEG, or WebP",
+			Message: "openai: photo must be PNG, JPEG, or WebP (magic bytes)",
 		}
 	}
+	filename = sanitizeFilename(photoName)
 	if filename == "" {
 		switch mime {
 		case "image/jpeg":
@@ -331,7 +338,9 @@ func sanitizeFilename(name string) string {
 	return base
 }
 
-func sniffImageMIME(photo []byte, filename string) string {
+// sniffImageMIME accepts only magic bytes. Extension is never used for accept/reject
+// (mislabeled garbage must not become image/png).
+func sniffImageMIME(photo []byte) string {
 	if len(photo) >= 8 && bytes.Equal(photo[:8], []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}) {
 		return "image/png"
 	}
@@ -340,14 +349,6 @@ func sniffImageMIME(photo []byte, filename string) string {
 	}
 	if len(photo) >= 12 && string(photo[0:4]) == "RIFF" && string(photo[8:12]) == "WEBP" {
 		return "image/webp"
-	}
-	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".webp":
-		return "image/webp"
-	case ".png":
-		return "image/png"
 	}
 	return ""
 }
@@ -403,16 +404,10 @@ func parseImagesResponse(raw []byte) ([]byte, parsedUsage, error) {
 	return decoded, u, nil
 }
 
+// pngHasAlpha reports whether any decoded pixel has useful transparency
+// (a < 0xffff), including RGB+tRNS. Colour type alone is not enough: opaque
+// RGBA must be false; type 0/2 with tRNS must be true.
 func pngHasAlpha(pngBytes []byte) bool {
-	// Fast path: IHDR colour type 4 (gray+alpha) or 6 (RGBA).
-	if len(pngBytes) >= 26 && bytes.Equal(pngBytes[12:16], []byte("IHDR")) {
-		switch pngBytes[25] {
-		case 4, 6:
-			return true
-		case 0, 2:
-			return false
-		}
-	}
 	img, err := png.Decode(bytes.NewReader(pngBytes))
 	if err != nil {
 		return false

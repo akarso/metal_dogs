@@ -260,13 +260,15 @@ func TestProvider_Generate_RejectsGarbagePhoto(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = p.Generate(context.Background(), generation.GenerationRequest{
-		PhotoBytes: []byte("not-an-image"),
-		PhotoName:  "dog.bin",
-		Prompt:     "p",
-	})
-	if generation.ClassifyError(err) != generation.ErrorRejectedInput {
-		t.Fatalf("err = %v", err)
+	for _, name := range []string{"dog.bin", "dog.png", "dog.jpg"} {
+		_, err = p.Generate(context.Background(), generation.GenerationRequest{
+			PhotoBytes: []byte("not-an-image"),
+			PhotoName:  name,
+			Prompt:     "p",
+		})
+		if generation.ClassifyError(err) != generation.ErrorRejectedInput {
+			t.Fatalf("name=%s err=%v", name, err)
+		}
 	}
 }
 

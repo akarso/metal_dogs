@@ -312,3 +312,15 @@ func TestAssembleRequestFields_FromTemplate(t *testing.T) {
 		t.Fatalf("defaults = %+v", def)
 	}
 }
+
+func TestLoadTemplate_RejectsPartialCanvas(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","parameters":{"width":1024}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eval.LoadTemplate(path); err == nil {
+		t.Fatal("expected partial width/height error")
+	}
+}
