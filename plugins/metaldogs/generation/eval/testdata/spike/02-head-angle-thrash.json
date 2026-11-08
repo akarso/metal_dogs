@@ -1,0 +1,8 @@
+{
+  "id": "spike-02-head-angle-thrash",
+  "prompt": "Monochrome thrash-metal dog head at a three-quarter angle, sharp linework, aggressive contrast, black tee graphic. Preserve ear shape and eye markings. Exact dog name lettering integrated in the style.",
+  "prompt_version": "g1-spike-v1",
+  "dog_name": "Żółć",
+  "model": "gpt-image-1",
+  "parameters": { "width": 1024, "height": 1024, "seed": 2 }
+}

@@ -84,3 +84,14 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
 ```
 
 Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; validation `skipped` until G3). `--out` must have no non-dot entries. Default provider is `fake` (deterministic). Canvas ≤2048²; photo ≤20MiB. Non-zero exit if any sample fails.
+
+### OpenAI spike (G1)
+
+```bash
+export METALDOGS_OPENAI_API_KEY=sk-...
+./app metaldogs:eval -template plugins/metaldogs/generation/eval/testdata/spike/01-head-front-blackmetal.json \
+  -photos /path/to/photos -out /tmp/md-spike-01 -provider openai
+# Paid smoke (not CI): METALDOGS_SMOKE=1 go test ./plugins/metaldogs/generation/openai -run Smoke -count=1
+```
+
+See [`docs/architecture/generation-quality.md`](../../docs/architecture/generation-quality.md).

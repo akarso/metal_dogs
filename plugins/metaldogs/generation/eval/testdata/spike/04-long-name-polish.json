@@ -1,0 +1,8 @@
+{
+  "id": "spike-04-long-name-polish",
+  "prompt": "Monochrome metal concert-poster dog portrait. Typography for the dog name must be legible and correctly spelled with Polish diacritics. High contrast black and white.",
+  "prompt_version": "g1-spike-v1",
+  "dog_name": "Śnieżynka",
+  "model": "gpt-image-1",
+  "parameters": { "width": 1024, "height": 1024, "seed": 4 }
+}

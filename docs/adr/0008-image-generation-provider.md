@@ -1,7 +1,7 @@
 # ADR-0008: Single image-generation provider behind a port
 
-- **Status:** Proposed — provider, model, and parameters to be decided at close of `G1`
-- **Date:** 2026-10-15
+- **Status:** Proposed — candidate chosen (OpenAI); **exit gate open** until paid spike scorecards pass
+- **Date:** 2026-10-15 (candidate filled 2026-11-08 in CR-08)
 - **Related slices:** `G0`, `G1`, `G3`, `C4`, `O1`, `O3`
 - **Related ADRs:** [ADR-0003](0003-async-generation-pg-job-queue-polling.md)
 
@@ -19,21 +19,21 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 5. If the provider cannot deliver reliable transparency, a background-removal stage is added to the pipeline (recorded here when decided).
 6. If typography is not reliable for Polish names across lengths, templates may declare `text_rendering: separate_layer`, and a deterministic text layer is composited server-side for those templates (recorded here when decided).
 
-## Decision (provider, to be filled at G1)
+## Decision (provider — candidate from CR-08; confirm at exit gate)
 
 | Item | Value |
 | --- | --- |
-| Provider / API | _pending_ |
-| Model and version | _pending_ |
-| Parameters (size, steps, guidance, seed policy) | _pending_ |
-| Alpha channel supported | _pending_ |
-| Cost per call; cost per accepted artwork incl. failures | _pending_ |
-| p50 / p95 latency | _pending_ |
-| Data processing and retention terms (photos) | _pending_ |
-| Commercial use of outputs permitted | _pending_ |
-| Rate limits | _pending_ |
-| Quality score per spike template (≥ 4 of 5 must pass) | _pending_ |
-| Name typography correctness (Polish diacritics, 3–12 chars) | _pending_ |
+| Provider / API | OpenAI Images `POST /v1/images/edits` (`plugins/metaldogs/generation/openai`) |
+| Model and version | `gpt-image-1` (override via `-openai-model`) |
+| Parameters (size, steps, guidance, seed policy) | API `size` default `1024x1024`; seed recorded in template params for reproducibility notes (API may ignore) |
+| Alpha channel supported | _pending spike_ (adapter sets `HasAlpha=false` until measured) |
+| Cost per call; cost per accepted artwork incl. failures | _pending spike_ |
+| p50 / p95 latency | _pending spike_ |
+| Data processing and retention terms (photos) | _pending_ — confirm against current OpenAI API data terms before Accept |
+| Commercial use of outputs permitted | _pending_ — confirm before Accept |
+| Rate limits | Mapped to `rate_limited` on HTTP 429 |
+| Quality score per spike template (≥ 4 of 5 must pass) | _pending spike_ |
+| Name typography correctness (Polish diacritics, 3–12 chars) | _pending spike_ (templates 02/04/05) |
 
 ## Evaluation criteria for G1
 
@@ -44,9 +44,9 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 - Usable alpha or clean background for removal — ≥ 90 %.
 - Cost per accepted artwork (including failed attempts) under the per-order budget set by the operator.
 
-## Harness (G0)
+## Harness (G0 / G1)
 
-Offline CLI `metaldogs:eval` writes PNGs + `report.json` (latency, cost slot, validation placeholder `skipped` until G3). Default provider `fake` is deterministic. Real-provider spike still G1; this ADR stays Proposed until that close.
+Offline CLI `metaldogs:eval` writes PNGs + `report.json` (latency, cost slot, validation placeholder `skipped` until G3). Default provider `fake` is deterministic. `-provider openai` uses the candidate adapter (key via env). Spike runbook: [`../architecture/generation-quality.md`](../architecture/generation-quality.md).
 
 ## Alternatives considered
 

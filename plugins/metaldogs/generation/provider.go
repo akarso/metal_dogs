@@ -103,13 +103,15 @@ type ImageProvider interface {
 	Generate(ctx context.Context, req GenerationRequest) (GenerationResult, error)
 }
 
-// Lookup returns a known provider by name. Unknown names return an error.
+// Lookup returns the fake provider (default). Real providers are constructed
+// by their packages (e.g. generation/openai) and wired by eval/CLI to avoid
+// import cycles.
 func Lookup(name string) (ImageProvider, error) {
 	switch name {
 	case "", "fake":
 		return Fake(), nil
 	default:
-		return nil, fmt.Errorf("generation: unknown provider %q (G0 supports fake only)", name)
+		return nil, fmt.Errorf("generation: unknown provider %q (use eval wiring for openai)", name)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/ocr"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/openai"
 )
 
 // Options configures an offline evaluation run.
@@ -18,6 +20,9 @@ type Options struct {
 	PhotosDir    string
 	OutDir       string
 	ProviderName string
+	OpenAIAPIKey string
+	OpenAIModel  string
+	OpenAIBase   string
 	Now          func() time.Time // optional; defaults to time.Now.UTC
 }
 
@@ -44,7 +49,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	provider, err := generation.Lookup(opts.ProviderName)
+	provider, err := resolveProvider(opts)
 	if err != nil {
 		return Report{}, err
 	}
@@ -83,6 +88,21 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	return report, nil
 }
 
+func resolveProvider(opts Options) (generation.ImageProvider, error) {
+	switch opts.ProviderName {
+	case "", "fake":
+		return generation.Fake(), nil
+	case openai.Name:
+		return openai.New(openai.Config{
+			APIKey:  opts.OpenAIAPIKey,
+			BaseURL: opts.OpenAIBase,
+			Model:   opts.OpenAIModel,
+		})
+	default:
+		return nil, fmt.Errorf("eval: unknown provider %q (want fake|openai)", opts.ProviderName)
+	}
+}
+
 func ensureEmptyOutDir(outDir string) error {
 	if err := os.MkdirAll(outDir, 0o750); err != nil {
 		return fmt.Errorf("eval: mkdir out: %w", err)
@@ -104,6 +124,7 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	base := filepath.Base(photoPath)
 	sample := SampleResult{
 		PhotoName: base,
+		NameCheck: ocr.NameHeuristic(def.DogName),
 		Validation: ValidationResult{
 			Status:  "skipped",
 			Message: "G3 output validation not wired yet",

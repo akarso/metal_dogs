@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/ocr"
 )
 
 // ValidationResult is a placeholder slot for G3 checks (skipped in G0).
@@ -28,6 +29,7 @@ type SampleResult struct {
 	HasAlpha       bool             `json:"has_alpha"`
 	Error          string           `json:"error,omitempty"`
 	ErrorClass     string           `json:"error_class,omitempty"`
+	NameCheck      ocr.Result       `json:"name_check"`
 	Validation     ValidationResult `json:"validation"`
 }
 
