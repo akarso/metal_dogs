@@ -211,7 +211,8 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go`, `config_test.go` MetalDogs cases | Product registration / migrate / config coverage | F1+ |
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Depends on residual `BoundQueue` + sync reinjection above | F3 |
 | `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; nothing writes yet | F4 |
+| `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
 
 **Pin absorb honesty:** #568 / #570 / #571 platform *merges* are in tree at `a8cbcb18`, but F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
 
-Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface.
+Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface. G0 adds offline `metaldogs:eval` (fake provider).

@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
+	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -74,6 +76,20 @@ func testApp(t *testing.T, enabled bool) *plugin.App {
 	return app
 }
 
+// initMetalDogs runs Init via Registry.InitAll so app.cliRegistry is configured
+// (RegisterCommand panics on a bare App used in older unit tests).
+func initMetalDogs(t *testing.T, app *plugin.App) *metaldogs.Plugin {
+	t.Helper()
+	reg := plugin.NewRegistry(app.Logger)
+	p := metaldogs.New()
+	reg.Register(p)
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v, want 1 initialized", summary)
+	}
+	return p
+}
+
 func TestPlugin_Name(t *testing.T) {
 	t.Parallel()
 	if got := metaldogs.New().Name(); got != metaldogs.PluginName {
@@ -116,13 +132,17 @@ func TestPlugin_Init_RequiresMediaStorage(t *testing.T) {
 
 func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	t.Parallel()
-	app := testApp(t, true)
+	// InitAll wires app.cliRegistry before Init (RegisterCommand panics otherwise).
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
 	p := metaldogs.New()
+	reg.Register(p)
+	app := testApp(t, true)
 	if p.AssetStore() != nil {
 		t.Fatal("AssetStore before Init must be nil")
 	}
-	if err := p.Init(app); err != nil {
-		t.Fatalf("Init: %v", err)
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v, want 1 initialized", summary)
 	}
 	if p.AssetStore() == nil {
 		t.Fatal("AssetStore after Init must be set")
@@ -152,13 +172,26 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 		t.Fatalf("AdminRoutes = %+v, want admin customizer health", admins)
 	}
 	foundPing := false
-	for _, reg := range app.SyncJobs() {
-		if reg.JobType == "integration.sync.metaldogs.obs.ping" {
+	for _, sj := range app.SyncJobs() {
+		if sj.JobType == "integration.sync.metaldogs.obs.ping" {
 			foundPing = true
 		}
 	}
 	if !foundPing {
 		t.Fatalf("SyncJobs missing obs.ping: %+v", app.SyncJobs())
+	}
+	cmds := reg.CLIRegistry().List()
+	foundEval := false
+	for _, c := range cmds {
+		if c.Name == metaldogs.CommandEval {
+			foundEval = true
+			if c.RequiresDB {
+				t.Fatal("metaldogs:eval must not require DB")
+			}
+		}
+	}
+	if !foundEval {
+		t.Fatalf("CLIRegistry missing %s: %+v", metaldogs.CommandEval, cmds)
 	}
 	var enabled plugin.PublicRoute
 	for _, r := range routes {
@@ -180,5 +213,46 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	}
 	if body["status"] != "ok" || body["plugin"] != "metaldogs" {
 		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestCLI_Eval_FakeProvider(t *testing.T) {
+	t.Parallel()
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
+	reg.Register(metaldogs.New())
+	app := testApp(t, true)
+	if summary := reg.InitAll(app); summary.Failed > 0 {
+		t.Fatalf("InitAll: %+v", summary)
+	}
+	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandEval)
+	if !ok {
+		t.Fatal("metaldogs:eval not registered")
+	}
+
+	root := t.TempDir()
+	tpl := filepath.Join(root, "t.json")
+	photos := filepath.Join(root, "photos")
+	out := filepath.Join(root, "out")
+	if err := os.MkdirAll(photos, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tpl, []byte(`{"id":"cli","prompt":"p","prompt_version":"v1","parameters":{"width":4,"height":4,"seed":1}}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photos, "a.jpg"), []byte{0xff, 0xd8, 0xff, 0xd9}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	err := cmd.Run(cli.Context{Ctx: context.Background(), Logger: app.Logger, Config: app.Config}, []string{
+		"-template", tpl,
+		"-photos", photos,
+		"-out", out,
+		"-provider", "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "report.json")); err != nil {
+		t.Fatal(err)
 	}
 }

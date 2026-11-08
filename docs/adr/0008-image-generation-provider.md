@@ -44,6 +44,10 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 - Usable alpha or clean background for removal — ≥ 90 %.
 - Cost per accepted artwork (including failed attempts) under the per-order budget set by the operator.
 
+## Harness (G0)
+
+Offline CLI `metaldogs:eval` writes PNGs + `report.json` (latency, cost slot, validation placeholder `skipped` until G3). Default provider `fake` is deterministic. Real-provider spike still G1; this ADR stays Proposed until that close.
+
 ## Alternatives considered
 
 | Alternative | Why not |

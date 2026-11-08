@@ -21,10 +21,13 @@ Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also regist
 ```text
 plugins/metaldogs/
 ├── plugin.go              # Init + Name + AssetStore wiring
+├── cli.go                 # metaldogs:eval (G0)
 ├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
 ├── migrations.go          # plugin.Migrator + MigrationFS
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
+├── generation/            # ImageProvider port + fake (ADR-0008 / G0)
+│   └── eval/              # offline runner + report.json
 ├── httpapi/               # enabled + health
 ├── observability/         # correlation_id alias helpers
 ├── domain/                # domain model (empty until C*)
@@ -64,3 +67,17 @@ go test ./plugins/metaldogs/... -count=1
 `testutil.OpenIsolated` — unique schema per call, forced `search_path`. CI: `integration-metaldogs` canaries.
 
 Later job types: `integration.sync.metaldogs.<name>` (ADR-0003).
+
+## Offline eval (G0)
+
+With the plugin enabled (and media registered so Init succeeds):
+
+```bash
+./app metaldogs:eval \
+  -template plugins/metaldogs/generation/eval/testdata/template.json \
+  -photos /path/to/photos \
+  -out /tmp/metaldogs-eval \
+  -provider fake
+```
+
+Writes one PNG per photo plus `report.json` (latency / cost slot; validation `skipped` until G3). Default provider is `fake` (deterministic). No HTTP route.

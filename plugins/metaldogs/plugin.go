@@ -59,5 +59,6 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := registerObsPing(app); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
 	}
+	registerCLICommands(app)
 	return nil
 }
