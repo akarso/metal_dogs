@@ -234,7 +234,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `5681894658c44ce344b2df930effecda7ffd43c4`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`a8cbcb18…`, absorb #568/#570/#571).
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`a8cbcb18…`; #568/#570/#571 merges absorbed, F3 residuals still listed in overview deviations).
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
@@ -256,7 +256,8 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### F3 · Observability baseline — size S — **DONE** (CR-04, 2026-11-06; pin absorb 2026-11-08)
 
 - **Goal:** Structured logging with `correlation_id` propagated from HTTP request to enqueued job; metrics hooks for job duration/attempts; health reports queue readiness (depths on admin).
-- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — [shopanda#568](https://github.com/akarso/shopanda/pull/568), absorbed at pin `a8cbcb18`.
+- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — [shopanda#568](https://github.com/akarso/shopanda/pull/568) merge at pin `a8cbcb18`.
+- **Platform residuals (Metal Dogs only until upstreamed):** `App.BoundQueue()`, sync-handler payload `request_id`→ctx reinjection — listed in overview deviations; product health/correlation depends on them.
 - **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
 - **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.

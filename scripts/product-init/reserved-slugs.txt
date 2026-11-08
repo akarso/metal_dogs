@@ -7,6 +7,7 @@ exportdemo
 importdemo
 integrationdemo
 maildemo
+metaldogs
 pimdemo
 promodemo
 sitekit

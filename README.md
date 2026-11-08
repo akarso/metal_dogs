@@ -289,7 +289,7 @@ Run `./app help` for the live command list from the current binary.
 
 **Metal Dogs product docs:** [`docs/README.md`](docs/README.md) (roadmap, ADRs, architecture, runbooks).
 
-**Shopanda platform docs** (not vendored; pinned commit `5681894658c44ce344b2df930effecda7ffd43c4`):
+**Shopanda platform docs** (not vendored; pinned commit `a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512`):
 
 - Guides: https://github.com/akarso/shopanda/tree/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides
 - Runbook: https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/RUNBOOK.md

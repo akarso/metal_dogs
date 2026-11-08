@@ -51,6 +51,16 @@ fi
 if bash "${INIT}" --slug sitekit --force 2>/dev/null; then
   fail "expected reserved slug 'sitekit' to be refused"
 fi
+if bash "${INIT}" --slug metaldogs --force 2>/dev/null; then
+  fail "expected reserved slug 'metaldogs' to be refused"
+fi
+# --force must not replace the live product plugin tree
+before_hash="$(find "${ROOT}/plugins/metaldogs" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+if bash "${INIT}" --slug metaldogs --force >/tmp/product-init-metaldogs.out 2>&1; then
+  fail "expected --force metaldogs to fail; wrote:\n$(cat /tmp/product-init-metaldogs.out)"
+fi
+after_hash="$(find "${ROOT}/plugins/metaldogs" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+[[ "${before_hash}" == "${after_hash}" ]] || fail "metaldogs tree changed under refused --force"
 pass "reserved slugs refused"
 
 # CRLF reserved-slugs.txt still refuses reserved names

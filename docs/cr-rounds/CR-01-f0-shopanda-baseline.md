@@ -6,7 +6,7 @@
 
 ## What shipped
 
-Metal Dogs repository is a Shopanda fork pinned to `5681894658c44ce344b2df930effecda7ffd43c4` via git remote `upstream` → `https://github.com/akarso/shopanda.git`. Product remote remains `origin` → `metal_dogs` (**main-only** branch policy). Empty `plugins/metaldogs/` and `storefront/` placeholders. Product docs under `docs/`; upstream guides/diagrams not fully vendored (stubs + GitHub links at pin). Fail-closed `docs/GOVULN_BASELINE.md` and `docs/COMMERCIAL.md` restored for CI/licensing. ADR-0001 Accepted. Local Shopanda WIP checkout was not used as a merge source.
+Metal Dogs repository is a Shopanda fork pinned to `56818946…` (F0 baseline; see current pin in `UPSTREAM_PIN.md`) via git remote `upstream` → `https://github.com/akarso/shopanda.git`. Product remote remains `origin` → `metal_dogs` (**main-only** branch policy). Empty `plugins/metaldogs/` and `storefront/` placeholders. Product docs under `docs/`; upstream guides/diagrams not fully vendored (stubs + GitHub links at pin). Fail-closed `docs/GOVULN_BASELINE.md` and `docs/COMMERCIAL.md` restored for CI/licensing. ADR-0001 Accepted. Local Shopanda WIP checkout was not used as a merge source.
 
 ## Verification results
 
