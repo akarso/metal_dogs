@@ -199,7 +199,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
-| `cmd/api/cache_control_prefixes.go` | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
+| `cmd/api/cache_control_prefixes.go` (+ test) | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts; docs-policy uses MD hardened checker (no promote step) | F2 / CR-06 |
@@ -208,7 +208,6 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `scripts/product-init/reserved-slugs.txt` | Includes `metaldogs` so `--force` cannot clobber the product plugin | CR-06 |
 | `internal/platform/plugin/providers.go` (+ test) | `App.BoundQueue()` — prefer `BindQueue` over `RegisterQueue` for health/read paths | F3 residual (not in upstream #568) |
 | `internal/application/integration/sync_runtime.go` (+ test) | Sync handler re-injects payload `request_id` into ctx when worker ctx has none | F3 residual (not in upstream #568) |
-| `cmd/api/cache_control_prefixes.go` (+ test) | `/api/customizer` on Cache-Control no-store prefix list | F1-fix |
 | `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go`, `config_test.go` MetalDogs cases | Product registration / migrate / config coverage | F1+ |
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Depends on residual `BoundQueue` + sync reinjection above | F3 |
 | `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; nothing writes yet | F4 |
