@@ -13,7 +13,7 @@ Uploaded photos are private personal data. Shopanda provides `media.SignedURLSto
 
 1. Metal Dogs assets use core media storage (local or S3). No second product registry or HMAC route.
 2. Object keys: `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (`ports.AssetKeyPrefix`). The mediastore adapter **rejects** any other key for Put/Head/Delete/SignedGetURL.
-3. Delivery via short-lived signed URLs (`SignedGetURL` caps TTL ≤ 15m, default 60s). Inline disposition only for allowlisted image extensions (`jpg/jpeg/png/webp/gif`); other keys force attachment. Caller `Content-Type` outside that allowlist is overridden. URLs must not be logged.
+3. Delivery via short-lived signed URLs (`SignedGetURL` caps TTL ≤ 15m, default 60s). Inline disposition only for allowlisted image extensions (`jpg/jpeg/png/webp`); other keys force attachment. Caller `Content-Type` outside that allowlist is overridden. URLs must not be logged.
 4. Plugin `AssetStore` wraps `media.SignedURLStorage` only.
 5. `metaldogs_assets` metadata + EXIF strip + ownership 404s: **C2+**.
 6. Local layout: config default and examples use `./var/media` (not under a static web root). Private keys share that root — operators must **never** FileServer `base_path` / `base_url`. Platform localfs uses `0700`/`0600` (chmod ancestors on private write), EvalSymlinks containment, and versioned HMAC tokens with v0 compat parse.

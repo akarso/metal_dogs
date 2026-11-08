@@ -76,6 +76,9 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 #   SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media   # not under a static web root
 #   SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"  # required outside DEV
 # Never FileServer base_path / base_url — private/blobs keys live there too.
+# First private Save may chmod the media root (and ancestors) to 0700.
+# Local-signed HMAC v1: upgrade all local-signed handlers before mixed-fleet
+# signers mint v1 tokens (old handlers reject v1 → 403 after ClaimDelivery).
 # (not k8s probes — use /healthz and /readyz)
 ```
 

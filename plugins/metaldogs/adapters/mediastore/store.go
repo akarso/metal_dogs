@@ -27,7 +27,6 @@ var previewMIMEByExt = map[string]string{
 	".jpeg": "image/jpeg",
 	".png":  "image/png",
 	".webp": "image/webp",
-	".gif":  "image/gif",
 }
 
 // Store adapts Shopanda media.SignedURLStorage to ports.AssetStore and
