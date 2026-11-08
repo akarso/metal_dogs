@@ -87,10 +87,13 @@ Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`templ
 
 ### OpenAI spike (G1)
 
+Default model `gpt-image-2.5-sunburst` (`gpt-image-1` rejected). Adapter posts `image[]` + `image/*` MIME, no `response_format`.
+
 ```bash
 export METALDOGS_OPENAI_API_KEY=sk-...
 ./app metaldogs:eval -template plugins/metaldogs/generation/eval/testdata/spike/01-head-front-blackmetal.json \
   -photos /path/to/photos -out /tmp/md-spike-01 -provider openai
+# optional: -openai-model … -openai-base …
 # Paid smoke (not CI): METALDOGS_SMOKE=1 go test ./plugins/metaldogs/generation/openai -run Smoke -count=1
 ```
 

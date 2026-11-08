@@ -1,8 +1,12 @@
 package openai_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,20 +17,31 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/openai"
 )
 
-// tinyPNG is a 1x1 opaque PNG (sanitized fixture bytes, not a customer photo).
-var tinyPNG = mustDecode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
-
-func mustDecode(s string) []byte {
-	b, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		panic(err)
+func encodePNG(t *testing.T, w, h int, withAlpha bool) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	a := uint8(255)
+	if withAlpha {
+		a = 128
 	}
-	return b
+	c := color.RGBA{R: 10, G: 20, B: 30, A: a}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestProvider_Generate_ContractHappy(t *testing.T) {
 	t.Parallel()
-	outB64 := base64.StdEncoding.EncodeToString(tinyPNG)
+	outPNG := encodePNG(t, 8, 8, true)
+	outB64 := base64.StdEncoding.EncodeToString(outPNG)
+	var sawResponseFormat bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/images/edits" {
 			t.Fatalf("path = %s", r.URL.Path)
@@ -37,14 +52,32 @@ func TestProvider_Generate_ContractHappy(t *testing.T) {
 		if err := r.ParseMultipartForm(4 << 20); err != nil {
 			t.Fatal(err)
 		}
-		if r.FormValue("prompt") == "" || r.FormValue("model") == "" {
-			t.Fatalf("form = %#v", r.Form)
+		if r.FormValue("response_format") != "" {
+			sawResponseFormat = true
 		}
-		if _, _, err := r.FormFile("image"); err != nil {
-			t.Fatal(err)
+		if r.FormValue("model") != openai.DefaultModel {
+			t.Fatalf("model = %q", r.FormValue("model"))
+		}
+		if r.FormValue("size") != "64x64" {
+			t.Fatalf("size = %q (want template params)", r.FormValue("size"))
+		}
+		if r.FormValue("background") != "transparent" || r.FormValue("output_format") != "png" {
+			t.Fatalf("background/output_format = %q / %q", r.FormValue("background"), r.FormValue("output_format"))
+		}
+		if !strings.Contains(r.FormValue("prompt"), `Dog name to render exactly: "Burek"`) {
+			t.Fatalf("prompt missing dog name: %q", r.FormValue("prompt"))
+		}
+		f, hdr, err := r.FormFile("image[]")
+		if err != nil {
+			t.Fatalf("image[]: %v", err)
+		}
+		defer f.Close()
+		if ct := hdr.Header.Get("Content-Type"); ct != "image/png" {
+			t.Fatalf("image Content-Type = %q", ct)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"created":1700000000,"data":[{"b64_json":"`+outB64+`"}]}`)
+		w.Header().Set("x-request-id", "req_abc123")
+		_, _ = io.WriteString(w, `{"created":1700000000,"usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33},"data":[{"b64_json":"`+outB64+`"}]}`)
 	}))
 	defer srv.Close()
 
@@ -56,8 +89,9 @@ func TestProvider_Generate_ContractHappy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	photo := encodePNG(t, 32, 32, false)
 	res, err := p.Generate(context.Background(), generation.GenerationRequest{
-		PhotoBytes:    tinyPNG,
+		PhotoBytes:    photo,
 		PhotoName:     "dog.png",
 		Prompt:        "metal dog portrait",
 		PromptVersion: "g1-v1",
@@ -67,11 +101,58 @@ func TestProvider_Generate_ContractHappy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Model != openai.DefaultModel || res.ProviderReqID != "openai-1700000000" {
+	if sawResponseFormat {
+		t.Fatal("must not send response_format")
+	}
+	if res.Model != openai.DefaultModel || res.ProviderReqID != "req_abc123" {
 		t.Fatalf("res = %+v", res)
 	}
-	if string(res.ImagePNG) != string(tinyPNG) {
+	if res.UsageTotalTokens != 33 || res.UsageInputTokens != 11 {
+		t.Fatalf("usage = %+v", res)
+	}
+	if !res.HasAlpha {
+		t.Fatal("HasAlpha = false, want true for transparent fixture")
+	}
+	if !bytes.Equal(res.ImagePNG, outPNG) {
 		t.Fatal("png mismatch")
+	}
+}
+
+func TestProvider_Generate_PrefersReqModel(t *testing.T) {
+	t.Parallel()
+	outPNG := encodePNG(t, 4, 4, false)
+	outB64 := base64.StdEncoding.EncodeToString(outPNG)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		if r.FormValue("model") != "gpt-image-2.5-flare" {
+			t.Fatalf("model = %q", r.FormValue("model"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+outB64+`"}]}`)
+	}))
+	defer srv.Close()
+	p, err := openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL, Model: openai.DefaultModel, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := p.Generate(context.Background(), generation.GenerationRequest{
+		PhotoBytes: encodePNG(t, 8, 8, false),
+		PhotoName:  "x.png",
+		Prompt:     "p",
+		Model:      "gpt-image-2.5-flare",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Model != "gpt-image-2.5-flare" {
+		t.Fatalf("res.Model = %q", res.Model)
+	}
+}
+
+func TestProvider_Generate_RejectsShutdownModel(t *testing.T) {
+	t.Parallel()
+	if _, err := openai.New(openai.Config{APIKey: "k", Model: "gpt-image-1"}); err == nil {
+		t.Fatal("expected reject gpt-image-1")
 	}
 }
 
@@ -87,11 +168,82 @@ func TestProvider_Generate_RateLimited(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = p.Generate(context.Background(), generation.GenerationRequest{
-		PhotoBytes: tinyPNG,
+		PhotoBytes: encodePNG(t, 8, 8, false),
 		Prompt:     "p",
 	})
 	if generation.ClassifyError(err) != generation.ErrorRateLimited {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProvider_Generate_BadRequest(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"bad image"}}`)
+	}))
+	defer srv.Close()
+	p, err := openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Generate(context.Background(), generation.GenerationRequest{
+		PhotoBytes: encodePNG(t, 8, 8, false),
+		Prompt:     "p",
+	})
+	if generation.ClassifyError(err) != generation.ErrorRejectedInput {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProvider_Generate_EmptyData(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[]}`)
+	}))
+	defer srv.Close()
+	p, err := openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Generate(context.Background(), generation.GenerationRequest{
+		PhotoBytes: encodePNG(t, 8, 8, false),
+		Prompt:     "p",
+	})
+	if generation.ClassifyError(err) != generation.ErrorPermanent {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProvider_Generate_JPEGMime(t *testing.T) {
+	t.Parallel()
+	outPNG := encodePNG(t, 4, 4, false)
+	outB64 := base64.StdEncoding.EncodeToString(outPNG)
+	jpegSOI := []byte{0xff, 0xd8, 0xff, 0xd9}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		_, hdr, err := r.FormFile("image[]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Header.Get("Content-Type") != "image/jpeg" {
+			t.Fatalf("ct = %q", hdr.Header.Get("Content-Type"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"`+outB64+`"}]}`)
+	}))
+	defer srv.Close()
+	p, err := openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Generate(context.Background(), generation.GenerationRequest{
+		PhotoBytes: jpegSOI,
+		PhotoName:  "dog.jpg",
+		Prompt:     "p",
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -114,7 +266,7 @@ func TestProvider_Generate_ContextCanceled(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = p.Generate(ctx, generation.GenerationRequest{PhotoBytes: tinyPNG, Prompt: "p"})
+	_, err = p.Generate(ctx, generation.GenerationRequest{PhotoBytes: encodePNG(t, 8, 8, false), Prompt: "p"})
 	if generation.ClassifyError(err) != generation.ErrorCanceled {
 		t.Fatalf("err = %v class=%s", err, generation.ClassifyError(err))
 	}

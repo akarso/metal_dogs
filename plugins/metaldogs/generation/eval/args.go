@@ -17,7 +17,8 @@ func ParseArgs(args []string) (Options, error) {
 	fs.StringVar(&opts.OutDir, "out", "", "output directory for PNGs + report.json")
 	fs.StringVar(&opts.ProviderName, "provider", "fake", "image provider name (fake|openai)")
 	fs.StringVar(&opts.OpenAIAPIKey, "openai-api-key", "", "OpenAI API key (or METALDOGS_OPENAI_API_KEY)")
-	fs.StringVar(&opts.OpenAIModel, "openai-model", "", "OpenAI image model (default gpt-image-1)")
+	fs.StringVar(&opts.OpenAIModel, "openai-model", "", "OpenAI image model (default gpt-image-2.5-sunburst; template model wins when set)")
+	fs.StringVar(&opts.OpenAIBase, "openai-base", "", "OpenAI API base URL (default https://api.openai.com/v1)")
 
 	if err := fs.Parse(args); err != nil {
 		return Options{}, err

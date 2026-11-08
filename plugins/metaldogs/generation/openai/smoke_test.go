@@ -23,12 +23,15 @@ func TestSmoke_OpenAI_Edits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Realistic-enough synthetic input (256² PNG); 1×1 fixtures are often rejected.
+	photo := encodePNG(t, 256, 256, false)
 	res, err := p.Generate(context.Background(), generation.GenerationRequest{
-		PhotoBytes:    tinyPNG,
+		PhotoBytes:    photo,
 		PhotoName:     "fixture.png",
 		Prompt:        "Monochrome metal-band style dog portrait on transparent-friendly background. High contrast black and white.",
 		PromptVersion: "g1-smoke",
 		DogName:       "Burek",
+		Model:         openai.DefaultModel,
 		Parameters:    generation.Parameters{Width: 1024, Height: 1024},
 	})
 	if err != nil {
@@ -37,5 +40,6 @@ func TestSmoke_OpenAI_Edits(t *testing.T) {
 	if len(res.ImagePNG) < 100 || res.ProviderReqID == "" {
 		t.Fatalf("unexpected result: bytes=%d id=%q", len(res.ImagePNG), res.ProviderReqID)
 	}
-	t.Logf("smoke ok model=%s id=%s latency=%s bytes=%d", res.Model, res.ProviderReqID, res.Latency, len(res.ImagePNG))
+	t.Logf("smoke ok model=%s id=%s latency=%s bytes=%d tokens=%d alpha=%v",
+		res.Model, res.ProviderReqID, res.Latency, len(res.ImagePNG), res.UsageTotalTokens, res.HasAlpha)
 }

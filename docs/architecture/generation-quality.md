@@ -7,11 +7,12 @@ Status: **scaffold ready; paid exit gate open**. No customer photos in this repo
 | Item | Value |
 | --- | --- |
 | Adapter | `plugins/metaldogs/generation/openai` |
-| API | OpenAI Images `POST /v1/images/edits` |
-| Model (default) | `gpt-image-1` |
+| API | OpenAI Images `POST /v1/images/edits` (`image[]`, no `response_format`, `background=transparent`) |
+| Model (default) | `gpt-image-2.5-sunburst` (`gpt-image-1` invalid) |
 | Auth | `METALDOGS_OPENAI_API_KEY` (never logged) |
-| Contract tests | httptest fixtures (no network) |
-| Smoke | `METALDOGS_SMOKE=1` + API key |
+| Cost fields | `usage_*_tokens` in `report.json`; `cost_minor_units` left 0 until pricing table pinned |
+| Contract tests | httptest fixtures (no network; assert MIME + no `response_format`) |
+| Smoke | `METALDOGS_SMOKE=1` + API key (256² PNG fixture) |
 
 ADR-0008 stays **Proposed** until the operator spike meets the exit gate (≥4 of 5 templates).
 
@@ -27,7 +28,10 @@ export METALDOGS_OPENAI_API_KEY=sk-...
   -photos /path/to/spike-photos \
   -out /tmp/md-spike-01 \
   -provider openai
+# optional: -openai-model … -openai-base https://api.openai.com/v1
 ```
+
+Confirm one live smoke before the full ≥20×5 matrix (field name / MIME / model). Then:
 
 3. Copy `scorecard.example.json` → `scorecard.json` beside `report.json` and rate each sample.
 4. Summarize medians / name accuracy / cost into this file (no photos). Then move ADR-0008 → Accepted.

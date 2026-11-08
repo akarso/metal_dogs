@@ -284,9 +284,9 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### G1 · Provider spike on real photos — size M (opt-in, paid) — **SCAFFOLD DONE** (CR-08, 2026-11-08); **exit gate open**
 
 - **Goal:** Answer project-description questions 1, 2, 3, 7: fidelity of dog + pattern + text, cost per accepted artwork, print usability (transparency/background), typography correctness for Polish names of varied length.
-- **Scope (shipped):** OpenAI Images adapter; 5 spike templates; scorecard example; OCR name heuristic stub; `metaldogs:eval -provider openai`.
+- **Scope (shipped):** OpenAI Images adapter (`gpt-image-2.5-sunburst`, `image[]`, no `response_format`); 5 spike templates; scorecard example; OCR name heuristic stub; `metaldogs:eval -provider openai`.
 - **Scope (operator):** ≥20 local photos; paid runs; human scorecards; ADR accept if pass.
-- **Tests:** Contract httptest fixtures; smoke behind `METALDOGS_SMOKE=1` (not default CI).
+- **Tests:** Contract httptest fixtures (MIME / no `response_format` / 400); smoke behind `METALDOGS_SMOKE=1` (not default CI).
 - **Safe delivery:** Never runs in CI; no production route; keys via `METALDOGS_OPENAI_API_KEY`.
 - **Docs:** ADR-0008 Proposed with OpenAI candidate; [`architecture/generation-quality.md`](architecture/generation-quality.md); CR-08.
 - **Exit gate:** Quality bar met for ≥4 of 5 templates; cost per accepted artwork acceptable including failed attempts. If not met, iterate within G1 before continuing M2.

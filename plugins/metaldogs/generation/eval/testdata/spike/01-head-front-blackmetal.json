@@ -3,6 +3,6 @@
   "prompt": "Monochrome black-metal style dog head portrait from the front, high contrast ink on black, suitable for tee print. Preserve breed and markings. No color. Leave background clean for print isolation.",
   "prompt_version": "g1-spike-v1",
   "dog_name": "Burek",
-  "model": "gpt-image-1",
+  "model": "gpt-image-2.5-sunburst",
   "parameters": { "width": 1024, "height": 1024, "seed": 1 }
 }

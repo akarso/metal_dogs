@@ -1,8 +1,9 @@
 # G1 spike template set
 
-Five representative Metal Dogs templates for the paid OpenAI spike. Prompts are
-placeholders — tune after the first smoke batch. Photos are **not** vendored;
-point `metaldogs:eval -photos` at a local folder with ≥20 varied dog photos.
+Five representative Metal Dogs templates for the paid OpenAI spike (model
+`gpt-image-2.5-sunburst`). Prompts are placeholders — tune after the first smoke
+batch. Photos are **not** vendored; point `metaldogs:eval -photos` at a local
+folder with ≥20 varied dog photos.
 
 ```bash
 export METALDOGS_OPENAI_API_KEY=sk-...

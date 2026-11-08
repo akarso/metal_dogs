@@ -186,6 +186,9 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	sample.ProviderModel = res.Model
 	sample.LatencyMS = res.Latency.Milliseconds()
 	sample.CostMinorUnits = res.CostMinorUnits
+	sample.UsageInputTokens = res.UsageInputTokens
+	sample.UsageOutputTokens = res.UsageOutputTokens
+	sample.UsageTotalTokens = res.UsageTotalTokens
 	sample.HasAlpha = res.HasAlpha
 	return sample
 }

@@ -88,12 +88,15 @@ type GenerationRequest struct {
 
 // GenerationResult is the provider output plus support metadata.
 type GenerationResult struct {
-	ImagePNG       []byte
-	HasAlpha       bool
-	Latency        time.Duration
-	CostMinorUnits int64 // 0 when provider does not report cost
-	ProviderReqID  string
-	Model          string
+	ImagePNG          []byte
+	HasAlpha          bool
+	Latency           time.Duration
+	CostMinorUnits    int64 // 0 when provider does not report USD cents; prefer Usage* tokens
+	UsageInputTokens  int
+	UsageOutputTokens int
+	UsageTotalTokens  int
+	ProviderReqID     string
+	Model             string
 }
 
 // ImageProvider is the generation port (ADR-0008). Exactly one real adapter
@@ -111,7 +114,7 @@ func Lookup(name string) (ImageProvider, error) {
 	case "", "fake":
 		return Fake(), nil
 	default:
-		return nil, fmt.Errorf("generation: unknown provider %q (use eval wiring for openai)", name)
+		return nil, fmt.Errorf("generation: unknown provider %q (fake via Lookup; openai via generation/openai.New or eval -provider openai)", name)
 	}
 }
 

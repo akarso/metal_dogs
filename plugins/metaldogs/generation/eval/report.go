@@ -24,13 +24,16 @@ type SampleResult struct {
 	OutputFile     string           `json:"output_file,omitempty"`
 	ProviderReqID  string           `json:"provider_request_id,omitempty"`
 	ProviderModel  string           `json:"provider_model,omitempty"`
-	LatencyMS      int64            `json:"latency_ms"`
-	CostMinorUnits int64            `json:"cost_minor_units"`
-	HasAlpha       bool             `json:"has_alpha"`
-	Error          string           `json:"error,omitempty"`
-	ErrorClass     string           `json:"error_class,omitempty"`
-	NameCheck      ocr.Result       `json:"name_check"`
-	Validation     ValidationResult `json:"validation"`
+	LatencyMS         int64            `json:"latency_ms"`
+	CostMinorUnits    int64            `json:"cost_minor_units"`
+	UsageInputTokens  int              `json:"usage_input_tokens,omitempty"`
+	UsageOutputTokens int              `json:"usage_output_tokens,omitempty"`
+	UsageTotalTokens  int              `json:"usage_total_tokens,omitempty"`
+	HasAlpha          bool             `json:"has_alpha"`
+	Error             string           `json:"error,omitempty"`
+	ErrorClass        string           `json:"error_class,omitempty"`
+	NameCheck         ocr.Result       `json:"name_check"`
+	Validation        ValidationResult `json:"validation"`
 }
 
 // Report is the JSON summary written next to output images.

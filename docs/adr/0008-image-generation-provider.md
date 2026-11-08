@@ -23,11 +23,11 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 
 | Item | Value |
 | --- | --- |
-| Provider / API | OpenAI Images `POST /v1/images/edits` (`plugins/metaldogs/generation/openai`) |
-| Model and version | `gpt-image-1` (override via `-openai-model`) |
-| Parameters (size, steps, guidance, seed policy) | API `size` default `1024x1024`; seed recorded in template params for reproducibility notes (API may ignore) |
-| Alpha channel supported | _pending spike_ (adapter sets `HasAlpha=false` until measured) |
-| Cost per call; cost per accepted artwork incl. failures | _pending spike_ |
+| Provider / API | OpenAI Images `POST /v1/images/edits` (`plugins/metaldogs/generation/openai`); multipart `image[]`, `image/png|jpeg|webp`, no `response_format` |
+| Model and version | `gpt-image-2.5-sunburst` (`gpt-image-1` rejected — shut down 2026-10-23); override via template `model` or `-openai-model` |
+| Parameters (size, steps, guidance, seed policy) | Template `parameters.width`×`height` → API `size` (fallback config `1024x1024`); `background=transparent` + `output_format=png` for alpha spike; seed recorded (API may ignore) |
+| Alpha channel supported | _pending spike_ (adapter requests transparent PNG and sets `HasAlpha` from decoded pixels) |
+| Cost per call; cost per accepted artwork incl. failures | _pending spike_ (`usage_*_tokens` in `report.json`; USD cents conversion operator-side — `cost_minor_units` stays 0) |
 | p50 / p95 latency | _pending spike_ |
 | Data processing and retention terms (photos) | _pending_ — confirm against current OpenAI API data terms before Accept |
 | Commercial use of outputs permitted | _pending_ — confirm before Accept |
