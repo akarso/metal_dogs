@@ -37,4 +37,4 @@
 ## Follow-ups
 
 - C2+: writers, EXIF, ownership 404, log redaction lint, S3 public-policy fail-closed if detectable
-- Pin absorb: next upgrade must include [shopanda#571](https://github.com/akarso/shopanda/pull/571) merge [`a8cbcb18`](https://github.com/akarso/shopanda/commit/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512) (not #570/`50f812d6` alone). #571 is already on Shopanda `dev`; product tree still forward-ports until that pin bump.
+- Pin absorb: done at [`a8cbcb18`](../UPSTREAM_PIN.md) (#570 + #571).

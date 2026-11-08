@@ -1,0 +1,16 @@
+b2b
+cartdemo
+checkoutdemo
+core
+example
+exportdemo
+importdemo
+integrationdemo
+maildemo
+metaldogs
+pimdemo
+promodemo
+sitekit
+slotsdemo
+taxdemo
+warehousedemo

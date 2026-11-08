@@ -80,7 +80,7 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # (not k8s probes — use /healthz and /readyz)
 ```
 
-For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEPLOYMENT.md) ([shopanda#571](https://github.com/akarso/shopanda/pull/571) merge `a8cbcb18`): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform. Do not absorb #570 alone — that tip still defaults `install.sh` to `./public/media`.
+For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
 
 ### Why stock `.env.example` alone fails
 

@@ -10,7 +10,7 @@ No calendar dates are given. Ordering is expressed through dependencies and mile
 
 ## 1. Ground truth this plan is built on
 
-Inspected against Shopanda source at pin [`5681894658c44ce344b2df930effecda7ffd43c4`](UPSTREAM_PIN.md) (`upstream/main` at F0 close). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
+Inspected against Shopanda source at pin [`a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512`](UPSTREAM_PIN.md) (`upstream/dev` tip absorbing #568/#570/#571; not yet on `upstream/main`). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
 
 | Capability | Status | Consequence for Metal Dogs |
 | --- | --- | --- |
@@ -234,7 +234,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin:** `5681894658c44ce344b2df930effecda7ffd43c4` via `upstream` → `https://github.com/akarso/shopanda.git`.
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`a8cbcb18…`; #568/#570/#571 merges absorbed, F3 residuals still listed in overview deviations).
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
@@ -253,22 +253,23 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Docs:** `runbooks/local-development.md` test section; `AGENTS.md` commands.
 - **Open gate:** Origin Actions billing still blocks live green proof of `CI / integration-metaldogs` on `origin`. When billing returns: require that check name on `main` branch protection, confirm green, then close CR-03. Shopanda DSN reds cannot fail this job.
 
-#### F3 · Observability baseline — size S — **DONE (vendor)** / **blocked (pin absorb)** (CR-04, 2026-11-06)
+#### F3 · Observability baseline — size S — **DONE** (CR-04, 2026-11-06; pin absorb 2026-11-08)
 
 - **Goal:** Structured logging with `correlation_id` propagated from HTTP request to enqueued job; metrics hooks for job duration/attempts; health reports queue readiness (depths on admin).
-- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — [shopanda#568](https://github.com/akarso/shopanda/pull/568). Forward-ported into this tree; pin still `56818946…` until #568 merges and an upgrade slice absorbs it (`docs/UPSTREAM_PIN.md`).
+- **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — [shopanda#568](https://github.com/akarso/shopanda/pull/568) merge at pin `a8cbcb18`.
+- **Platform residuals (Metal Dogs only until upstreamed):** `App.BoundQueue()`, sync-handler payload `request_id`→ctx reinjection — listed in overview deviations; product health/correlation depends on them.
 - **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
 - **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
-- **Docs:** runbook diagnosis; CR-04. Guide lands upstream with #568 — link the PR, not a disposable branch blob.
+- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/SYNC_JOB_OBSERVABILITY.md).
 
-#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; #570+#571 absorb)
+#### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; pin absorb 2026-11-08)
 
 - **Goal:** Plugin `AssetStore` over platform `media.SignedURLStorage` with namespaced private keys.
-- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570) + [shopanda#571](https://github.com/akarso/shopanda/pull/571) merge `a8cbcb18`). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
+- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570) + [shopanda#571](https://github.com/akarso/shopanda/pull/571) at pin `a8cbcb18`). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
 - **Tests:** Prefix reject; localfs ObjectKey→Put→GET contract; Init on fake SignedURLStorage.
 - **Safe delivery:** Nothing writes yet. ADR notes remaining ops limits (S3 bucket policy, log redaction).
-- **Docs:** ADR-0004 Accepted (with honest limits); CR-05. Pin still pre-`a8cbcb18` until upgrade slice.
+- **Docs:** ADR-0004 Accepted (with honest limits); CR-05.
 
 ### Track G — Generation quality
 

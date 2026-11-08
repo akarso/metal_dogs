@@ -124,10 +124,11 @@ func shallowCopyStringMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-// InjectRequestID shallow-copies payload and, when ctx carries a request ID,
-// stores it as "request_id" unless a non-empty string is already present.
-// Empty-string or non-string request_id values are treated as absent and
-// overwritten. Missing ctx IDs are a no-op.
+// InjectRequestID shallow-copies payload and, when ctx carries a request ID
+// and the payload has no usable request_id, stores it as "request_id".
+// Empty string, nil, or non-string existing values are treated as unset and
+// overwritten. Callers that already set a non-empty string keep their value.
+// Empty / missing ctx IDs are a no-op.
 func InjectRequestID(ctx context.Context, payload map[string]interface{}) map[string]interface{} {
 	out := shallowCopyStringMap(payload)
 	if out == nil {
@@ -140,8 +141,10 @@ func InjectRequestID(ctx context.Context, payload map[string]interface{}) map[st
 	if rid == "" {
 		return out
 	}
-	if existing, ok := out["request_id"].(string); ok && existing != "" {
-		return out
+	if existing, ok := out["request_id"]; ok {
+		if s, isStr := existing.(string); isStr && s != "" {
+			return out
+		}
 	}
 	out["request_id"] = rid
 	return out

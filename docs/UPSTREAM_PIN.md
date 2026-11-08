@@ -6,9 +6,9 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `5681894658c44ce344b2df930effecda7ffd43c4` |
-| Pinned subject | Merge pull request #565 from akarso/dev |
-| Verified locally | 2026-11-05 (F0 baseline); docs/CI contract repaired 2026-11-06 |
+| Pinned commit | `a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512` |
+| Pinned subject | Merge pull request #571 from akarso/pr-570-media-harden-followup |
+| Verified locally | 2026-11-08 (absorb #568 + #570 + #571; explicit `upstream/dev` tip — not yet on `upstream/main`) |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
 
@@ -16,8 +16,11 @@ Metal Dogs owns product documentation under `docs/` (roadmap, ADRs, architecture
 
 Before merging a newer `upstream` tip: ensure this clone is not shallow (`test ! -f .git/shallow`). If it is, `git fetch --unshallow upstream` first.
 
-**Forward-ports ahead of this pin** (absorb on the next upgrade slice; expect conflicts with in-tree platform edits until then):
+**Merged on this pin** (Shopanda PRs now reachable from the pin SHA):
 
-- [shopanda#568](https://github.com/akarso/shopanda/pull/568) — sync-job observability (F3). Merged to `dev` as `e1903b5c`.
-- [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage, `BindMediaStorage`, `PrivateBlobsPrefix` (F4; product HMAC shim removed). Merged to `dev` as `50f812d6` (**stops at** `09642d99`; not sufficient alone).
-- [shopanda#571](https://github.com/akarso/shopanda/pull/571) — **required** #570 CR closes: `./var/media` Load/`install.sh` default, HMAC token v1 + DEPLOYMENT handler-first rollout, private mode/symlink tests. Merged to `dev` as [`a8cbcb18`](https://github.com/akarso/shopanda/commit/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512) (contains `39684035`). Next pin/upgrade absorb must land at **≥ `a8cbcb18`** (or any tip that includes it)—do not absorb #570 without #571.
+- [shopanda#568](https://github.com/akarso/shopanda/pull/568) — sync-job observability (`e1903b5c`)
+- [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage / `BindMediaStorage` / `PrivateBlobsPrefix` (`50f812d6`)
+- [shopanda#571](https://github.com/akarso/shopanda/pull/571) — media harden follow-up (`a8cbcb18`, includes `39684035`)
+- [shopanda#566](https://github.com/akarso/shopanda/pull/566) — product-packaging (`sitekit`, `scripts/product-init`, `scripts/ci`)
+
+**Still Metal Dogs–only** (do not claim full F3 absorb): `App.BoundQueue()`, sync-handler `request_id`→ctx reinjection, plus registration/cache-control wiring — listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`.

@@ -1,7 +1,7 @@
 # Runbook: upgrading the pinned Shopanda version
 
 - **Introduced by slice:** `F0`
-- **Last exercised:** never (baseline set 2026-11-05)
+- **Last exercised:** 2026-11-08 (pin → `a8cbcb18`; absorb #568/#570/#571 from `upstream/dev`)
 - **Severity when triggered:** medium (planned change with regression risk)
 - **Owner:** backend maintainer
 
@@ -64,9 +64,12 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
    # Also edit docs/UPSTREAM_PIN.md pin table by hand (subject/date).
    # Must be empty for blob/tree URLs:
    test -z "$(rg -l "github.com/akarso/shopanda/(blob|tree)/${OLD}" -g '*.md' || true)"
+
+   # Update PREVIOUS_PIN_FULL_SHA in .github/scripts/check-product-docs-links.sh to
+   # the just-replaced OLD full SHA (prose leftover guard; abbreviated history OK).
    ```
 
-   Refresh `docs/guides/README.md` and `docs/diagrams/README.md` if they still mention the old SHA. Re-run `bash .github/scripts/check-product-docs-links.sh`.
+   Refresh `docs/guides/README.md` and `docs/diagrams/README.md` if they still mention the old SHA. Re-run `bash .github/scripts/check-product-docs-links.sh` (fails on leftover previous full SHA and bare `guides/` hrefs).
 5. Build and test:
 
    ```bash

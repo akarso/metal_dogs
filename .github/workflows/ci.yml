@@ -5,7 +5,7 @@
 #   - CI / integration (Shopanda DSN packages)
 #   - CI / integration-metaldogs (F2 harness canaries; decoupled from Shopanda reds)
 #   - CI / govuln
-#   - CI / docs-policy (product-doc relative-link check + promote replay fixture)
+#   - CI / docs-policy (MD hardened product-docs links + absorb canary; no promote)
 #   - CI / docs-main (forbids docs/phase-* on main)
 #
 # Metal Dogs is main-only. Require on main: CI / unit, CI / integration,
@@ -279,8 +279,11 @@ jobs:
       - name: Product docs must not relative-link into docs/phase-*
         run: bash .github/scripts/check-product-docs-links.sh
 
-      - name: Promote script replays (second run, overwrite, FORCE, two-parent merge)
-        run: bash scripts/promote-dev-to-main_test.sh
+      - name: Absorb canary (platform diffs vs pin allowlisted)
+        run: bash .github/scripts/check-upstream-deviations.sh
+
+      # Promote fixture is upstream Shopanda semantics; Metal Dogs is main-only.
+      # Do not run scripts/promote-dev-to-main_test.sh here.
 
   docs-main:
     name: docs-main

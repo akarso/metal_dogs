@@ -1,6 +1,8 @@
 # Release — build and push container image to GHCR on version tags.
 #
-# Immutable deploy pin: ghcr.io/<owner>/shopanda:sha-<full40gitsha> (or image digest).
+# Immutable deploy pin: ghcr.io/<owner>/<image>:sha-<full40gitsha> (or image digest).
+# Metal Dogs: fail closed unless repository variable SHOPANDA_IMAGE_NAME is set to a
+# non-"shopanda" slug (parity with ci-samples/github/release.yml).
 # Version tag (e.g. v1.2.3) is a mutable convenience alias only — do not pin deploys to it.
 name: Release
 
@@ -40,10 +42,24 @@ jobs:
 
       - name: Image coordinates
         id: meta
+        env:
+          SHOPANDA_IMAGE_NAME: ${{ vars.SHOPANDA_IMAGE_NAME }}
         run: |
           set -euo pipefail
           owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          name="ghcr.io/${owner}/shopanda"
+          image_name="${SHOPANDA_IMAGE_NAME:-}"
+          if [[ -z "${image_name}" || "${image_name}" == "shopanda" ]]; then
+            echo "ERROR: set repository variable SHOPANDA_IMAGE_NAME to this product slug." >&2
+            echo "Refusing to publish as ghcr.io/${owner}/shopanda from metal_dogs." >&2
+            exit 1
+          fi
+          # Docker Hub / GHCR repository name grammar (lowercase path segment).
+          if [[ ! "${image_name}" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+            echo "ERROR: SHOPANDA_IMAGE_NAME '${image_name}' is not a valid image repository name." >&2
+            echo "Use lowercase [a-z0-9] with optional . _ - separators (e.g. metal_dogs)." >&2
+            exit 1
+          fi
+          name="ghcr.io/${owner}/${image_name}"
           sha_tag="sha-${GITHUB_SHA}"
           tags="${name}:${sha_tag}"
           has_version=false

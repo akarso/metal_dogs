@@ -290,14 +290,12 @@ func TestInjectRequestID_NoCtxID(t *testing.T) {
 }
 
 func TestInjectRequestID_OverwritesEmptyOrNonString(t *testing.T) {
-	ctx := requestctx.WithRequestID(context.Background(), "from-ctx")
-	empty := plugin.InjectRequestID(ctx, map[string]interface{}{"request_id": ""})
-	if empty["request_id"] != "from-ctx" {
-		t.Fatalf("empty string blocked inject: %#v", empty)
-	}
-	nonString := plugin.InjectRequestID(ctx, map[string]interface{}{"request_id": 42})
-	if nonString["request_id"] != "from-ctx" {
-		t.Fatalf("non-string blocked inject: %#v", nonString)
+	ctx := requestctx.WithRequestID(context.Background(), "req-http")
+	for _, existing := range []interface{}{"", nil, 42} {
+		out := plugin.InjectRequestID(ctx, map[string]interface{}{"request_id": existing})
+		if out["request_id"] != "req-http" {
+			t.Fatalf("existing=%#v → %#v, want req-http", existing, out)
+		}
 	}
 }
 
