@@ -70,12 +70,12 @@ func TestStore_WrapsSignedURLStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	key := "private/blobs/metaldogs/source/2026/11/a1.bin"
-	if err := store.Put(ctx, key, bytes.NewReader([]byte("abc")), "application/octet-stream"); err != nil {
+	key := "private/blobs/metaldogs/source/2026/11/a1.jpg"
+	if err := store.Put(ctx, key, bytes.NewReader([]byte("abc")), "text/html"); err != nil {
 		t.Fatal(err)
 	}
-	if inner.lastCT != "application/octet-stream" {
-		t.Fatalf("content-type = %q", inner.lastCT)
+	if inner.lastCT != "image/jpeg" {
+		t.Fatalf("content-type = %q, want image/jpeg (override unsafe caller type)", inner.lastCT)
 	}
 	if err := store.Head(ctx, key); err != nil {
 		t.Fatal(err)
@@ -88,7 +88,20 @@ func TestStore_WrapsSignedURLStorage(t *testing.T) {
 		t.Fatalf("url=%q ttl=%v", url, inner.lastTTL)
 	}
 	if inner.lastDisp != media.DispositionInline {
-		t.Fatalf("disposition = %q, want inline", inner.lastDisp)
+		t.Fatalf("disposition = %q, want inline for jpeg", inner.lastDisp)
+	}
+	binKey := "private/blobs/metaldogs/source/2026/11/a1.bin"
+	if err := store.Put(ctx, binKey, bytes.NewReader([]byte("bin")), "text/html"); err != nil {
+		t.Fatal(err)
+	}
+	if inner.lastCT != "application/octet-stream" {
+		t.Fatalf("bin content-type = %q", inner.lastCT)
+	}
+	if _, err := store.SignedGetURL(ctx, binKey, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if inner.lastDisp != media.DispositionAttachment {
+		t.Fatalf("bin disposition = %q, want attachment", inner.lastDisp)
 	}
 	if err := store.Delete(ctx, key); err != nil {
 		t.Fatal(err)
@@ -137,7 +150,7 @@ func TestStore_CapsTTL(t *testing.T) {
 	t.Parallel()
 	inner := &fakeSigned{}
 	store, _ := mediastore.New(inner)
-	key := "private/blobs/metaldogs/source/2026/11/a1.bin"
+	key := "private/blobs/metaldogs/source/2026/11/a1.jpg"
 	_ = store.Put(context.Background(), key, bytes.NewReader([]byte("x")), "")
 	if _, err := store.SignedGetURL(context.Background(), key, time.Hour); err != nil {
 		t.Fatal(err)
@@ -194,7 +207,7 @@ func TestStore_LocalfsContractRoundTrip(t *testing.T) {
 		t.Fatalf("Cache-Control = %q", cc)
 	}
 	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "inline") {
-		t.Fatalf("Content-Disposition = %q, want inline", cd)
+		t.Fatalf("Content-Disposition = %q, want inline for jpg", cd)
 	}
 
 	rec = httptest.NewRecorder()

@@ -860,7 +860,7 @@ func defaults() Config {
 		Media: MediaConfig{
 			Storage: "local",
 			Local: LocalStorageConfig{
-				BasePath: "./public/media",
+				BasePath: "./var/media",
 				BaseURL:  "/media",
 			},
 			Thumbnails: map[string]ThumbnailConfig{

@@ -20,6 +20,16 @@ type contentTypedSaver interface {
 	SaveWithContentType(path string, file io.Reader, contentType string) error
 }
 
+// previewMIMEByExt is the allowlist for inline customizer delivery.
+// Anything else is stored/served as octet-stream with attachment disposition.
+var previewMIMEByExt = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".webp": "image/webp",
+	".gif":  "image/gif",
+}
+
 // Store adapts Shopanda media.SignedURLStorage to ports.AssetStore and
 // enforces the Metal Dogs private key namespace.
 type Store struct {
@@ -52,13 +62,30 @@ func rejectKey(key string) error {
 	return nil
 }
 
+// resolveContentType maps key extension to a safe MIME. Caller-supplied types
+// outside the allowlist are ignored (XSS/open-in-tab hazard with inline GETs).
+func resolveContentType(key, claimed string) (ctype string, inlineOK bool) {
+	ext := strings.ToLower(path.Ext(key))
+	safe, ok := previewMIMEByExt[ext]
+	if !ok {
+		return "application/octet-stream", false
+	}
+	claimed = strings.ToLower(strings.TrimSpace(claimed))
+	if claimed != "" && claimed != safe {
+		// Keep extension-derived safe type; do not trust caller.
+		return safe, true
+	}
+	return safe, true
+}
+
 // Put writes via media.Storage.Save (or SaveWithContentType when available).
 func (s *Store) Put(_ context.Context, key string, r io.Reader, contentType string) error {
 	if err := rejectKey(key); err != nil {
 		return err
 	}
-	if saver, ok := s.inner.(contentTypedSaver); ok && strings.TrimSpace(contentType) != "" {
-		if err := saver.SaveWithContentType(key, r, contentType); err != nil {
+	ctype, _ := resolveContentType(key, contentType)
+	if saver, ok := s.inner.(contentTypedSaver); ok {
+		if err := saver.SaveWithContentType(key, r, ctype); err != nil {
 			return fmt.Errorf("mediastore: put: %w", err)
 		}
 		return nil
@@ -91,18 +118,23 @@ func (s *Store) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-// SignedGetURL issues a short-lived platform signed URL (inline disposition
-// for customizer preview; TTL capped by ports.CapSignedGetTTL).
+// SignedGetURL issues a short-lived platform signed URL. Inline disposition
+// only for allowlisted preview image extensions; otherwise attachment.
 func (s *Store) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	if err := rejectKey(key); err != nil {
 		return "", err
 	}
 	ttl = ports.CapSignedGetTTL(ttl)
 	filename := path.Base(key)
+	_, inlineOK := resolveContentType(key, "")
+	disp := media.DispositionAttachment
+	if inlineOK {
+		disp = media.DispositionInline
+	}
 	url, err := s.inner.SignedURL(ctx, key, media.SignURLOptions{
 		TTL:         ttl,
 		Filename:    filename,
-		Disposition: media.DispositionInline,
+		Disposition: disp,
 	})
 	if err != nil {
 		return "", fmt.Errorf("mediastore: signed get: %w", err)
