@@ -10,7 +10,6 @@ import (
 // ErrTemplateVersionConflict is returned when InsertDraft hits UNIQUE (slug, version).
 var ErrTemplateVersionConflict = errors.New("template version conflict")
 
-
 // TemplateStore persists versioned template catalog rows.
 type TemplateStore interface {
 	// InsertDraft inserts a new draft row (forces status=draft).
@@ -25,6 +24,10 @@ type TemplateStore interface {
 	DraftBySlugHash(ctx context.Context, slug, contentHash string) (domain.Template, bool, error)
 	// PublishedBySlug returns the currently published version for slug, if any.
 	PublishedBySlug(ctx context.Context, slug string) (domain.Template, bool, error)
+	// ListPublished returns published templates, optionally filtered by genre (empty = all).
+	ListPublished(ctx context.Context, genre string) ([]domain.Template, error)
+	// GetPublishedByID returns a published template by id, if any.
+	GetPublishedByID(ctx context.Context, id string) (domain.Template, bool, error)
 	// SetStatus updates status (and published_at when publishing). Errors if id missing.
 	SetStatus(ctx context.Context, id, status string) error
 	// PublishExclusive retires other published + other drafts for slug and publishes id in one transaction.

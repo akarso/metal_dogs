@@ -125,6 +125,73 @@ func TestTemplateStore_UniquePublishedIndex(t *testing.T) {
 	}
 }
 
+func TestTemplateStore_ListPublished_AndGetByID(t *testing.T) {
+	db := testutil.OpenIsolated(t, "templates_list_pub")
+	store := postgres.NewTemplateStore(db)
+	cat := &application.TemplateCatalog{Store: store, IDs: ports.UUIDGenerator{}}
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	write := func(slug, genre, prompt string) string {
+		t.Helper()
+		path := filepath.Join(dir, slug+".yaml")
+		body := strings.ReplaceAll(minimalYAML(slug, prompt), "genre: black_metal", "genre: "+genre)
+		if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	pathA := write("tpl-a", "black_metal", "a")
+	pathB := write("tpl-b", "punk", "b")
+	pathDraft := write("tpl-draft", "punk", "draft-only")
+	if _, err := cat.LoadDraft(ctx, pathA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.LoadDraft(ctx, pathB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cat.LoadDraft(ctx, pathDraft); err != nil {
+		t.Fatal(err)
+	}
+	pubA, err := cat.Publish(ctx, "tpl-a", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, err := cat.Publish(ctx, "tpl-b", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := store.ListPublished(ctx, "")
+	if err != nil || len(all) != 2 {
+		t.Fatalf("all=%v err=%v", all, err)
+	}
+	if all[0].Slug != "tpl-a" || all[1].Slug != "tpl-b" {
+		t.Fatalf("order = %s,%s", all[0].Slug, all[1].Slug)
+	}
+	punk, err := store.ListPublished(ctx, "punk")
+	if err != nil || len(punk) != 1 || punk[0].ID != pubB.ID {
+		t.Fatalf("punk=%v err=%v", punk, err)
+	}
+	none, err := store.ListPublished(ctx, "nope")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("unknown genre = %v err=%v", none, err)
+	}
+
+	got, ok, err := store.GetPublishedByID(ctx, pubA.ID)
+	if err != nil || !ok || got.Slug != "tpl-a" {
+		t.Fatalf("get published: %+v ok=%v err=%v", got, ok, err)
+	}
+	draft, ok, err := store.LatestDraftBySlug(ctx, "tpl-draft")
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetPublishedByID(ctx, draft.ID); err != nil || ok {
+		t.Fatalf("draft must not be gettable as published, ok=%v err=%v", ok, err)
+	}
+}
+
 func minimalYAML(slug, prompt string) string {
 	return `slug: ` + slug + `
 genre: black_metal

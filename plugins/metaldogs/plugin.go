@@ -62,6 +62,12 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := app.RegisterPublicRoute("GET /api/customizer/health", httpapi.Health(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: health route: %w", err)
 	}
+	if err := app.RegisterPublicRoute("GET /api/customizer/templates", httpapi.ListTemplates(app)); err != nil {
+		return fmt.Errorf("metaldogs plugin: templates list route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("GET /api/customizer/templates/{id}", httpapi.GetTemplate(app)); err != nil {
+		return fmt.Errorf("metaldogs plugin: templates get route: %w", err)
+	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}

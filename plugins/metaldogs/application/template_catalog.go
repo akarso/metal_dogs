@@ -222,3 +222,23 @@ func (c *TemplateCatalog) Retire(ctx context.Context, slug string) (domain.Templ
 	}
 	return c.Store.RetireExclusive(ctx, slug)
 }
+
+// ListPublished returns published templates, optionally filtered by genre.
+func (c *TemplateCatalog) ListPublished(ctx context.Context, genre string) ([]domain.Template, error) {
+	if c == nil || c.Store == nil {
+		return nil, fmt.Errorf("template catalog: store required")
+	}
+	return c.Store.ListPublished(ctx, strings.TrimSpace(genre))
+}
+
+// GetPublishedByID returns a published template by id.
+func (c *TemplateCatalog) GetPublishedByID(ctx context.Context, id string) (domain.Template, bool, error) {
+	if c == nil || c.Store == nil {
+		return domain.Template{}, false, fmt.Errorf("template catalog: store required")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return domain.Template{}, false, nil
+	}
+	return c.Store.GetPublishedByID(ctx, id)
+}

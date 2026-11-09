@@ -1,8 +1,8 @@
 # CR-10: G3 output validation
 
-- Status: **open** — PR [#22](https://github.com/akarso/metal_dogs/pull/22) (not closed until merge)
+- Closed: 2026-11-09 (merged [#22](https://github.com/akarso/metal_dogs/pull/22))
 - Slices: `G3`
-- Milestone progress: M2 → G3 (pending merge)
+- Milestone progress: M2 → G3 done
 
 ## What shipped
 

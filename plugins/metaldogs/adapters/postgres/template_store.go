@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -132,6 +133,59 @@ func (s *TemplateStore) PublishedBySlug(ctx context.Context, slug string) (domai
 		ORDER BY version DESC
 		LIMIT 1
 	`, slug, domain.TemplatePublished)
+}
+
+func (s *TemplateStore) ListPublished(ctx context.Context, genre string) ([]domain.Template, error) {
+	genre = strings.TrimSpace(genre)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if genre == "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT `+templateColumns+`
+			FROM metaldogs_templates
+			WHERE status = $1
+			ORDER BY slug ASC
+		`, domain.TemplatePublished)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT `+templateColumns+`
+			FROM metaldogs_templates
+			WHERE status = $1 AND genre = $2
+			ORDER BY slug ASC
+		`, domain.TemplatePublished, genre)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs templates list published: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Template
+	for rows.Next() {
+		t, err := scanTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("metaldogs templates list published: %w", err)
+	}
+	if out == nil {
+		out = []domain.Template{}
+	}
+	return out, nil
+}
+
+func (s *TemplateStore) GetPublishedByID(ctx context.Context, id string) (domain.Template, bool, error) {
+	if id == "" {
+		return domain.Template{}, false, nil
+	}
+	return s.scanOne(ctx, s.db, `
+		SELECT `+templateColumns+`
+		FROM metaldogs_templates
+		WHERE id = $1 AND status = $2
+	`, id, domain.TemplatePublished)
 }
 
 func (s *TemplateStore) SetStatus(ctx context.Context, id, status string) error {
