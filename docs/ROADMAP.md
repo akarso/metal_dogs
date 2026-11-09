@@ -299,7 +299,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Templates load as `draft`; nothing published in this CR.
 - **Docs:** `architecture/domain-model.md` Template section; `runbooks/template-publishing.md`; CR-09.
 
-#### G3 · Output validation — size M — **DONE** (CR-10, 2026-11-09; PR #22)
+#### G3 · Output validation — size M — **DONE pending merge** (CR-10 / PR #22)
 
 - **Goal:** Deterministic checks on provider output before it becomes a preview: exact canvas WxH, monochrome tolerance (un-premultiplied), transparency warning, PNG decode integrity with IHDR size cap, near-uniform blank detection; dog-name OCR remains heuristic-only.
 - **Scope:** `generation/validate.Validate` (hard fail: `decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`; `no_transparency` warning-only until ADR-0008 Accept). Wired into `metaldogs:eval` (`error_class=validation_failed`); job wiring deferred to C4. Not in G3: aspect-only checks beyond WxH, deeper “garbage” classifiers, byte-reading OCR, background-removal.

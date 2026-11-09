@@ -110,6 +110,15 @@ func TestValidate_DimensionsMismatch(t *testing.T) {
 	}
 }
 
+func TestValidate_UnsetCanvas_FailClosed(t *testing.T) {
+	t.Parallel()
+	pngBytes := encodePNG(t, detailedMono(16, 16, true))
+	got := validate.Validate(pngBytes, domain.OutputConfig{Monochrome: true})
+	if !got.Failed() || !contains(got.Codes, validate.CodeDimensionsMismatch) {
+		t.Fatalf("unset canvas must fail closed, got %+v", got)
+	}
+}
+
 func TestValidate_NotMonochrome(t *testing.T) {
 	t.Parallel()
 	img := fillRGBA(16, 16, color.RGBA{R: 255, G: 0, B: 0, A: 200})

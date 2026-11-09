@@ -241,6 +241,9 @@ func TestRun_EmptyPhotoBytes_MarkedFailed(t *testing.T) {
 	if report.Samples[0].Validation.Status != "skipped" {
 		t.Fatalf("validation = %+v", report.Samples[0].Validation)
 	}
+	if report.Samples[0].Validation.Message != "validation skipped: generate did not run" {
+		t.Fatalf("validation message = %q", report.Samples[0].Validation.Message)
+	}
 }
 
 func TestRun_ContextCancel_Classified(t *testing.T) {
@@ -383,6 +386,30 @@ func TestLoadTemplate_RejectsPartialOutputConfigCanvas(t *testing.T) {
 	}
 	if _, err := eval.LoadTemplate(path); err == nil {
 		t.Fatal("expected partial output_config canvas error")
+	}
+}
+
+func TestLoadTemplate_RejectsNegativeOutputConfigCanvas(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","parameters":{"width":8,"height":8},"output_config":{"canvas_width":-1,"canvas_height":-1}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eval.LoadTemplate(path); err == nil {
+		t.Fatal("expected negative canvas error")
+	}
+}
+
+func TestLoadTemplate_RejectsZeroOutputConfigCanvas(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","parameters":{"width":8,"height":8},"output_config":{"canvas_width":0,"canvas_height":0}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eval.LoadTemplate(path); err == nil {
+		t.Fatal("expected zero canvas error when keys present")
 	}
 }
 

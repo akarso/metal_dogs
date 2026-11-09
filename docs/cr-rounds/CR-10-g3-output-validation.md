@@ -9,7 +9,8 @@
 - Package `plugins/metaldogs/generation/validate`: `Validate(png, OutputConfig) Result` with hard-fail codes `decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`; `no_transparency` in `Warnings` only until ADR-0008 Accept
 - `png.DecodeConfig` size cap (`domain.MaxCanvasDimension`) before full decode; mono uses un-premultiplied RGB; blank ignores near-transparent pixels
 - Shared `HasUsefulAlpha` (same decode bound) used by OpenAI adapter `HasAlpha` metadata
-- Eval: `TemplateDef.OutputConfig` from v1 YAML; legacy stubs reject partial canvas, default `Monochrome: true` when omitted; hard fail → `error_class=validation_failed`; generate never ran → `validation.status=skipped`
+- Eval: `TemplateDef.OutputConfig` from v1 YAML; legacy stubs reject partial/non-positive canvas, default `Monochrome: true` when omitted; hard fail → `error_class=validation_failed`; `validation.status=skipped` with distinct messages (generate did not run vs output not persisted)
+- `Validate` fail-closed on unset/partial canvas; mono vs blank alpha floors documented for C4 decision
 - Fake provider renders monochrome spatial fixtures so offline eval passes G3 checks
 - OCR unchanged: `NameHeuristic` only; no `name_ocr_mismatch` emission
 - No job/worker wiring (C4)

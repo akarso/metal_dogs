@@ -127,10 +127,10 @@ func ensureEmptyOutDir(outDir string) error {
 	return nil
 }
 
-func skippedValidation() ValidationResult {
+func skippedValidation(msg string) ValidationResult {
 	return ValidationResult{
 		Status:  "skipped",
-		Message: validationSkippedMessage,
+		Message: msg,
 	}
 }
 
@@ -139,7 +139,7 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	sample := SampleResult{
 		PhotoName:  base,
 		NameCheck:  ocr.NameHeuristic(def.DogName),
-		Validation: skippedValidation(),
+		Validation: skippedValidation(validationSkippedNoGenerate),
 	}
 	raw, err := os.ReadFile(photoPath)
 	if err != nil {
@@ -169,6 +169,9 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 		sample.ErrorClass = string(generation.ClassifyError(err))
 		return sample
 	}
+
+	// Provider returned bytes; any persist failure below is not a generate miss.
+	sample.Validation = skippedValidation(validationSkippedNoPersist)
 
 	outName := outputPNGName(base)
 	if prev, ok := written[outName]; ok {

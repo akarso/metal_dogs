@@ -31,7 +31,12 @@ const (
 const MonochromeTolerance = 16
 
 // AlphaChromaFloor is the minimum 8-bit alpha for a pixel to contribute to
-// monochrome and blank checks (near-transparent leftover RGB is ignored).
+// blank detection (near-transparent leftover RGB under cutouts is ignored).
+//
+// Monochrome intentionally uses a stricter gate (any a16 > 0, un-premultiplied)
+// so low-alpha chromatic fringe cannot hide colour. Before C4 job wiring,
+// decide whether live provider fringe false-fails warrant aligning mono to this
+// floor (tunable); document the choice in generation-pipeline.md.
 const AlphaChromaFloor = 16
 
 // BlankMaxUniqueColors: after 4-bit-per-channel quantize, ≤ this many colors is
@@ -69,10 +74,9 @@ func Validate(pngBytes []byte, cfg domain.OutputConfig) Result {
 
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if cfg.CanvasWidth > 0 && cfg.CanvasHeight > 0 {
-		if w != cfg.CanvasWidth || h != cfg.CanvasHeight {
-			codes = append(codes, CodeDimensionsMismatch)
-		}
+	// Fail closed: both canvas edges must be positive (C4 must not pass partial cfg).
+	if cfg.CanvasWidth <= 0 || cfg.CanvasHeight <= 0 || w != cfg.CanvasWidth || h != cfg.CanvasHeight {
+		codes = append(codes, CodeDimensionsMismatch)
 	}
 
 	hasAlpha := false

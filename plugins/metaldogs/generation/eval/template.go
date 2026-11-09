@@ -142,18 +142,14 @@ func applyLegacyOutputDefaults(def *TemplateDef, oc *legacyOutputProbe) error {
 		return nil
 	}
 	cw, ch := *oc.CanvasWidth, *oc.CanvasHeight
-	if (cw == 0) != (ch == 0) {
-		return fmt.Errorf("eval: output_config canvas_width and canvas_height must both be set or both omitted (got %dx%d)", cw, ch)
+	if cw <= 0 || ch <= 0 {
+		return fmt.Errorf("eval: output_config canvas_width and canvas_height must be > 0 (got %dx%d)", cw, ch)
 	}
-	if cw == 0 && ch == 0 {
-		setDefaultCanvasMono(def)
-	} else {
-		if cw > domain.MaxCanvasDimension || ch > domain.MaxCanvasDimension {
-			return fmt.Errorf("eval: output_config canvas exceeds max %d", domain.MaxCanvasDimension)
-		}
-		def.OutputConfig.CanvasWidth = cw
-		def.OutputConfig.CanvasHeight = ch
+	if cw > domain.MaxCanvasDimension || ch > domain.MaxCanvasDimension {
+		return fmt.Errorf("eval: output_config canvas exceeds max %d", domain.MaxCanvasDimension)
 	}
+	def.OutputConfig.CanvasWidth = cw
+	def.OutputConfig.CanvasHeight = ch
 	if oc.Monochrome != nil {
 		def.OutputConfig.Monochrome = *oc.Monochrome
 	} else {

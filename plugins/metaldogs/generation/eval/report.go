@@ -12,7 +12,8 @@ import (
 )
 
 // ValidationResult records G3 output checks for one sample.
-// Status is pass|fail after a successful generate, or skipped when generate never ran.
+// Status is pass|fail after bytes are validated, or skipped when validation never ran
+// (pre-generate failure, or post-generate persist/collision failure).
 // Codes are hard-fail only; Warnings hold soft codes (e.g. no_transparency).
 type ValidationResult struct {
 	Status   string   `json:"status"` // pass | fail | skipped
@@ -21,7 +22,10 @@ type ValidationResult struct {
 	Message  string   `json:"message,omitempty"`
 }
 
-const validationSkippedMessage = "validation skipped: generate did not succeed"
+const (
+	validationSkippedNoGenerate = "validation skipped: generate did not run"
+	validationSkippedNoPersist  = "validation skipped: output was not persisted"
+)
 
 // SampleResult is one photo's generation outcome in the report.
 type SampleResult struct {
