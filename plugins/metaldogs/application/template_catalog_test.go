@@ -137,7 +137,7 @@ func (m *memStore) PublishExclusive(_ context.Context, slug, id string) (domain.
 	defer m.mu.Unlock()
 	target, ok := m.rows[id]
 	if !ok || target.Slug != slug {
-		return domain.Template{}, fmt.Errorf("missing id")
+		return domain.Template{}, fmt.Errorf("missing id/slug")
 	}
 	for k, r := range m.rows {
 		if r.Slug != slug || r.ID == id {
@@ -148,9 +148,11 @@ func (m *memStore) PublishExclusive(_ context.Context, slug, id string) (domain.
 			m.rows[k] = r
 		}
 	}
-	now := time.Now().UTC()
+	if target.PublishedAt == nil {
+		now := time.Now().UTC()
+		target.PublishedAt = &now
+	}
 	target.Status = domain.TemplatePublished
-	target.PublishedAt = &now
 	m.rows[id] = target
 	return target, nil
 }
@@ -305,6 +307,39 @@ func TestCatalog_PublishExplicitRetiredVersion(t *testing.T) {
 	}
 }
 
+func TestCatalog_PublishAlreadyPublished_RetiresLeftoverDraft(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	cat := &application.TemplateCatalog{Store: store, IDs: &seqIDs{}}
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := writeYAML(t, dir, "same", "identical")
+	if _, err := cat.LoadDraft(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	pub, err := cat.Publish(ctx, "same", 0)
+	if err != nil || pub.Version != 1 {
+		t.Fatalf("pub=%+v err=%v", pub, err)
+	}
+	// Same YAML → new draft (hash matches published, not a draft).
+	r, err := cat.LoadDraft(ctx, path)
+	if err != nil || !r.Created || r.Template.Version != 2 {
+		t.Fatalf("load after publish=%+v err=%v", r, err)
+	}
+	// Explicit publish of already-published v1 must clean leftover draft, not bump.
+	again, err := cat.Publish(ctx, "same", 1)
+	if err != nil || again.Version != 1 || again.Status != domain.TemplatePublished {
+		t.Fatalf("re-publish published=%+v err=%v", again, err)
+	}
+	v2, ok, err := store.GetBySlugVersion(ctx, "same", 2)
+	if err != nil || !ok || v2.Status != domain.TemplateRetired {
+		t.Fatalf("leftover draft must be retired: %+v", v2)
+	}
+	if _, err := cat.Publish(ctx, "same", 0); err == nil {
+		t.Fatal("bare publish must fail with no drafts left")
+	}
+}
+
 func TestCatalog_RejectUnknownYAMLField(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -342,7 +377,6 @@ func TestCatalog_RejectPathEscape(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := writeYAML(t, dir, "esc", "p")
-	// inject escaping path
 	raw, _ := os.ReadFile(path)
 	raw = append(raw, []byte("\nreference_pattern_path: ../outside.png\n")...)
 	if err := os.WriteFile(path, raw, 0o640); err != nil {
@@ -350,5 +384,23 @@ func TestCatalog_RejectPathEscape(t *testing.T) {
 	}
 	if _, err := application.ValidatePath(path); err == nil {
 		t.Fatal("expected path escape error")
+	}
+}
+
+func TestCatalog_AllowsDotDotPrefixedFilename(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	asset := filepath.Join(dir, "..assets.png")
+	if err := os.WriteFile(asset, []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	path := writeYAML(t, dir, "dotdotname", "p")
+	raw, _ := os.ReadFile(path)
+	raw = append(raw, []byte("\nreference_pattern_path: ..assets.png\n")...)
+	if err := os.WriteFile(path, raw, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.ValidatePath(path); err != nil {
+		t.Fatalf("..assets.png under template dir must be allowed: %v", err)
 	}
 }

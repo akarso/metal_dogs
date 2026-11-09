@@ -188,9 +188,9 @@ func (s *TemplateStore) PublishExclusive(ctx context.Context, slug, id string) (
 	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_templates
-		SET status = $2, published_at = now()
-		WHERE id = $1
-	`, id, domain.TemplatePublished)
+		SET status = $3, published_at = COALESCE(published_at, now())
+		WHERE id = $1 AND slug = $2
+	`, id, slug, domain.TemplatePublished)
 	if err != nil {
 		return domain.Template{}, fmt.Errorf("metaldogs templates publish: %w", err)
 	}
@@ -199,13 +199,13 @@ func (s *TemplateStore) PublishExclusive(ctx context.Context, slug, id string) (
 		return domain.Template{}, err
 	}
 	if n == 0 {
-		return domain.Template{}, fmt.Errorf("metaldogs templates: id %q not found", id)
+		return domain.Template{}, fmt.Errorf("metaldogs templates: id %q slug %q not found", id, slug)
 	}
 	t, ok, err := s.scanOne(ctx, tx, `
 		SELECT `+templateColumns+`
 		FROM metaldogs_templates
-		WHERE id = $1
-	`, id)
+		WHERE id = $1 AND slug = $2
+	`, id, slug)
 	if err != nil {
 		return domain.Template{}, err
 	}

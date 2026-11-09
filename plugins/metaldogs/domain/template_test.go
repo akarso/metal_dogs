@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 )
 
 func validTemplate() domain.Template {
@@ -103,6 +104,13 @@ func TestTemplate_ContentHash_StableAndSensitive(t *testing.T) {
 	}
 	if hc == ha {
 		t.Fatal("prompt edit must change hash")
+	}
+}
+
+func TestMaxCanvasDimension_MatchesGeneration(t *testing.T) {
+	t.Parallel()
+	if domain.MaxCanvasDimension != generation.MaxDimension {
+		t.Fatalf("MaxCanvasDimension=%d generation.MaxDimension=%d", domain.MaxCanvasDimension, generation.MaxDimension)
 	}
 }
 

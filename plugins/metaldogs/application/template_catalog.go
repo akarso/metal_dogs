@@ -86,7 +86,7 @@ func checkOptionalPath(base, rel string) error {
 	joined := filepath.Join(base, rel)
 	clean := filepath.Clean(joined)
 	relToBase, err := filepath.Rel(base, clean)
-	if err != nil || strings.HasPrefix(relToBase, "..") {
+	if err != nil || pathEscapes(relToBase) {
 		return fmt.Errorf("template catalog: asset path %q escapes template directory", rel)
 	}
 	st, err := os.Stat(clean)
@@ -97,6 +97,14 @@ func checkOptionalPath(base, rel string) error {
 		return fmt.Errorf("template catalog: asset path %q is a directory", rel)
 	}
 	return nil
+}
+
+func pathEscapes(rel string) bool {
+	if rel == ".." {
+		return true
+	}
+	sep := string(filepath.Separator)
+	return strings.HasPrefix(rel, ".."+sep)
 }
 
 // LoadResult describes a LoadDraft outcome.
@@ -165,16 +173,20 @@ func (c *TemplateCatalog) Publish(ctx context.Context, slug string, version int)
 	if !ok {
 		return domain.Template{}, fmt.Errorf("template catalog: version not found for slug %q (load a draft first, or pass -version)", slug)
 	}
-	if t.Status == domain.TemplatePublished {
-		return t, nil
-	}
-	if version <= 0 && t.Status != domain.TemplateDraft {
-		return domain.Template{}, fmt.Errorf("template catalog: cannot publish status %q (want draft)", t.Status)
-	}
-	if version > 0 && t.Status != domain.TemplateDraft && t.Status != domain.TemplateRetired {
+	switch t.Status {
+	case domain.TemplatePublished:
+		// Still run exclusive cleanup so leftover drafts from a same-hash LoadDraft are retired.
+		return c.Store.PublishExclusive(ctx, slug, t.ID)
+	case domain.TemplateDraft:
+		return c.Store.PublishExclusive(ctx, slug, t.ID)
+	case domain.TemplateRetired:
+		if version <= 0 {
+			return domain.Template{}, fmt.Errorf("template catalog: cannot publish status %q (want draft)", t.Status)
+		}
+		return c.Store.PublishExclusive(ctx, slug, t.ID)
+	default:
 		return domain.Template{}, fmt.Errorf("template catalog: cannot publish status %q", t.Status)
 	}
-	return c.Store.PublishExclusive(ctx, slug, t.ID)
 }
 
 // Retire marks the published template for slug as retired.
@@ -196,7 +208,13 @@ func (c *TemplateCatalog) Retire(ctx context.Context, slug string) (domain.Templ
 	if err := c.Store.SetStatus(ctx, t.ID, domain.TemplateRetired); err != nil {
 		return domain.Template{}, err
 	}
-	t.Status = domain.TemplateRetired
-	t.PublishedAt = nil
-	return t, nil
+	// Re-read so PublishedAt matches storage (column is retained; status alone changes).
+	out, ok, err := c.Store.GetBySlugVersion(ctx, slug, t.Version)
+	if err != nil {
+		return domain.Template{}, err
+	}
+	if !ok {
+		return domain.Template{}, fmt.Errorf("template catalog: slug %q version %d missing after retire", slug, t.Version)
+	}
+	return out, nil
 }

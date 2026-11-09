@@ -42,7 +42,7 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 ./app metaldogs:templates publish -slug <slug> -version N # draft or retired row (rollback)
 ```
 
-Default publish takes the **highest-version draft**. Publishing is transactional: it retires any other `published` row for the slug **and** retires leftover older drafts so a later bare `publish` cannot revive a stale draft. Prefer `-version N` when rolling back.
+Default publish takes the **highest-version draft**. Publishing always runs the exclusive cleanup transaction (including when `-version` targets an already-`published` row): it retires any other `published` row for the slug **and** retires leftover drafts so a later bare `publish` cannot revive a same-hash draft. Prefer `-version N` when rolling back.
 
 ## Procedure: change a published template
 
