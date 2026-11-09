@@ -281,13 +281,14 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** CLI only for eval. Without media: eval CLI registers, customizer HTTP/AssetStore stay off (fail-closed). With media: full plugin surface.
 - **Docs:** ADR-0008 remains Proposed (provider TBD at G1); evaluation criteria unchanged; CR-07.
 
-#### G1 · Provider spike on real photos — size M (opt-in, paid)
+#### G1 · Provider spike on real photos — size M (opt-in, paid) — **SCAFFOLD DONE** (CR-08, 2026-11-08); **exit gate open**
 
 - **Goal:** Answer project-description questions 1, 2, 3, 7: fidelity of dog + pattern + text, cost per accepted artwork, print usability (transparency/background), typography correctness for Polish names of varied length.
-- **Scope:** One real provider adapter; 5 representative templates; ≥20 photos of varied quality; scoring rubric; spelling check of dog name by human review and a simple OCR heuristic recorded for later automation.
-- **Tests:** Contract test with sanitized recorded fixtures for the provider; smoke test behind `METALDOGS_SMOKE=1`.
-- **Safe delivery:** Never runs in CI; no production route.
-- **Docs:** ADR-0008 → Accepted (provider, model, parameters, data-processing terms, commercial-use confirmation); evaluation report summarized in `architecture/generation-quality.md` (no customer photos).
+- **Scope (shipped):** OpenAI Images adapter (`gpt-image-2.5-sunburst`, `image[]`, no `response_format`); 5 spike templates; scorecard example; OCR name heuristic stub; `metaldogs:eval -provider openai`.
+- **Scope (operator):** ≥20 local photos; paid runs; human scorecards; ADR accept if pass.
+- **Tests:** Contract httptest fixtures (MIME / no `response_format` / 400); smoke behind `METALDOGS_SMOKE=1` (not default CI).
+- **Safe delivery:** Never runs in CI; no production route; keys via `METALDOGS_OPENAI_API_KEY`.
+- **Docs:** ADR-0008 Proposed with OpenAI candidate; [`architecture/generation-quality.md`](architecture/generation-quality.md); CR-08.
 - **Exit gate:** Quality bar met for ≥4 of 5 templates; cost per accepted artwork acceptable including failed attempts. If not met, iterate within G1 before continuing M2.
 
 #### G2 · Template definition format v1 and prompt versioning — size M

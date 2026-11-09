@@ -78,9 +78,10 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # Never FileServer base_path / base_url — private/blobs keys live there too.
 # First private Save may chmod the media root (and ancestors) to 0700.
 # (not k8s probes — use /healthz and /readyz)
-# G0 offline eval (plugin enabled; without media = eval CLI only, no customizer HTTP):
+# G0/G1 offline eval (plugin enabled; without media = eval CLI only, no customizer HTTP):
 #   ./app metaldogs:eval -template plugins/metaldogs/generation/eval/testdata/template.json \
 #     -photos /path/to/photos -out /tmp/metaldogs-eval -provider fake
+#   OpenAI spike: METALDOGS_OPENAI_API_KEY=sk-... -provider openai
 #   (--out: no non-dot entries; outputs photo.ext.png + report.json)
 ```
 

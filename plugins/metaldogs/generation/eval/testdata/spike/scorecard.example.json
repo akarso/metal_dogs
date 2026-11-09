@@ -1,0 +1,26 @@
+{
+  "template_id": "spike-01-head-front-blackmetal",
+  "provider": "openai",
+  "provider_model": "gpt-image-2.5-sunburst",
+  "scored_at": "YYYY-MM-DD",
+  "scorer": "initials",
+  "samples": [
+    {
+      "photo_name": "example.jpg",
+      "dog_identity_1_to_5": 4,
+      "pattern_fidelity_1_to_5": 4,
+      "name_spelling_ok": true,
+      "name_legible": true,
+      "monochrome_ok": true,
+      "alpha_or_clean_bg_ok": true,
+      "notes": ""
+    }
+  ],
+  "template_pass": null,
+  "median_dog_identity": null,
+  "median_pattern_fidelity": null,
+  "name_accuracy_pct": null,
+  "cost_minor_units_total": null,
+  "accepted_artworks": null,
+  "cost_per_accepted_minor_units": null
+}

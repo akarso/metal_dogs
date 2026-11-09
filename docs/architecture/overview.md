@@ -212,6 +212,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Depends on residual `BoundQueue` + sync reinjection above | F3 |
 | `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; nothing writes yet | F4 |
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
+| `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
 
 **Pin absorb honesty:** #568 / #570 / #571 platform *merges* are in tree at `a8cbcb18`, but F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
 

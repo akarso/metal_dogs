@@ -14,7 +14,7 @@ const CommandEval = "metaldogs:eval"
 func registerCLICommands(app *plugin.App) {
 	app.RegisterCommand(cli.Command{
 		Name:        CommandEval,
-		Description: "Offline generation eval (template + photos → PNGs + report.json); default provider fake",
+		Description: "Offline generation eval (template + photos → PNGs + report.json); providers fake|openai",
 		RequiresDB:  false,
 		Run: func(ctx cli.Context, args []string) error {
 			opts, err := eval.ParseArgs(args)
