@@ -157,7 +157,8 @@ Templates are declarative catalog rows in `metaldogs_templates`, authored as YAM
 | Field group | Role |
 | --- | --- |
 | `slug` + `version` | Stable identity; unique pair. Version is a positive integer, immutable once the row exists. |
-| `status` | `draft` (invisible to customers) → `published` → `retired`. Publish retires any prior published version for the same slug. |
+| `status` | `draft` (invisible to customers) → `published` → `retired`. Publish retires any prior published version for the same slug (and leftover drafts). |
+| `published_at` | Set when a row **becomes** `published` from `draft` or `retired`. Re-running publish cleanup on an already-`published` row keeps the existing stamp (`CASE WHEN status = 'published' THEN published_at ELSE now() END`). Retire does not clear the column. |
 | `content_hash` | SHA-256 of the definition body (slug, genre, style, prompts, model params, photo requirements, text fields, output config, optional relative asset paths). Same hash on reload is a no-op; a changed hash inserts `version+1` as `draft`. |
 | `prompt_instructions` / `model_parameters` | Server-only. Never exposed on storefront list/detail DTOs (C1). |
 | `photo_requirements` | Pose enum (`head_front`, `head_angle`, `full_body_profile`, …) plus background/lighting hints for the upload step. |

@@ -148,7 +148,8 @@ func (m *memStore) PublishExclusive(_ context.Context, slug, id string) (domain.
 			m.rows[k] = r
 		}
 	}
-	if target.PublishedAt == nil {
+	// Mirror SQL: keep stamp if already published; otherwise refresh.
+	if target.Status != domain.TemplatePublished || target.PublishedAt == nil {
 		now := time.Now().UTC()
 		target.PublishedAt = &now
 	}

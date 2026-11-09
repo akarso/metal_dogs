@@ -188,7 +188,9 @@ func (s *TemplateStore) PublishExclusive(ctx context.Context, slug, id string) (
 	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_templates
-		SET status = $3, published_at = COALESCE(published_at, now())
+		SET
+			published_at = CASE WHEN status = 'published' THEN published_at ELSE now() END,
+			status = $3
 		WHERE id = $1 AND slug = $2
 	`, id, slug, domain.TemplatePublished)
 	if err != nil {
