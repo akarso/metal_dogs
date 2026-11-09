@@ -324,3 +324,60 @@ func TestLoadTemplate_RejectsPartialCanvas(t *testing.T) {
 		t.Fatal("expected partial width/height error")
 	}
 }
+
+func TestLoadTemplate_V1YAML(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "templates", "head-front-blackmetal.yaml")
+	def, err := eval.LoadTemplate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.ID != "head-front-blackmetal" || def.PromptVersion != "g2-v1" || def.Model == "" {
+		t.Fatalf("def = %+v", def)
+	}
+	if def.Parameters.Width != 1024 || def.DogName != "" {
+		t.Fatalf("v1 must not embed dog_name; params=%+v dog=%q", def.Parameters, def.DogName)
+	}
+}
+
+func TestRun_V1Template_FakeProvider(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	photosDir := filepath.Join(root, "photos")
+	outDir := filepath.Join(root, "out")
+	if err := os.MkdirAll(photosDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photosDir, "dog.png"), tinyPNG(t), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	report, err := eval.Run(context.Background(), eval.Options{
+		TemplatePath: filepath.Join("..", "..", "templates", "short-name-punk.yaml"),
+		PhotosDir:    photosDir,
+		OutDir:       outDir,
+		ProviderName: "fake",
+		DogName:      "Rex",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TemplateID != "short-name-punk" || report.DogName != "Rex" {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.Samples[0].Error != "" {
+		t.Fatalf("sample: %+v", report.Samples[0])
+	}
+}
+
+func tinyPNG(t *testing.T) []byte {
+	t.Helper()
+	// 1x1 opaque PNG
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+		0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xef, 0x00, 0x00,
+		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}

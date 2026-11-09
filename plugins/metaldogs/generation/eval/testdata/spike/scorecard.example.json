@@ -1,5 +1,5 @@
 {
-  "template_id": "spike-01-head-front-blackmetal",
+  "template_id": "head-front-blackmetal",
   "provider": "openai",
   "provider_model": "gpt-image-2.5-sunburst",
   "scored_at": "YYYY-MM-DD",

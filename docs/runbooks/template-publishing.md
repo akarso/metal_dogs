@@ -1,7 +1,7 @@
 # Runbook: adding, changing, publishing, and retiring templates
 
 - **Introduced by slice:** `G2` (format and loader), `X1` (authoring at scale)
-- **Last exercised:** never
+- **Last exercised:** never (catalog stays draft until C1)
 - **Severity when triggered:** low (routine) / medium (regression after a change)
 - **Owner:** template author + backend maintainer
 
@@ -11,36 +11,72 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 
 ## Procedure: add a template
 
-1. Author the definition file under `plugins/metaldogs/templates/<slug>.yaml` (`TBD (G2)` exact path/format) with: genre, style, reference pattern asset, prompt instructions + parameters, photo requirements, text fields, output config.
-2. Upload the reference pattern and thumbnail assets (`TBD (G2)` command).
-3. Validate: `TBD (G2)` command `metaldogs:templates validate`.
-4. Render test outputs with the fake provider to check composition and print area (`metaldogs:eval` from `G0`).
-5. Optional, paid: run the real provider on the standard photo set (`METALDOGS_SMOKE=1`) and score against ADR-0008 criteria.
-6. Load as `draft`: `TBD (G2)` command `metaldogs:templates load`. Drafts are invisible to the API.
-7. Publish: `TBD (G2)` command `metaldogs:templates publish <slug>`; version becomes 1.
+1. Author the definition file under `plugins/metaldogs/templates/<slug>.yaml` with: genre, style, optional reference/thumbnail relative paths, prompt instructions + parameters, photo requirements, text fields, output config.
+2. Upload the reference pattern and thumbnail assets when the asset ingest path exists (FKs stay null until then).
+3. Validate:
+
+```bash
+./app metaldogs:templates validate -file plugins/metaldogs/templates/<slug>.yaml
+```
+
+4. Render test outputs with the fake provider to check composition and print area:
+
+```bash
+./app metaldogs:eval \
+  -template plugins/metaldogs/templates/<slug>.yaml \
+  -photos /path/to/photos -out /tmp/md-eval -provider fake \
+  -dog-name Burek
+```
+
+5. Optional, paid: run the real provider on the standard photo set and score against ADR-0008 criteria (`-provider openai`).
+6. Load as `draft` (invisible to the API):
+
+```bash
+./app metaldogs:templates load -file plugins/metaldogs/templates/<slug>.yaml
+```
+
+7. Publish when ready for C1:
+
+```bash
+./app metaldogs:templates publish -slug <slug>            # latest draft
+./app metaldogs:templates publish -slug <slug> -version N # draft or retired row (rollback)
+```
+
+Default publish takes the **highest-version draft**. Publishing always runs the exclusive cleanup transaction (including when `-version` targets an already-`published` row): it retires any other `published` row for the slug **and** retires leftover drafts so a later bare `publish` cannot revive a same-hash draft. Prefer `-version N` when rolling back.
 
 ## Procedure: change a published template
 
 1. Edit the file; content hash changes.
 2. Validate and test as above.
-3. Load → creates version N+1 as `draft`; version N stays `published`.
-4. Publish N+1 → N becomes `retired` for new designs; existing designs pinned to N continue to work (they can still regenerate with N's prompt).
+3. `metaldogs:templates load` → creates version N+1 as `draft` when no draft already has that `content_hash` (matching published/retired hashes do **not** count as a no-op).
+4. Publish N+1 → prior published and other drafts become `retired`; existing designs pinned to older versions continue to work.
 
 ## Procedure: retire a template
 
-- `TBD (G2)` command `metaldogs:templates retire <slug>`. Existing designs and orders are unaffected.
+```bash
+./app metaldogs:templates retire -slug <slug>
+```
+
+Retire is exclusive (same class as publish): it retires **every** currently `published` row for the slug in one transaction and fails if none were published or if any published row remains afterward. Existing designs and orders are unaffected. After retire, `load` the same YAML again to create a fresh draft before a default `publish`.
 
 ## Regression after a change
 
 Symptom: `validation_failed` or low quality clustered on one `template_slug` after publish.
 
 1. Confirm with `jobs:list --type=integration.sync.metaldogs.generate --status=failed` filtered by template (`TBD`: filter support).
-2. Re-publish the previous version (`TBD (G2)` command `metaldogs:templates publish <slug> --version=N`). This is safe: versions are immutable.
+2. Re-publish a prior version:
+
+```bash
+./app metaldogs:templates publish -slug <slug> -version N
+```
+
+Versions are immutable; this retires the bad published row and restores N.
 3. Fix the definition offline; repeat the change procedure.
 
 ## Verification
 
-- `GET /api/customizer/templates` shows the expected set; a draft never appears; prompts never appear in the response.
+- `GET /api/customizer/templates` (C1) shows the expected set; a draft never appears; prompts never appear in the response.
+- Until C1: confirm rows with SQL / load CLI output (`status=draft` for the G2 authored set).
 
 ## Prevention / follow-up
 

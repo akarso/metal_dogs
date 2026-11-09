@@ -35,8 +35,9 @@ go test ./plugins/ -run ImportBoundary -count=1
 go test ./plugins/metaldogs/... -count=1
 bash .github/scripts/check-product-docs-links.sh
 
-# G0 offline eval (plugin enabled; media optional):
-# ./app metaldogs:eval -template … -photos … -out … -provider fake
+# G0/G2 offline eval (plugin enabled; media optional):
+# ./app metaldogs:eval -template plugins/metaldogs/templates/….yaml -photos … -out … -provider fake -dog-name Burek
+# ./app metaldogs:templates validate|load|publish|retire …
 ```
 
 DSN-gated feature tests (skip when unset; required in CI `integration` job):

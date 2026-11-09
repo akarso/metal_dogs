@@ -20,15 +20,16 @@ ADR-0008 stays **Proposed** until the operator spike meets the exit gate (≥4 o
 ## How to run the spike
 
 1. Collect ≥20 local photos (varied quality, breeds, lighting). Do not commit them.
-2. For each of the five templates under `plugins/metaldogs/generation/eval/testdata/spike/`:
+2. For each of the five Template v1 files under `plugins/metaldogs/templates/`:
 
 ```bash
 export METALDOGS_OPENAI_API_KEY=sk-...
 ./app metaldogs:eval \
-  -template plugins/metaldogs/generation/eval/testdata/spike/01-head-front-blackmetal.json \
+  -template plugins/metaldogs/templates/head-front-blackmetal.yaml \
   -photos /path/to/spike-photos \
   -out /tmp/md-spike-01 \
-  -provider openai
+  -provider openai \
+  -dog-name Burek
 # optional: -openai-model … -openai-base https://api.openai.com/v1
 ```
 

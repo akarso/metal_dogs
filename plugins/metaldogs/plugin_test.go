@@ -240,6 +240,9 @@ func TestCLI_Eval_FakeProvider(t *testing.T) {
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
 	}
+	if _, ok := reg.CLIRegistry().Get(metaldogs.CommandTemplates); !ok {
+		t.Fatal("metaldogs:templates not registered")
+	}
 	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandEval)
 	if !ok {
 		t.Fatal("metaldogs:eval not registered")

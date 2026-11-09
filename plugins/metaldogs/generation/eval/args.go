@@ -19,6 +19,7 @@ func ParseArgs(args []string) (Options, error) {
 	fs.StringVar(&opts.OpenAIAPIKey, "openai-api-key", "", "OpenAI API key (or METALDOGS_OPENAI_API_KEY)")
 	fs.StringVar(&opts.OpenAIModel, "openai-model", "", "OpenAI image model (default gpt-image-2.5-sunburst; template model wins when set)")
 	fs.StringVar(&opts.OpenAIBase, "openai-base", "", "OpenAI API base URL (default https://api.openai.com/v1)")
+	fs.StringVar(&opts.DogName, "dog-name", "Burek", "sample dog name for generation / name heuristic (not stored on v1 templates)")
 
 	if err := fs.Parse(args); err != nil {
 		return Options{}, err

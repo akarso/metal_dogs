@@ -150,6 +150,24 @@ Notes:
 - Snapshot duplicates the version's data (texts, template version, checksums) deliberately so an order remains fully described even if a design is deleted under retention rules. Assets referenced by a snapshot are never swept while the snapshot's fulfilment is incomplete.
 - `owner_token_hash` stores only the hash of the capability token ([ADR-0007](../adr/0007-guest-design-ownership-tokens.md)).
 
+## Template (G2)
+
+Templates are declarative catalog rows in `metaldogs_templates`, authored as YAML/JSON under `plugins/metaldogs/templates/<slug>.yaml` and loaded via `metaldogs:templates`.
+
+| Field group | Role |
+| --- | --- |
+| `slug` + `version` | Stable identity; unique pair. Version is a positive integer, immutable once the row exists. |
+| `status` | `draft` (invisible to customers) → `published` → `retired`. Publish retires any prior published version for the same slug (and leftover drafts). |
+| `published_at` | Set when a row **becomes** `published` from `draft` or `retired`. Re-running publish cleanup on an already-`published` row keeps the existing stamp (`CASE WHEN status = 'published' THEN published_at ELSE now() END`). Retire does not clear the column. |
+| `content_hash` | SHA-256 of the definition body (slug, genre, style, prompts, model params, photo requirements, text fields, output config, optional relative asset paths). Same hash on reload is a no-op; a changed hash inserts `version+1` as `draft`. |
+| `prompt_instructions` / `model_parameters` | Server-only. Never exposed on storefront list/detail DTOs (C1). |
+| `photo_requirements` | Pose enum (`head_front`, `head_angle`, `full_body_profile`, …) plus background/lighting hints for the upload step. |
+| `text_fields` | Editable (must include `dog_name` with max length + charset) and fixed copy. Keys are trimmed before validate/hash/persist so padded `dog_name` cannot pass Validate while storing a spaced key. |
+| `output_config` | Canvas size, monochrome flag, print area in canvas pixels. |
+| `reference_asset_id` / `thumbnail_asset_id` | Nullable UUIDs until asset ingest; files may declare relative `reference_pattern_path` / `thumbnail_path` for offline validation. |
+
+Designs pin `template_id` + `template_version` at creation ([ADR-0005](../adr/0005-immutable-order-design-snapshot.md)). Publishing workflow: [runbooks/template-publishing.md](../runbooks/template-publishing.md).
+
 ## Design status machine
 
 ```mermaid
