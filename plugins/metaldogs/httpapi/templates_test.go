@@ -45,14 +45,6 @@ func (m *tplMem) RetireExclusive(context.Context, string) (domain.Template, erro
 	return domain.Template{}, nil
 }
 
-func publishedView(r domain.Template) ports.PublishedTemplate {
-	return ports.PublishedTemplate{
-		ID: r.ID, Slug: r.Slug, Genre: r.Genre, StyleCategory: r.StyleCategory,
-		Version: r.Version, PublishedAt: r.PublishedAt,
-		PhotoRequirements: r.PhotoRequirements, TextFields: r.TextFields, OutputConfig: r.OutputConfig,
-	}
-}
-
 func (m *tplMem) ListPublished(_ context.Context, genre string) ([]ports.PublishedTemplate, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -65,7 +57,7 @@ func (m *tplMem) ListPublished(_ context.Context, genre string) ([]ports.Publish
 		if genre != "" && r.Genre != genre {
 			continue
 		}
-		out = append(out, publishedView(r))
+		out = append(out, ports.PublishedFromDomain(r))
 	}
 	return out, nil
 }
@@ -78,7 +70,7 @@ func (m *tplMem) GetPublishedByID(_ context.Context, id string) (ports.Published
 	if !ok || r.Status != domain.TemplatePublished {
 		return ports.PublishedTemplate{}, false, nil
 	}
-	return publishedView(r), true, nil
+	return ports.PublishedFromDomain(r), true, nil
 }
 
 var _ ports.TemplateStore = (*tplMem)(nil)
@@ -184,6 +176,29 @@ func TestListTemplates_GenreFilter(t *testing.T) {
 	}
 }
 
+func TestListTemplates_GenreCaseSensitiveEmpty(t *testing.T) {
+	t.Parallel()
+	id := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	store := &tplMem{rows: map[string]domain.Template{
+		id: samplePublished(id, "a", "black_metal"),
+	}}
+	cat := &application.TemplateCatalog{Store: store}
+	rec := httptest.NewRecorder()
+	httpapi.ListTemplates(cat).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates?genre=Black_Metal", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Templates []httpapi.PublicTemplate `json:"templates"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Templates) != 0 {
+		t.Fatalf("want empty list for mismatched casing, got %+v", body.Templates)
+	}
+}
+
 func TestGetTemplate_HappyPathExcludesSecrets(t *testing.T) {
 	t.Parallel()
 	pubID := "11111111-1111-4111-8111-111111111111"
@@ -257,26 +272,30 @@ func TestGetTemplate_404ForDraftRetiredUnknownAndBadID(t *testing.T) {
 
 func TestTemplates_NilCatalog_503(t *testing.T) {
 	t.Parallel()
-	rec := httptest.NewRecorder()
-	httpapi.ListTemplates(nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("list status=%d", rec.Code)
+	assert503 := func(t *testing.T, cat *application.TemplateCatalog) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		httpapi.ListTemplates(cat).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("list status=%d", rec.Code)
+		}
+		var errBody map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "unavailable" {
+			t.Fatalf("list body=%s", rec.Body.String())
+		}
+		mux := http.NewServeMux()
+		mux.Handle("GET /api/customizer/templates/{id}", httpapi.GetTemplate(cat))
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates/11111111-1111-4111-8111-111111111111", nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("get status=%d", rec.Code)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "unavailable" {
+			t.Fatalf("get body=%s", rec.Body.String())
+		}
 	}
-	var errBody map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "unavailable" {
-		t.Fatalf("list body=%s", rec.Body.String())
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("GET /api/customizer/templates/{id}", httpapi.GetTemplate(nil))
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates/11111111-1111-4111-8111-111111111111", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("get status=%d", rec.Code)
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "unavailable" {
-		t.Fatalf("get body=%s", rec.Body.String())
-	}
+	assert503(t, nil)
+	assert503(t, &application.TemplateCatalog{}) // Store nil
 }
 
 func TestTemplates_StoreError_500(t *testing.T) {

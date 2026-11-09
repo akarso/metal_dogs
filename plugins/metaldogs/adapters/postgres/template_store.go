@@ -195,7 +195,7 @@ func (s *TemplateStore) GetPublishedByID(ctx context.Context, id string) (ports.
 		FROM metaldogs_templates
 		WHERE id = $1 AND status = $2
 	`, id, domain.TemplatePublished))
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ports.PublishedTemplate{}, false, nil
 	}
 	if err != nil {
@@ -383,34 +383,43 @@ func (s *TemplateStore) scanOne(ctx context.Context, q rowQuerier, query string,
 }
 
 func scanPublishedTemplate(row scannable) (ports.PublishedTemplate, error) {
-	var t ports.PublishedTemplate
+	var id, slug, genre, style string
+	var version int
 	var photo, texts, out []byte
 	var publishedAt sql.NullTime
 	err := row.Scan(
-		&t.ID, &t.Slug, &t.Genre, &t.StyleCategory, &t.Version,
+		&id, &slug, &genre, &style, &version,
 		&photo, &texts, &out,
 		&publishedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return ports.PublishedTemplate{}, err
 		}
 		return ports.PublishedTemplate{}, fmt.Errorf("metaldogs templates scan public: %w", err)
 	}
-	if err := json.Unmarshal(photo, &t.PhotoRequirements); err != nil {
+	// Unmarshal jsonb via domain shapes (DB contract), then copy into port-owned types.
+	var photoD domain.PhotoRequirements
+	var textsD domain.TextFields
+	var outD domain.OutputConfig
+	if err := json.Unmarshal(photo, &photoD); err != nil {
 		return ports.PublishedTemplate{}, err
 	}
-	if err := json.Unmarshal(texts, &t.TextFields); err != nil {
+	if err := json.Unmarshal(texts, &textsD); err != nil {
 		return ports.PublishedTemplate{}, err
 	}
-	if err := json.Unmarshal(out, &t.OutputConfig); err != nil {
+	if err := json.Unmarshal(out, &outD); err != nil {
 		return ports.PublishedTemplate{}, err
+	}
+	rowT := domain.Template{
+		ID: id, Slug: slug, Genre: genre, StyleCategory: style, Version: version,
+		PhotoRequirements: photoD, TextFields: textsD, OutputConfig: outD,
 	}
 	if publishedAt.Valid {
 		ts := publishedAt.Time.UTC()
-		t.PublishedAt = &ts
+		rowT.PublishedAt = &ts
 	}
-	return t, nil
+	return ports.PublishedFromDomain(rowT), nil
 }
 
 func scanTemplate(row scannable) (domain.Template, error) {

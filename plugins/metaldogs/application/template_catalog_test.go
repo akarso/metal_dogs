@@ -121,14 +121,6 @@ func (m *memStore) PublishedBySlug(_ context.Context, slug string) (domain.Templ
 	return domain.Template{}, false, nil
 }
 
-func toPublished(r domain.Template) ports.PublishedTemplate {
-	return ports.PublishedTemplate{
-		ID: r.ID, Slug: r.Slug, Genre: r.Genre, StyleCategory: r.StyleCategory,
-		Version: r.Version, PublishedAt: r.PublishedAt,
-		PhotoRequirements: r.PhotoRequirements, TextFields: r.TextFields, OutputConfig: r.OutputConfig,
-	}
-}
-
 func (m *memStore) ListPublished(_ context.Context, genre string) ([]ports.PublishedTemplate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -140,7 +132,7 @@ func (m *memStore) ListPublished(_ context.Context, genre string) ([]ports.Publi
 		if genre != "" && r.Genre != genre {
 			continue
 		}
-		out = append(out, toPublished(r))
+		out = append(out, ports.PublishedFromDomain(r))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	if out == nil {
@@ -156,7 +148,7 @@ func (m *memStore) GetPublishedByID(_ context.Context, id string) (ports.Publish
 	if !ok || r.Status != domain.TemplatePublished {
 		return ports.PublishedTemplate{}, false, nil
 	}
-	return toPublished(r), true, nil
+	return ports.PublishedFromDomain(r), true, nil
 }
 
 func (m *memStore) SetStatus(_ context.Context, id, status string) error {
