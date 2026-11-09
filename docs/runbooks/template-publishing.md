@@ -57,7 +57,7 @@ Default publish takes the **highest-version draft**. Publishing always runs the 
 ./app metaldogs:templates retire -slug <slug>
 ```
 
-Existing designs and orders are unaffected. After retire, `load` the same YAML again to create a fresh draft before a default `publish`.
+Retire is exclusive (same class as publish): it retires **every** currently `published` row for the slug in one transaction and fails if none were published or if any published row remains afterward. Existing designs and orders are unaffected. After retire, `load` the same YAML again to create a fresh draft before a default `publish`.
 
 ## Regression after a change
 

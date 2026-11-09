@@ -8,7 +8,7 @@
 
 - Migration `002_create_templates.sql` → `metaldogs_templates` (+ partial unique index: one `published` per slug)
 - Domain `Template` Validate (required model, unique editable keys) + normalized content hash; unknown YAML/JSON fields rejected
-- Application catalog: LoadDraft no-op only on matching **draft** hash; Publish always runs PublishExclusive (including already-published `-version`, so leftover same-hash drafts are retired)
+- Application catalog: LoadDraft no-op only on matching **draft** hash (retries on version unique conflicts); Publish/Retire exclusive transactions; editable keys normalized before validate/hash
 - Postgres `TemplateStore` + DSN round-trip tests (UUID ids)
 - CLI `metaldogs:templates validate|load|publish|retire`
 - Five spike templates as YAML under `plugins/metaldogs/templates/`

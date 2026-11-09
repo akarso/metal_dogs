@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,8 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"gopkg.in/yaml.v3"
 )
+
+const loadDraftMaxAttempts = 5
 
 // TemplateCatalog loads and publishes versioned templates.
 type TemplateCatalog struct {
@@ -35,11 +39,21 @@ func ParseFile(path string) (domain.FileDefinition, error) {
 		if err := dec.Decode(&def); err != nil {
 			return domain.FileDefinition{}, fmt.Errorf("template catalog: parse yaml: %w", err)
 		}
+		var extra yaml.Node
+		if err := dec.Decode(&extra); err != io.EOF {
+			if err == nil {
+				return domain.FileDefinition{}, fmt.Errorf("template catalog: trailing YAML document after first template")
+			}
+			return domain.FileDefinition{}, fmt.Errorf("template catalog: parse yaml: %w", err)
+		}
 	case ".json":
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&def); err != nil {
 			return domain.FileDefinition{}, fmt.Errorf("template catalog: parse json: %w", err)
+		}
+		if dec.More() {
+			return domain.FileDefinition{}, fmt.Errorf("template catalog: trailing JSON after first template")
 		}
 	default:
 		return domain.FileDefinition{}, fmt.Errorf("template catalog: unsupported extension %q (want .yaml/.yml/.json)", filepath.Ext(path))
@@ -115,6 +129,7 @@ type LoadResult struct {
 
 // LoadDraft validates the file and inserts a new draft when no draft matches the content hash.
 // Matching published/retired rows do not count as a no-op (a new draft is created so publish can proceed).
+// Concurrent loads that collide on UNIQUE (slug, version) are retried.
 func (c *TemplateCatalog) LoadDraft(ctx context.Context, path string) (LoadResult, error) {
 	if c == nil || c.Store == nil || c.IDs == nil {
 		return LoadResult{}, fmt.Errorf("template catalog: store and id generator required")
@@ -123,28 +138,35 @@ func (c *TemplateCatalog) LoadDraft(ctx context.Context, path string) (LoadResul
 	if err != nil {
 		return LoadResult{}, err
 	}
-	existing, ok, err := c.Store.DraftBySlugHash(ctx, t.Slug, t.ContentHash)
-	if err != nil {
-		return LoadResult{}, err
+	for attempt := 0; attempt < loadDraftMaxAttempts; attempt++ {
+		existing, ok, err := c.Store.DraftBySlugHash(ctx, t.Slug, t.ContentHash)
+		if err != nil {
+			return LoadResult{}, err
+		}
+		if ok {
+			return LoadResult{Template: existing, Created: false}, nil
+		}
+		latest, okLatest, err := c.Store.LatestBySlug(ctx, t.Slug)
+		if err != nil {
+			return LoadResult{}, err
+		}
+		version := 1
+		if okLatest {
+			version = latest.Version + 1
+		}
+		row := t
+		row.ID = c.IDs.New()
+		row.Version = version
+		row.Status = domain.TemplateDraft
+		if err := c.Store.InsertDraft(ctx, row); err != nil {
+			if errors.Is(err, ports.ErrTemplateVersionConflict) {
+				continue
+			}
+			return LoadResult{}, err
+		}
+		return LoadResult{Template: row, Created: true}, nil
 	}
-	if ok {
-		return LoadResult{Template: existing, Created: false}, nil
-	}
-	latest, okLatest, err := c.Store.LatestBySlug(ctx, t.Slug)
-	if err != nil {
-		return LoadResult{}, err
-	}
-	version := 1
-	if okLatest {
-		version = latest.Version + 1
-	}
-	t.ID = c.IDs.New()
-	t.Version = version
-	t.Status = domain.TemplateDraft
-	if err := c.Store.InsertDraft(ctx, t); err != nil {
-		return LoadResult{}, err
-	}
-	return LoadResult{Template: t, Created: true}, nil
+	return LoadResult{}, fmt.Errorf("template catalog: version conflict for slug %q after %d attempts", t.Slug, loadDraftMaxAttempts)
 }
 
 // Publish promotes a draft (latest draft when version=0, or an explicit version) to published.
@@ -189,7 +211,7 @@ func (c *TemplateCatalog) Publish(ctx context.Context, slug string, version int)
 	}
 }
 
-// Retire marks the published template for slug as retired.
+// Retire marks every published template for slug as retired (exclusive; fails if none published).
 func (c *TemplateCatalog) Retire(ctx context.Context, slug string) (domain.Template, error) {
 	if c == nil || c.Store == nil {
 		return domain.Template{}, fmt.Errorf("template catalog: store required")
@@ -198,23 +220,5 @@ func (c *TemplateCatalog) Retire(ctx context.Context, slug string) (domain.Templ
 	if slug == "" {
 		return domain.Template{}, fmt.Errorf("template catalog: slug required")
 	}
-	t, ok, err := c.Store.PublishedBySlug(ctx, slug)
-	if err != nil {
-		return domain.Template{}, err
-	}
-	if !ok {
-		return domain.Template{}, fmt.Errorf("template catalog: no published template for slug %q", slug)
-	}
-	if err := c.Store.SetStatus(ctx, t.ID, domain.TemplateRetired); err != nil {
-		return domain.Template{}, err
-	}
-	// Re-read so PublishedAt matches storage (column is retained; status alone changes).
-	out, ok, err := c.Store.GetBySlugVersion(ctx, slug, t.Version)
-	if err != nil {
-		return domain.Template{}, err
-	}
-	if !ok {
-		return domain.Template{}, fmt.Errorf("template catalog: slug %q version %d missing after retire", slug, t.Version)
-	}
-	return out, nil
+	return c.Store.RetireExclusive(ctx, slug)
 }

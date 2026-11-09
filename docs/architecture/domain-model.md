@@ -162,7 +162,7 @@ Templates are declarative catalog rows in `metaldogs_templates`, authored as YAM
 | `content_hash` | SHA-256 of the definition body (slug, genre, style, prompts, model params, photo requirements, text fields, output config, optional relative asset paths). Same hash on reload is a no-op; a changed hash inserts `version+1` as `draft`. |
 | `prompt_instructions` / `model_parameters` | Server-only. Never exposed on storefront list/detail DTOs (C1). |
 | `photo_requirements` | Pose enum (`head_front`, `head_angle`, `full_body_profile`, …) plus background/lighting hints for the upload step. |
-| `text_fields` | Editable (must include `dog_name` with max length + charset) and fixed copy. |
+| `text_fields` | Editable (must include `dog_name` with max length + charset) and fixed copy. Keys are trimmed before validate/hash/persist so padded `dog_name` cannot pass Validate while storing a spaced key. |
 | `output_config` | Canvas size, monochrome flag, print area in canvas pixels. |
 | `reference_asset_id` / `thumbnail_asset_id` | Nullable UUIDs until asset ingest; files may declare relative `reference_pattern_path` / `thumbnail_path` for offline validation. |
 

@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -74,6 +77,10 @@ func (s *TemplateStore) InsertDraft(ctx context.Context, t domain.Template) erro
 		nullTime(t.CreatedAt),
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("metaldogs templates insert: %w", ports.ErrTemplateVersionConflict)
+		}
 		return fmt.Errorf("metaldogs templates insert: %w", err)
 	}
 	return nil
@@ -220,6 +227,65 @@ func (s *TemplateStore) PublishExclusive(ctx context.Context, slug, id string) (
 	return t, nil
 }
 
+// RetireExclusive retires all published rows for slug and fails if any published remain.
+func (s *TemplateStore) RetireExclusive(ctx context.Context, slug string) (domain.Template, error) {
+	if slug == "" {
+		return domain.Template{}, fmt.Errorf("metaldogs templates: slug required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
+		UPDATE metaldogs_templates
+		SET status = $2
+		WHERE slug = $1 AND status = $3
+		RETURNING `+templateColumns+`
+	`, slug, domain.TemplateRetired, domain.TemplatePublished)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates retire: %w", err)
+	}
+	defer rows.Close()
+
+	var retired []domain.Template
+	for rows.Next() {
+		t, err := scanTemplate(rows)
+		if err != nil {
+			return domain.Template{}, err
+		}
+		retired = append(retired, t)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.Template{}, err
+	}
+	if len(retired) == 0 {
+		return domain.Template{}, fmt.Errorf("metaldogs templates: no published template for slug %q", slug)
+	}
+
+	var still int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM metaldogs_templates WHERE slug = $1 AND status = $2
+	`, slug, domain.TemplatePublished).Scan(&still); err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates retire verify: %w", err)
+	}
+	if still != 0 {
+		return domain.Template{}, fmt.Errorf("metaldogs templates: slug %q still has %d published row(s) after retire", slug, still)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates commit: %w", err)
+	}
+	// Highest version among those just retired (stable for CLI messaging).
+	best := retired[0]
+	for _, r := range retired[1:] {
+		if r.Version > best.Version {
+			best = r
+		}
+	}
+	return best, nil
+}
+
 type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -231,8 +297,22 @@ const templateColumns = `
 	created_at, published_at
 `
 
+type scannable interface {
+	Scan(dest ...any) error
+}
+
 func (s *TemplateStore) scanOne(ctx context.Context, q rowQuerier, query string, args ...any) (domain.Template, bool, error) {
-	row := q.QueryRowContext(ctx, query, args...)
+	t, err := scanTemplate(q.QueryRowContext(ctx, query, args...))
+	if err == sql.ErrNoRows {
+		return domain.Template{}, false, nil
+	}
+	if err != nil {
+		return domain.Template{}, false, err
+	}
+	return t, true, nil
+}
+
+func scanTemplate(row scannable) (domain.Template, error) {
 	var t domain.Template
 	var prompt, model, photo, texts, out []byte
 	var refAsset, thumbAsset sql.NullString
@@ -243,26 +323,26 @@ func (s *TemplateStore) scanOne(ctx context.Context, q rowQuerier, query string,
 		&refAsset, &thumbAsset, &t.ReferencePatternPath, &t.ThumbnailPath,
 		&t.CreatedAt, &publishedAt,
 	)
-	if err == sql.ErrNoRows {
-		return domain.Template{}, false, nil
-	}
 	if err != nil {
-		return domain.Template{}, false, fmt.Errorf("metaldogs templates scan: %w", err)
+		if err == sql.ErrNoRows {
+			return domain.Template{}, err
+		}
+		return domain.Template{}, fmt.Errorf("metaldogs templates scan: %w", err)
 	}
 	if err := json.Unmarshal(prompt, &t.PromptInstructions); err != nil {
-		return domain.Template{}, false, err
+		return domain.Template{}, err
 	}
 	if err := json.Unmarshal(model, &t.ModelParameters); err != nil {
-		return domain.Template{}, false, err
+		return domain.Template{}, err
 	}
 	if err := json.Unmarshal(photo, &t.PhotoRequirements); err != nil {
-		return domain.Template{}, false, err
+		return domain.Template{}, err
 	}
 	if err := json.Unmarshal(texts, &t.TextFields); err != nil {
-		return domain.Template{}, false, err
+		return domain.Template{}, err
 	}
 	if err := json.Unmarshal(out, &t.OutputConfig); err != nil {
-		return domain.Template{}, false, err
+		return domain.Template{}, err
 	}
 	if refAsset.Valid {
 		t.ReferenceAssetID = refAsset.String
@@ -275,7 +355,7 @@ func (s *TemplateStore) scanOne(ctx context.Context, q rowQuerier, query string,
 		t.PublishedAt = &ts
 	}
 	t.NormalizeForHash()
-	return t, true, nil
+	return t, nil
 }
 
 func nullTime(t time.Time) any {

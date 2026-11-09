@@ -2,9 +2,14 @@ package ports
 
 import (
 	"context"
+	"errors"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
+
+// ErrTemplateVersionConflict is returned when InsertDraft hits UNIQUE (slug, version).
+var ErrTemplateVersionConflict = errors.New("template version conflict")
+
 
 // TemplateStore persists versioned template catalog rows.
 type TemplateStore interface {
@@ -24,4 +29,6 @@ type TemplateStore interface {
 	SetStatus(ctx context.Context, id, status string) error
 	// PublishExclusive retires other published + other drafts for slug and publishes id in one transaction.
 	PublishExclusive(ctx context.Context, slug, id string) (domain.Template, error)
+	// RetireExclusive retires every published row for slug in one transaction and asserts none remain.
+	RetireExclusive(ctx context.Context, slug string) (domain.Template, error)
 }

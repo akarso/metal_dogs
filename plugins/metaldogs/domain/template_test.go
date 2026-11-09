@@ -107,6 +107,28 @@ func TestTemplate_ContentHash_StableAndSensitive(t *testing.T) {
 	}
 }
 
+func TestTemplate_NormalizeTextKeys_DogName(t *testing.T) {
+	t.Parallel()
+	tpl := validTemplate()
+	tpl.TextFields.Editable[0].Key = " dog_name "
+	tpl.NormalizeTextKeys()
+	if err := tpl.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if tpl.TextFields.Editable[0].Key != "dog_name" {
+		t.Fatalf("key = %q", tpl.TextFields.Editable[0].Key)
+	}
+}
+
+func TestTemplate_Validate_RejectsUnnormalizedKey(t *testing.T) {
+	t.Parallel()
+	tpl := validTemplate()
+	tpl.TextFields.Editable[0].Key = " dog_name "
+	if err := tpl.Validate(); err == nil {
+		t.Fatal("expected whitespace key rejected without NormalizeTextKeys")
+	}
+}
+
 func TestMaxCanvasDimension_MatchesGeneration(t *testing.T) {
 	t.Parallel()
 	if domain.MaxCanvasDimension != generation.MaxDimension {

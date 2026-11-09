@@ -146,6 +146,7 @@ func (d FileDefinition) ToTemplate() Template {
 		ThumbnailPath:        strings.TrimSpace(d.ThumbnailPath),
 		Status:               TemplateDraft,
 	}
+	t.NormalizeTextKeys()
 	t.NormalizeForHash()
 	return t
 }
@@ -157,6 +158,16 @@ func (t *Template) NormalizeForHash() {
 	}
 	if t.TextFields.Fixed == nil {
 		t.TextFields.Fixed = []FixedText{}
+	}
+}
+
+// NormalizeTextKeys trims editable/fixed keys so Validate and persistence agree.
+func (t *Template) NormalizeTextKeys() {
+	for i := range t.TextFields.Editable {
+		t.TextFields.Editable[i].Key = strings.TrimSpace(t.TextFields.Editable[i].Key)
+	}
+	for i := range t.TextFields.Fixed {
+		t.TextFields.Fixed[i].Key = strings.TrimSpace(t.TextFields.Fixed[i].Key)
 	}
 }
 
@@ -210,7 +221,11 @@ func (t Template) Validate() error {
 	seenKeys := map[string]struct{}{}
 	hasDogName := false
 	for _, e := range t.TextFields.Editable {
-		key := strings.TrimSpace(e.Key)
+		// Keys must already be trimmed (NormalizeTextKeys); reject padded leftovers.
+		if e.Key != strings.TrimSpace(e.Key) {
+			return fmt.Errorf("template: editable key %q has surrounding whitespace (normalize before Validate)", e.Key)
+		}
+		key := e.Key
 		if key == "" {
 			return fmt.Errorf("template: editable text key required")
 		}
@@ -232,7 +247,10 @@ func (t Template) Validate() error {
 		return fmt.Errorf("template: editable text_fields must include dog_name")
 	}
 	for _, f := range t.TextFields.Fixed {
-		if strings.TrimSpace(f.Key) == "" || f.Value == "" {
+		if f.Key != strings.TrimSpace(f.Key) {
+			return fmt.Errorf("template: fixed key %q has surrounding whitespace (normalize before Validate)", f.Key)
+		}
+		if f.Key == "" || f.Value == "" {
 			return fmt.Errorf("template: fixed text key and value required")
 		}
 	}

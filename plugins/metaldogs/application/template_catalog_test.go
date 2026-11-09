@@ -41,6 +41,11 @@ func (m *memStore) list() []domain.Template {
 func (m *memStore) InsertDraft(_ context.Context, t domain.Template) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, r := range m.rows {
+		if r.Slug == t.Slug && r.Version == t.Version {
+			return fmt.Errorf("insert: %w", ports.ErrTemplateVersionConflict)
+		}
+	}
 	t.Status = domain.TemplateDraft
 	m.rows[t.ID] = t
 	return nil
@@ -156,6 +161,35 @@ func (m *memStore) PublishExclusive(_ context.Context, slug, id string) (domain.
 	target.Status = domain.TemplatePublished
 	m.rows[id] = target
 	return target, nil
+}
+
+func (m *memStore) RetireExclusive(_ context.Context, slug string) (domain.Template, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var retired []domain.Template
+	for k, r := range m.rows {
+		if r.Slug != slug || r.Status != domain.TemplatePublished {
+			continue
+		}
+		r.Status = domain.TemplateRetired
+		m.rows[k] = r
+		retired = append(retired, r)
+	}
+	if len(retired) == 0 {
+		return domain.Template{}, fmt.Errorf("no published template for slug %q", slug)
+	}
+	for _, r := range m.rows {
+		if r.Slug == slug && r.Status == domain.TemplatePublished {
+			return domain.Template{}, fmt.Errorf("published remain after retire")
+		}
+	}
+	best := retired[0]
+	for _, r := range retired[1:] {
+		if r.Version > best.Version {
+			best = r
+		}
+	}
+	return best, nil
 }
 
 var _ ports.TemplateStore = (*memStore)(nil)
@@ -338,6 +372,59 @@ func TestCatalog_PublishAlreadyPublished_RetiresLeftoverDraft(t *testing.T) {
 	}
 	if _, err := cat.Publish(ctx, "same", 0); err == nil {
 		t.Fatal("bare publish must fail with no drafts left")
+	}
+}
+
+func TestCatalog_LoadDraft_RetriesVersionConflict(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	// Pre-seed version 1 so first attempt with version=1 conflicts when raced... simpler:
+	// force first InsertDraft to conflict by occupying chosen version via hook.
+	ids := &seqIDs{}
+	cat := &application.TemplateCatalog{Store: store, IDs: ids}
+	ctx := context.Background()
+	dir := t.TempDir()
+	pathA := writeYAML(t, dir, "race", "a")
+	if _, err := cat.LoadDraft(ctx, pathA); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate concurrent loser: LatestBySlug still sees v1 while v2 already inserted mid-flight.
+	// Occupy the version the next load would pick (2) before second load starts? After load A, latest=1.
+	// Insert a conflicting row at version 2 with different id while LoadDraft B computes version=2.
+	blocker := domain.Template{
+		ID: "00000000-0000-4000-8000-000000000099", Slug: "race", Version: 2, Status: domain.TemplateDraft,
+		ContentHash: "blocker", Genre: "g", StyleCategory: "s",
+		PromptInstructions: domain.PromptInstructions{Text: "x", PromptVersion: "v"},
+		ModelParameters:    domain.ModelParameters{Model: "m"},
+		PhotoRequirements:  domain.PhotoRequirements{Pose: "head_front"},
+		TextFields: domain.TextFields{
+			Editable: []domain.EditableText{{Key: "dog_name", MaxLength: 8, AllowedCharset: "latin_polish"}},
+			Fixed:    []domain.FixedText{},
+		},
+		OutputConfig: domain.OutputConfig{CanvasWidth: 64, CanvasHeight: 64, PrintArea: domain.PrintArea{Width: 64, Height: 64}},
+	}
+	if err := store.InsertDraft(ctx, blocker); err != nil {
+		t.Fatal(err)
+	}
+	pathB := writeYAML(t, dir, "race", "b")
+	r, err := cat.LoadDraft(ctx, pathB)
+	if err != nil || !r.Created || r.Template.Version != 3 {
+		t.Fatalf("retry should land on v3: %+v err=%v", r, err)
+	}
+}
+
+func TestCatalog_RejectTrailingYAMLDocument(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.yaml")
+	body := writeYAML(t, dir, "first", "a")
+	raw, _ := os.ReadFile(body)
+	raw = append(raw, []byte("\n---\nslug: second\n")...)
+	if err := os.WriteFile(path, raw, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.ParseFile(path); err == nil {
+		t.Fatal("expected trailing document error")
 	}
 }
 
