@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
+	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
@@ -23,7 +24,7 @@ func TestAssetRepo_InsertGetByID_RoundTrip(t *testing.T) {
 		SizeBytes:   1234,
 		Width:       512,
 		Height:      512,
-		Checksum:    "deadbeef",
+		Checksum:    application.ChecksumSHA256Prefix + "deadbeef",
 		CreatedAt:   now,
 		DeleteAfter: now.Add(2 * time.Hour),
 	}
@@ -34,14 +35,21 @@ func TestAssetRepo_InsertGetByID_RoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get: ok=%v err=%v", ok, err)
 	}
-	if got.StorageKey != a.StorageKey || got.MimeType != a.MimeType || got.Width != 512 || got.Checksum != "deadbeef" {
+	if got.StorageKey != a.StorageKey || got.MimeType != a.MimeType || got.Width != 512 || got.Checksum != a.Checksum {
 		t.Fatalf("got=%+v", got)
 	}
-	if got.DeleteAfter.UTC() != a.DeleteAfter.UTC() {
-		t.Fatalf("delete_after=%v want %v", got.DeleteAfter, a.DeleteAfter)
+	if got.OwnerRef != "" {
+		t.Fatalf("owner_ref=%q want empty", got.OwnerRef)
 	}
 
-	if err := repo.SoftDeleteForTest(ctx, a.ID, now.Add(time.Minute)); err != nil {
+	// UNIQUE(storage_key)
+	dup := a
+	dup.ID = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := repo.Insert(ctx, dup); err == nil {
+		t.Fatal("duplicate storage_key must fail")
+	}
+
+	if err := repo.SoftDelete(ctx, a.ID, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	_, ok, err = repo.GetByID(ctx, a.ID)

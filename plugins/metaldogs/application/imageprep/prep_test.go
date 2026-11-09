@@ -2,8 +2,11 @@ package imageprep_test
 
 import (
 	"bytes"
+	"compress/zlib"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -79,7 +82,6 @@ func TestPrepare_GarbageUnsupported(t *testing.T) {
 
 func TestPrepare_CorruptDecode(t *testing.T) {
 	t.Parallel()
-	// Valid JPEG SOI + truncated body → sniff ok, decode fails.
 	raw := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0, 1}
 	_, err := imageprep.Prepare(raw)
 	var pe *imageprep.Error
@@ -119,10 +121,20 @@ func TestPrepare_Dimensions(t *testing.T) {
 	}
 }
 
+func TestPrepare_OversizeIHDR_BeforeFullDecode(t *testing.T) {
+	t.Parallel()
+	raw := rgbPNGWithDims(generation.MaxDimension+1, 1, 10, 20, 30)
+	_, err := imageprep.Prepare(raw)
+	var pe *imageprep.Error
+	if err == nil || !asPrepErr(err, &pe) || pe.Code != imageprep.ErrDimensions {
+		t.Fatalf("oversize IHDR must fail on DecodeConfig gate, err=%v", err)
+	}
+}
+
 func TestPrepare_EXIFStripped(t *testing.T) {
 	t.Parallel()
 	base := encodeJPEG(t, solidRGBA(280, 280))
-	withEXIF := injectFakeEXIF(base)
+	withEXIF := injectExifOrientation(base, 1)
 	if !bytes.Contains(withEXIF, []byte("Exif")) {
 		t.Fatal("fixture must contain Exif marker")
 	}
@@ -140,18 +152,115 @@ func TestPrepare_EXIFStripped(t *testing.T) {
 	}
 }
 
-func injectFakeEXIF(jpegBytes []byte) []byte {
-	// Insert APP1 after SOI (ff d8). Payload: length + "Exif\0\0" + pad.
-	app1Payload := []byte{
-		0xff, 0xe1, 0x00, 0x10,
-		'E', 'x', 'i', 'f', 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+func TestPrepare_Orientation6_Upright(t *testing.T) {
+	t.Parallel()
+	// Landscape 320×280 with a red block at top-left. Orientation=6 → upright 280×320
+	// with that block at top-right (lossy JPEG: sample a region average).
+	src := solidRGBA(320, 280)
+	for y := 0; y < 24; y++ {
+		for x := 0; x < 24; x++ {
+			src.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
 	}
-	out := make([]byte, 0, len(jpegBytes)+len(app1Payload))
-	out = append(out, jpegBytes[:2]...) // SOI
-	out = append(out, app1Payload...)
+	raw := injectExifOrientation(encodeJPEG(t, src), 6)
+	got, err := imageprep.Prepare(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Width != 280 || got.Height != 320 {
+		t.Fatalf("upright dims = %dx%d, want 280x320", got.Width, got.Height)
+	}
+	out, err := jpeg.Decode(bytes.NewReader(got.Bytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if avgRed(out, 250, 0, 279, 20) < 180 {
+		t.Fatalf("expected red block at upright top-right after Orientation=6")
+	}
+	if avgRed(out, 0, 0, 20, 20) > 80 {
+		t.Fatalf("top-left should not stay red after Orientation=6 normalize")
+	}
+	if bytes.Contains(got.Bytes, []byte("Exif")) {
+		t.Fatal("orientation EXIF must be stripped after normalize")
+	}
+}
+
+func avgRed(img image.Image, x0, y0, x1, y1 int) int {
+	var sum, n int
+	for y := y0; y <= y1; y++ {
+		for x := x0; x <= x1; x++ {
+			r, _, _, _ := img.At(x, y).RGBA()
+			sum += int(r >> 8)
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / n
+}
+
+func injectExifOrientation(jpegBytes []byte, orient int) []byte {
+	// Minimal little-endian Exif APP1 with Orientation tag.
+	tiff := []byte{
+		'I', 'I',
+		0x2a, 0x00,
+		0x08, 0x00, 0x00, 0x00, // IFD0 at 8
+		0x01, 0x00, // 1 entry
+		0x12, 0x01, // tag Orientation
+		0x03, 0x00, // SHORT
+		0x01, 0x00, 0x00, 0x00,
+		byte(orient), 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, // next IFD
+	}
+	exif := append([]byte{'E', 'x', 'i', 'f', 0, 0}, tiff...)
+	seglen := len(exif) + 2
+	app1 := make([]byte, 0, 4+len(exif))
+	app1 = append(app1, 0xff, 0xe1, byte(seglen>>8), byte(seglen))
+	app1 = append(app1, exif...)
+	out := make([]byte, 0, len(jpegBytes)+len(app1))
+	out = append(out, jpegBytes[:2]...)
+	out = append(out, app1...)
 	out = append(out, jpegBytes[2:]...)
 	return out
+}
+
+// rgbPNGWithDims builds a 1-pixel-row colour-type-2 PNG with arbitrary IHDR size
+// (IDAT still encodes 1×1) so DecodeConfig can reject oversize bombs.
+func rgbPNGWithDims(w, h int, r, g, b byte) []byte {
+	var out bytes.Buffer
+	out.Write([]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
+	writePNGChunk(&out, "IHDR", func(p *bytes.Buffer) {
+		_ = binary.Write(p, binary.BigEndian, uint32(w))
+		_ = binary.Write(p, binary.BigEndian, uint32(h))
+		p.WriteByte(8)
+		p.WriteByte(2)
+		p.WriteByte(0)
+		p.WriteByte(0)
+		p.WriteByte(0)
+	})
+	var raw bytes.Buffer
+	raw.WriteByte(0)
+	raw.WriteByte(r)
+	raw.WriteByte(g)
+	raw.WriteByte(b)
+	var zbuf bytes.Buffer
+	zw := zlib.NewWriter(&zbuf)
+	_, _ = zw.Write(raw.Bytes())
+	_ = zw.Close()
+	writePNGChunk(&out, "IDAT", func(p *bytes.Buffer) { p.Write(zbuf.Bytes()) })
+	writePNGChunk(&out, "IEND", func(p *bytes.Buffer) {})
+	return out.Bytes()
+}
+
+func writePNGChunk(out *bytes.Buffer, typ string, body func(*bytes.Buffer)) {
+	var payload bytes.Buffer
+	payload.WriteString(typ)
+	body(&payload)
+	_ = binary.Write(out, binary.BigEndian, uint32(payload.Len()-4))
+	out.Write(payload.Bytes())
+	crc := crc32.ChecksumIEEE(payload.Bytes())
+	_ = binary.Write(out, binary.BigEndian, crc)
 }
 
 func asPrepErr(err error, target **imageprep.Error) bool {

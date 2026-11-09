@@ -3,29 +3,36 @@ package application_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
 
 type memAssetRepo struct {
-	mu   sync.Mutex
-	byID map[string]domain.Asset
+	mu        sync.Mutex
+	byID      map[string]domain.Asset
+	insertErr error
 }
 
 func (m *memAssetRepo) Insert(_ context.Context, a domain.Asset) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.insertErr != nil {
+		return m.insertErr
+	}
 	if m.byID == nil {
 		m.byID = map[string]domain.Asset{}
 	}
@@ -46,9 +53,24 @@ func (m *memAssetRepo) GetByID(_ context.Context, id string) (domain.Asset, bool
 	return a, true, nil
 }
 
+func (m *memAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[id]
+	if !ok {
+		return nil
+	}
+	a.DeletedAt = &at
+	m.byID[id] = a
+	return nil
+}
+
 type memBlobStore struct {
-	mu      sync.Mutex
-	objects map[string][]byte
+	mu       sync.Mutex
+	objects  map[string][]byte
+	signErr  error
+	deletes  int
+	putCalls int
 }
 
 func (m *memBlobStore) Put(_ context.Context, key string, r io.Reader, _ string) error {
@@ -58,6 +80,7 @@ func (m *memBlobStore) Put(_ context.Context, key string, r io.Reader, _ string)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.putCalls++
 	if m.objects == nil {
 		m.objects = map[string][]byte{}
 	}
@@ -77,6 +100,9 @@ func (m *memBlobStore) Head(_ context.Context, key string) error {
 func (m *memBlobStore) SignedGetURL(_ context.Context, key string, _ time.Duration) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.signErr != nil {
+		return "", m.signErr
+	}
 	if _, ok := m.objects[key]; !ok {
 		return "", fmt.Errorf("missing")
 	}
@@ -86,6 +112,7 @@ func (m *memBlobStore) SignedGetURL(_ context.Context, key string, _ time.Durati
 func (m *memBlobStore) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.deletes++
 	delete(m.objects, key)
 	return nil
 }
@@ -117,41 +144,177 @@ func TestUploadService_Create(t *testing.T) {
 		IDs:    testutil.NewSeqGenerator("up"),
 		Clock:  testutil.NewFakeClock(now),
 	}
-	res, err := svc.Create(context.Background(), jpegN(t, 300), "ignored.jpg")
+	res, err := svc.Create(context.Background(), jpegN(t, 300))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.UploadID != "up-0001" || res.Width != 300 || res.Height != 300 || res.MimeType != "image/jpeg" {
+	if res.UploadID != "up-0001" || res.Width != 300 || res.MimeType != "image/jpeg" {
 		t.Fatalf("result = %+v", res)
 	}
-	if res.ExpiresAt != now.Add(application.UploadRetention) {
-		t.Fatalf("expires_at = %v", res.ExpiresAt)
+	if res.DeleteAfter != now.Add(application.UploadRetention) {
+		t.Fatalf("delete_after = %v", res.DeleteAfter)
 	}
-	if res.PreviewURL == "" || !bytes.Contains([]byte(res.PreviewURL), []byte("signed.example")) {
-		t.Fatalf("preview_url = %q", res.PreviewURL)
+	if res.PreviewURLExpiresAt != now.Add(ports.DefaultSignedGetTTL) {
+		t.Fatalf("preview_url_expires_at = %v", res.PreviewURLExpiresAt)
 	}
 	got, ok, err := svc.Assets.GetByID(context.Background(), res.UploadID)
-	if err != nil || !ok || got.StorageKey == "" || got.Type != domain.AssetTypeSource {
+	if err != nil || !ok || !strings.HasPrefix(got.Checksum, application.ChecksumSHA256Prefix) {
 		t.Fatalf("repo: %+v ok=%v err=%v", got, ok, err)
 	}
-	if err := svc.Store.Head(context.Background(), got.StorageKey); err != nil {
-		t.Fatal(err)
+}
+
+func TestUploadService_PrepareErrors(t *testing.T) {
+	t.Parallel()
+	svc := &application.UploadService{
+		Assets: &memAssetRepo{},
+		Store:  &memBlobStore{},
+		IDs:    testutil.NewSeqGenerator("up"),
+		Clock:  testutil.NewFakeClock(time.Now().UTC()),
+	}
+	webp := make([]byte, 12)
+	copy(webp[0:4], "RIFF")
+	copy(webp[8:12], "WEBP")
+	cases := []struct {
+		name string
+		raw  []byte
+		code string
+	}{
+		{"webp", webp, application.UploadErrUnsupportedMedia},
+		{"garbage", []byte("nope.jpg"), application.UploadErrUnsupportedMedia},
+		{"corrupt", []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'}, application.UploadErrInvalidImage},
+		{"dims", jpegN(t, 100), application.UploadErrDimensionsOutOfRange},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.Create(context.Background(), tc.raw)
+			var ue *application.UploadError
+			if err == nil || !errors.As(err, &ue) || ue.Code != tc.code {
+				t.Fatalf("err=%v want %s", err, tc.code)
+			}
+		})
+	}
+}
+
+func TestUploadService_Oversize(t *testing.T) {
+	t.Parallel()
+	svc := &application.UploadService{
+		Assets: &memAssetRepo{},
+		Store:  &memBlobStore{},
+		IDs:    testutil.NewSeqGenerator("up"),
+		Clock:  testutil.NewFakeClock(time.Now().UTC()),
+	}
+	raw := make([]byte, generation.MaxPhotoBytes+1)
+	_, err := svc.Create(context.Background(), raw)
+	var ue *application.UploadError
+	if err == nil || !errors.As(err, &ue) || ue.Code != application.UploadErrPayloadTooLarge {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestUploadService_InsertFailure_DeletesBlob(t *testing.T) {
+	t.Parallel()
+	store := &memBlobStore{}
+	repo := &memAssetRepo{insertErr: fmt.Errorf("db down")}
+	svc := &application.UploadService{
+		Assets: repo,
+		Store:  store,
+		IDs:    testutil.NewSeqGenerator("up"),
+		Clock:  testutil.NewFakeClock(time.Now().UTC()),
+	}
+	_, err := svc.Create(context.Background(), jpegN(t, 300))
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if store.deletes != 1 || len(store.objects) != 0 {
+		t.Fatalf("deletes=%d objects=%d", store.deletes, len(store.objects))
+	}
+}
+
+func TestUploadService_SignFailure_CleansUp(t *testing.T) {
+	t.Parallel()
+	store := &memBlobStore{signErr: fmt.Errorf("sign boom")}
+	repo := &memAssetRepo{}
+	svc := &application.UploadService{
+		Assets: repo,
+		Store:  store,
+		IDs:    testutil.NewSeqGenerator("up"),
+		Clock:  testutil.NewFakeClock(time.Now().UTC()),
+	}
+	_, err := svc.Create(context.Background(), jpegN(t, 300))
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if store.deletes != 1 || len(store.objects) != 0 {
+		t.Fatalf("blob cleanup: deletes=%d objects=%d", store.deletes, len(store.objects))
+	}
+	_, ok, _ := repo.GetByID(context.Background(), "up-0001")
+	if ok {
+		t.Fatal("row must be soft-deleted after sign failure")
 	}
 }
 
 func TestUploadService_NilDeps(t *testing.T) {
 	t.Parallel()
-	_, err := (*application.UploadService)(nil).Create(context.Background(), jpegN(t, 300), "")
+	_, err := (*application.UploadService)(nil).Create(context.Background(), jpegN(t, 300))
 	var ue *application.UploadError
-	if err == nil || !asUploadErr(err, &ue) || ue.Code != application.UploadErrUnavailable {
+	if err == nil || !errors.As(err, &ue) || ue.Code != application.UploadErrUnavailable {
 		t.Fatalf("err=%v", err)
 	}
 }
 
-func asUploadErr(err error, target **application.UploadError) bool {
-	if ue, ok := err.(*application.UploadError); ok {
-		*target = ue
-		return true
+func TestUploadService_ConcurrencyLimit(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	store := &blockingBlobStore{
+		inner:   &memBlobStore{},
+		started: started,
+		release: release,
 	}
-	return false
+	svc := &application.UploadService{
+		Assets:      &memAssetRepo{},
+		Store:       store,
+		IDs:         testutil.NewSeqGenerator("up"),
+		Clock:       testutil.NewFakeClock(time.Now().UTC()),
+		MaxInFlight: 1,
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := svc.Create(context.Background(), jpegN(t, 300))
+		errCh <- err
+	}()
+	<-started
+	_, err := svc.Create(context.Background(), jpegN(t, 300))
+	var ue *application.UploadError
+	if err == nil || !errors.As(err, &ue) || ue.Code != application.UploadErrTooManyRequests {
+		t.Fatalf("second create err=%v", err)
+	}
+	close(release)
+	if err := <-errCh; err != nil {
+		t.Fatalf("first create: %v", err)
+	}
 }
+
+type blockingBlobStore struct {
+	inner   *memBlobStore
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingBlobStore) Put(ctx context.Context, key string, r io.Reader, ct string) error {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.inner.Put(ctx, key, r, ct)
+}
+func (b *blockingBlobStore) Head(ctx context.Context, key string) error {
+	return b.inner.Head(ctx, key)
+}
+func (b *blockingBlobStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return b.inner.SignedGetURL(ctx, key, ttl)
+}
+func (b *blockingBlobStore) Delete(ctx context.Context, key string) error {
+	return b.inner.Delete(ctx, key)
+}
+
+var _ ports.AssetStore = (*blockingBlobStore)(nil)

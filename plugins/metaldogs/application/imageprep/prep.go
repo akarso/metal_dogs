@@ -1,4 +1,4 @@
-// Package imageprep prepares customer uploads: decode bounds and EXIF-stripping re-encode.
+// Package imageprep prepares customer uploads: bounded decode, orientation normalize, EXIF strip.
 package imageprep
 
 import (
@@ -18,10 +18,11 @@ import (
 const (
 	MinDimension = 256
 	MaxDimension = generation.MaxDimension // 2048
+	MaxPixels    = MaxDimension * MaxDimension
 	JPEGQuality  = 90
 )
 
-// Prepared is a re-encoded image ready for private storage.
+// Prepared is a re-encoded upright image ready for private storage.
 type Prepared struct {
 	Bytes    []byte
 	MimeType string
@@ -52,30 +53,40 @@ func (e *Error) Error() string {
 	return string(e.Code)
 }
 
-// Prepare sniffs (JPEG/PNG only), decodes, checks bounds, and re-encodes to strip metadata.
-// WebP is rejected until a re-encode path exists without new heavy deps.
+// Prepare sniffs (JPEG/PNG only), gates on DecodeConfig, applies EXIF Orientation,
+// then re-encodes to strip metadata. WebP is rejected until a re-encode path exists.
 func Prepare(raw []byte) (Prepared, error) {
 	mime := imagemime.Sniff(raw)
 	switch mime {
 	case imagemime.JPEG, imagemime.PNG:
-		// ok
 	case imagemime.WEBP:
 		return Prepared{}, &Error{Code: ErrUnsupportedMedia, Message: "webp not accepted for uploads"}
 	default:
 		return Prepared{}, &Error{Code: ErrUnsupportedMedia, Message: "unsupported image type"}
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(raw))
+	cfg, err := decodeConfig(mime, raw)
+	if err != nil {
+		return Prepared{}, &Error{Code: ErrInvalidImage, Message: "image config decode failed"}
+	}
+	if err := checkConfigBounds(cfg.Width, cfg.Height); err != nil {
+		return Prepared{}, err
+	}
+
+	orient := 1
+	if mime == imagemime.JPEG {
+		orient = jpegOrientation(raw)
+	}
+
+	img, err := decodeImage(mime, raw)
 	if err != nil {
 		return Prepared{}, &Error{Code: ErrInvalidImage, Message: "image decode failed"}
 	}
+	img = applyOrientation(img, orient)
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if w < MinDimension || h < MinDimension || w > MaxDimension || h > MaxDimension {
-		return Prepared{}, &Error{
-			Code:    ErrDimensions,
-			Message: fmt.Sprintf("dimensions %dx%d out of range [%d,%d]", w, h, MinDimension, MaxDimension),
-		}
+	if err := checkUprightBounds(w, h); err != nil {
+		return Prepared{}, err
 	}
 
 	var out bytes.Buffer
@@ -99,4 +110,104 @@ func Prepare(raw []byte) (Prepared, error) {
 		Width:    w,
 		Height:   h,
 	}, nil
+}
+
+func decodeConfig(mime string, raw []byte) (image.Config, error) {
+	r := bytes.NewReader(raw)
+	switch mime {
+	case imagemime.JPEG:
+		return jpeg.DecodeConfig(r)
+	case imagemime.PNG:
+		return png.DecodeConfig(r)
+	default:
+		return image.Config{}, fmt.Errorf("unsupported")
+	}
+}
+
+func decodeImage(mime string, raw []byte) (image.Image, error) {
+	r := bytes.NewReader(raw)
+	switch mime {
+	case imagemime.JPEG:
+		return jpeg.Decode(r)
+	case imagemime.PNG:
+		return png.Decode(r)
+	default:
+		return nil, fmt.Errorf("unsupported")
+	}
+}
+
+// checkConfigBounds is the OOM gate before full decode (edges + pixel count).
+func checkConfigBounds(w, h int) error {
+	if w <= 0 || h <= 0 {
+		return &Error{Code: ErrInvalidImage, Message: "invalid dimensions"}
+	}
+	if w > MaxDimension || h > MaxDimension {
+		return &Error{
+			Code:    ErrDimensions,
+			Message: fmt.Sprintf("dimensions %dx%d out of range [%d,%d]", w, h, MinDimension, MaxDimension),
+		}
+	}
+	if w > 0 && h > MaxPixels/w { // avoid w*h overflow
+		return &Error{
+			Code:    ErrDimensions,
+			Message: fmt.Sprintf("pixel count exceeds max %d", MaxPixels),
+		}
+	}
+	if w*h > MaxPixels {
+		return &Error{
+			Code:    ErrDimensions,
+			Message: fmt.Sprintf("pixel count %d exceeds max %d", w*h, MaxPixels),
+		}
+	}
+	return nil
+}
+
+func checkUprightBounds(w, h int) error {
+	if w < MinDimension || h < MinDimension || w > MaxDimension || h > MaxDimension {
+		return &Error{
+			Code:    ErrDimensions,
+			Message: fmt.Sprintf("dimensions %dx%d out of range [%d,%d]", w, h, MinDimension, MaxDimension),
+		}
+	}
+	return nil
+}
+
+// applyOrientation maps EXIF orientation 1–8 into an upright pixel buffer.
+func applyOrientation(src image.Image, orient int) image.Image {
+	if orient < 2 || orient > 8 {
+		return src
+	}
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	var dst *image.RGBA
+	switch orient {
+	case 2, 3, 4:
+		dst = image.NewRGBA(image.Rect(0, 0, w, h))
+	case 5, 6, 7, 8:
+		dst = image.NewRGBA(image.Rect(0, 0, h, w))
+	default:
+		return src
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := src.At(b.Min.X+x, b.Min.Y+y)
+			switch orient {
+			case 2:
+				dst.Set(w-1-x, y, c)
+			case 3:
+				dst.Set(w-1-x, h-1-y, c)
+			case 4:
+				dst.Set(x, h-1-y, c)
+			case 5:
+				dst.Set(y, x, c)
+			case 6:
+				dst.Set(h-1-y, x, c)
+			case 7:
+				dst.Set(h-1-y, w-1-x, c)
+			case 8:
+				dst.Set(y, w-1-x, c)
+			}
+		}
+	}
+	return dst
 }

@@ -23,7 +23,7 @@ func NewAssetRepo(db *sql.DB) *AssetRepo {
 var _ ports.AssetRepository = (*AssetRepo)(nil)
 
 const assetColumns = `
-	id, type, storage_key, mime_type, size_bytes, width, height, checksum,
+	id, type, storage_key, mime_type, size_bytes, width, height, checksum, owner_ref,
 	created_at, delete_after, deleted_at
 `
 
@@ -35,15 +35,19 @@ func (s *AssetRepo) Insert(ctx context.Context, a domain.Asset) error {
 	if a.SizeBytes < 0 || a.Width <= 0 || a.Height <= 0 || a.DeleteAfter.IsZero() {
 		return fmt.Errorf("metaldogs assets: size_bytes, width, height, delete_after required")
 	}
+	var owner any
+	if a.OwnerRef != "" {
+		owner = a.OwnerRef
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO metaldogs_assets (
-			id, type, storage_key, mime_type, size_bytes, width, height, checksum,
+			id, type, storage_key, mime_type, size_bytes, width, height, checksum, owner_ref,
 			created_at, delete_after, deleted_at
 		) VALUES (
-			$1,$2,$3,$4,$5,$6,$7,$8,
-			COALESCE($9, now()), $10, NULL
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,
+			COALESCE($10, now()), $11, NULL
 		)
-	`, a.ID, a.Type, a.StorageKey, a.MimeType, a.SizeBytes, a.Width, a.Height, a.Checksum,
+	`, a.ID, a.Type, a.StorageKey, a.MimeType, a.SizeBytes, a.Width, a.Height, a.Checksum, owner,
 		nullTime(a.CreatedAt), a.DeleteAfter.UTC(),
 	)
 	if err != nil {
@@ -65,15 +69,31 @@ func (s *AssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool,
 	return scanAsset(row)
 }
 
+// SoftDelete marks the asset deleted_at (idempotent if already deleted).
+func (s *AssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) error {
+	if id == "" {
+		return fmt.Errorf("metaldogs assets: id required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET deleted_at = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id, at.UTC())
+	if err != nil {
+		return fmt.Errorf("metaldogs assets soft delete: %w", err)
+	}
+	return nil
+}
+
 type assetScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	var a domain.Asset
+	var owner sql.NullString
 	var deletedAt sql.NullTime
 	err := row.Scan(
-		&a.ID, &a.Type, &a.StorageKey, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height, &a.Checksum,
+		&a.ID, &a.Type, &a.StorageKey, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height, &a.Checksum, &owner,
 		&a.CreatedAt, &a.DeleteAfter, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -82,6 +102,9 @@ func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	if err != nil {
 		return domain.Asset{}, false, fmt.Errorf("metaldogs assets scan: %w", err)
 	}
+	if owner.Valid {
+		a.OwnerRef = owner.String
+	}
 	if deletedAt.Valid {
 		t := deletedAt.Time.UTC()
 		a.DeletedAt = &t
@@ -89,12 +112,4 @@ func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	a.CreatedAt = a.CreatedAt.UTC()
 	a.DeleteAfter = a.DeleteAfter.UTC()
 	return a, true, nil
-}
-
-// SoftDeleteForTest marks an asset deleted (DSN tests only).
-func (s *AssetRepo) SoftDeleteForTest(ctx context.Context, id string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE metaldogs_assets SET deleted_at = $2 WHERE id = $1
-	`, id, at.UTC())
-	return err
 }

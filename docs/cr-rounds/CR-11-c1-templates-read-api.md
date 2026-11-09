@@ -42,5 +42,5 @@
 ## Follow-ups
 
 - Unblock GitHub Actions billing so DSN CI jobs actually run
-- C2+: real `thumbnail_url` via asset ingest + signed GET
+- C5+: real `thumbnail_url` via asset ingest + signed GET
 - C3 designs; S1 gallery consumes list DTO (exact genre casing)

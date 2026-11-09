@@ -6,14 +6,18 @@ CREATE TABLE metaldogs_assets (
         'source', 'artwork', 'mockup', 'production', 'reference', 'thumbnail'
     )),
     storage_key text NOT NULL,
-    mime_type text NOT NULL,
+    mime_type text NOT NULL CHECK (mime_type IN (
+        'image/jpeg', 'image/png', 'image/webp'
+    )),
     size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
     width int NOT NULL CHECK (width > 0),
     height int NOT NULL CHECK (height > 0),
     checksum text NOT NULL,
+    owner_ref text, -- nullable; C3 binds capability/session (unguessable attach gate)
     created_at timestamptz NOT NULL DEFAULT now(),
     delete_after timestamptz NOT NULL,
-    deleted_at timestamptz
+    deleted_at timestamptz,
+    UNIQUE (storage_key)
 );
 
 CREATE INDEX metaldogs_assets_delete_after_idx

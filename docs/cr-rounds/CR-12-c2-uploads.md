@@ -6,41 +6,44 @@
 
 ## What shipped
 
-- Migration `003_create_assets.sql` (`metaldogs_assets` + `delete_after` index)
-- `domain.Asset`, `ports.AssetRepository`, postgres `AssetRepo`, shared `generation/imagemime.Sniff`
-- `application/imageprep` (JPEG/PNG decode bounds + EXIF-strip re-encode) and `UploadService`
-- Public `POST /api/customizer/uploads` (multipart `file`) → Put + insert + 60s signed preview URL; `delete_after=+2h` stub (sweep = O2)
-- WebP rejected `415`; unauthenticated until C3 design attach
+- Migration `003_create_assets.sql` (`metaldogs_assets`, `UNIQUE(storage_key)`, mime check, nullable `owner_ref`)
+- `domain.Asset`, `ports.AssetRepository` (Insert/GetByID/SoftDelete), postgres `AssetRepo`, shared `generation/imagemime.Sniff`
+- `application/imageprep`: sniff → `DecodeConfig` bounds/pixel gate → Orientation normalize → EXIF-strip re-encode
+- `UploadService`: Put + insert + signed GET; compensating blob Delete (+ SoftDelete on sign failure); in-process concurrency cap
+- Public `POST /api/customizer/uploads` streams multipart `file`; response splits `preview_url_expires_at` vs `delete_after`
+- WebP rejected `415`; retention stub `delete_after=+2h` (sweep = O2)
 
 ## Verification results
 
 | Item | Result |
 | --- | --- |
-| Unit sniff / bounds / EXIF strip | Pass locally |
-| httptest happy / wrong MIME / missing / nil 503 | Pass locally |
-| DSN Insert/GetByID (+ soft-delete hide) | Pass with `SHOPANDA_TEST_DSN` when available |
+| Unit sniff / DecodeConfig IHDR bomb / Orientation=6 / EXIF strip | Pass locally |
+| Application cleanup + concurrency + classified prepare errors | Pass locally |
+| httptest happy / MIME / WebP / dims / corrupt / 413 / missing / nil 503 | Pass locally |
+| DSN Insert/Get/SoftDelete + unique storage_key | Pass with `SHOPANDA_TEST_DSN` when available |
 | Docs links | Pass locally |
 | GitHub Actions CI | May still be org/billing-blocked (empty steps); re-run when Actions execute |
 
 ## Tests added
 
-- `generation/imagemime`, `application/imageprep`, `application/upload_test.go`
-- `httpapi/uploads_test.go`
+- `generation/imagemime`, `application/imageprep` (incl. IHDR bomb + Orientation=6), `application/upload_test.go`
+- `httpapi/uploads_test.go` (status-code matrix)
 - `adapters/postgres/asset_repo_test.go`
 - Plugin / registerPlugins / sync_obs assert uploads route
 
 ## Flags / migrations / rollback
 
-- Migration `plugin:metaldogs:003_create_assets.sql` (expand-only)
-- No new flags; requires media + DB like templates
+- Migration `plugin:metaldogs:003_create_assets.sql` (expand-only; amended before first prod apply)
+- No new flags; requires media + DB; concurrency cap is in-process only (O4 for IP limits)
 - Rollback: revert CR; drop table if never written in prod
 
 ## Documentation updated
 
-- [x] ROADMAP C2 pending merge; C1 finalized DONE; api.md uploads; ADR-0004 Put note; plugin README; CR-12; CR log
+- [x] ROADMAP C2 pending merge (honest O2/O4 gaps); C1 DONE; api.md uploads + TTL split; ADR-0004 Put note; plugin README; CR-12; CR log
 
 ## Follow-ups
 
-- C3: attach `upload_id` + capability token
-- O2: `retention_sweep` for expired unattached uploads
-- Real `thumbnail_url` on templates via asset ingest
+- C3: bind `owner_ref` + capability token; refuse attach of foreign/unowned uploads
+- O2: `retention_sweep` for expired unattached uploads (and orphan blobs without rows)
+- O4: IP / route rate limits beyond in-process semaphore
+- C5+: real `thumbnail_url` via asset ingest

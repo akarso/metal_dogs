@@ -12,12 +12,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
@@ -46,6 +48,18 @@ func (m *memAssetRepo) GetByID(_ context.Context, id string) (domain.Asset, bool
 		return domain.Asset{}, false, nil
 	}
 	return a, true, nil
+}
+
+func (m *memAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[id]
+	if !ok {
+		return nil
+	}
+	a.DeletedAt = &at
+	m.byID[id] = a
+	return nil
 }
 
 type memBlobStore struct {
@@ -129,13 +143,19 @@ func testSvc(t *testing.T) *application.UploadService {
 	}
 }
 
-func TestCreateUpload_HappyPath(t *testing.T) {
-	t.Parallel()
-	body, ct := multipartBody(t, "file", "dog.jpg", jpegBytes(t, 320))
+func postUpload(t *testing.T, svc *application.UploadService, field, filename string, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	body, ct := multipartBody(t, field, filename, data)
 	req := httptest.NewRequest(http.MethodPost, "/api/customizer/uploads", body)
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
-	httpapi.CreateUpload(testSvc(t)).ServeHTTP(rec, req)
+	httpapi.CreateUpload(svc).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCreateUpload_HappyPath(t *testing.T) {
+	t.Parallel()
+	rec := postUpload(t, testSvc(t), "file", "dog.jpg", jpegBytes(t, 320))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -146,23 +166,79 @@ func TestCreateUpload_HappyPath(t *testing.T) {
 	if got.UploadID == "" || got.PreviewURL == "" || got.Width != 320 || got.MimeType != "image/jpeg" {
 		t.Fatalf("dto=%+v", got)
 	}
-	if got.ExpiresAt.IsZero() {
-		t.Fatal("expires_at required")
+	if got.PreviewURLExpiresAt.IsZero() || got.DeleteAfter.IsZero() {
+		t.Fatalf("ttl fields missing: %+v", got)
+	}
+	if !got.DeleteAfter.After(got.PreviewURLExpiresAt) {
+		t.Fatalf("delete_after should outlive preview TTL: %+v", got)
 	}
 }
 
 func TestCreateUpload_WrongMIMEWithJPGName(t *testing.T) {
 	t.Parallel()
-	body, ct := multipartBody(t, "file", "dog.jpg", []byte("definitely-not-an-image"))
-	req := httptest.NewRequest(http.MethodPost, "/api/customizer/uploads", body)
-	req.Header.Set("Content-Type", ct)
-	rec := httptest.NewRecorder()
-	httpapi.CreateUpload(testSvc(t)).ServeHTTP(rec, req)
+	rec := postUpload(t, testSvc(t), "file", "dog.jpg", []byte("definitely-not-an-image"))
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	assertErrCode(t, rec, application.UploadErrUnsupportedMedia)
 }
+
+func TestCreateUpload_WebP(t *testing.T) {
+	t.Parallel()
+	webp := make([]byte, 12)
+	copy(webp[0:4], "RIFF")
+	copy(webp[8:12], "WEBP")
+	rec := postUpload(t, testSvc(t), "file", "dog.webp", webp)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrCode(t, rec, application.UploadErrUnsupportedMedia)
+}
+
+func TestCreateUpload_Dimensions(t *testing.T) {
+	t.Parallel()
+	rec := postUpload(t, testSvc(t), "file", "tiny.jpg", jpegBytes(t, 100))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrCode(t, rec, application.UploadErrDimensionsOutOfRange)
+}
+
+func TestCreateUpload_CorruptDecode(t *testing.T) {
+	t.Parallel()
+	raw := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0, 1}
+	rec := postUpload(t, testSvc(t), "file", "bad.jpg", raw)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrCode(t, rec, application.UploadErrInvalidImage)
+}
+
+func TestCreateUpload_PayloadTooLarge(t *testing.T) {
+	t.Parallel()
+	// Oversized multipart body triggers MaxBytesReader → 413.
+	huge := bytes.Repeat([]byte("a"), generation.MaxPhotoBytes+uploadSlackForTest())
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("file", "big.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(huge); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/customizer/uploads", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	httpapi.CreateUpload(testSvc(t)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrCode(t, rec, application.UploadErrPayloadTooLarge)
+}
+
+func uploadSlackForTest() int { return 2 << 20 }
 
 func TestCreateUpload_MissingFile(t *testing.T) {
 	t.Parallel()
@@ -182,11 +258,7 @@ func TestCreateUpload_MissingFile(t *testing.T) {
 
 func TestCreateUpload_NilService(t *testing.T) {
 	t.Parallel()
-	body, ct := multipartBody(t, "file", "dog.jpg", jpegBytes(t, 300))
-	req := httptest.NewRequest(http.MethodPost, "/api/customizer/uploads", body)
-	req.Header.Set("Content-Type", ct)
-	rec := httptest.NewRecorder()
-	httpapi.CreateUpload(nil).ServeHTTP(rec, req)
+	rec := postUpload(t, nil, "file", "dog.jpg", jpegBytes(t, 300))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -200,6 +272,6 @@ func assertErrCode(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 		t.Fatal(err)
 	}
 	if body["error"] != code {
-		t.Fatalf("error=%q want %q", body["error"], code)
+		t.Fatalf("error=%q want %q body=%s", body["error"], code, strings.TrimSpace(rec.Body.String()))
 	}
 }

@@ -22,6 +22,7 @@ type Asset struct {
 	Width       int
 	Height      int
 	Checksum    string
+	OwnerRef    string // empty until C3 capability/session bind
 	CreatedAt   time.Time
 	DeleteAfter time.Time
 	DeletedAt   *time.Time
