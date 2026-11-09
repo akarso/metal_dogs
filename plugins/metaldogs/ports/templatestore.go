@@ -24,10 +24,11 @@ type TemplateStore interface {
 	DraftBySlugHash(ctx context.Context, slug, contentHash string) (domain.Template, bool, error)
 	// PublishedBySlug returns the currently published version for slug, if any.
 	PublishedBySlug(ctx context.Context, slug string) (domain.Template, bool, error)
-	// ListPublished returns published templates, optionally filtered by genre (empty = all).
-	ListPublished(ctx context.Context, genre string) ([]domain.Template, error)
-	// GetPublishedByID returns a published template by id, if any.
-	GetPublishedByID(ctx context.Context, id string) (domain.Template, bool, error)
+	// ListPublished returns public-read projections of published templates
+	// (optional exact genre filter; empty = all). Never loads prompt/model columns.
+	ListPublished(ctx context.Context, genre string) ([]PublishedTemplate, error)
+	// GetPublishedByID returns a public-read projection by id, if published.
+	GetPublishedByID(ctx context.Context, id string) (PublishedTemplate, bool, error)
 	// SetStatus updates status (and published_at when publishing). Errors if id missing.
 	SetStatus(ctx context.Context, id, status string) error
 	// PublishExclusive retires other published + other drafts for slug and publishes id in one transaction.

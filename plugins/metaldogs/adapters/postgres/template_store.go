@@ -135,7 +135,16 @@ func (s *TemplateStore) PublishedBySlug(ctx context.Context, slug string) (domai
 	`, slug, domain.TemplatePublished)
 }
 
-func (s *TemplateStore) ListPublished(ctx context.Context, genre string) ([]domain.Template, error) {
+// publicTemplateColumns are the only columns loaded on guest list/get paths.
+// Intentionally omits prompt_instructions, model_parameters, content_hash,
+// reference/thumbnail asset ids and file paths.
+const publicTemplateColumns = `
+	id, slug, genre, style_category, version,
+	photo_requirements, text_fields, output_config,
+	published_at
+`
+
+func (s *TemplateStore) ListPublished(ctx context.Context, genre string) ([]ports.PublishedTemplate, error) {
 	genre = strings.TrimSpace(genre)
 	var (
 		rows *sql.Rows
@@ -143,14 +152,14 @@ func (s *TemplateStore) ListPublished(ctx context.Context, genre string) ([]doma
 	)
 	if genre == "" {
 		rows, err = s.db.QueryContext(ctx, `
-			SELECT `+templateColumns+`
+			SELECT `+publicTemplateColumns+`
 			FROM metaldogs_templates
 			WHERE status = $1
 			ORDER BY slug ASC
 		`, domain.TemplatePublished)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
-			SELECT `+templateColumns+`
+			SELECT `+publicTemplateColumns+`
 			FROM metaldogs_templates
 			WHERE status = $1 AND genre = $2
 			ORDER BY slug ASC
@@ -160,9 +169,9 @@ func (s *TemplateStore) ListPublished(ctx context.Context, genre string) ([]doma
 		return nil, fmt.Errorf("metaldogs templates list published: %w", err)
 	}
 	defer rows.Close()
-	var out []domain.Template
+	var out []ports.PublishedTemplate
 	for rows.Next() {
-		t, err := scanTemplate(rows)
+		t, err := scanPublishedTemplate(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -172,20 +181,27 @@ func (s *TemplateStore) ListPublished(ctx context.Context, genre string) ([]doma
 		return nil, fmt.Errorf("metaldogs templates list published: %w", err)
 	}
 	if out == nil {
-		out = []domain.Template{}
+		out = []ports.PublishedTemplate{}
 	}
 	return out, nil
 }
 
-func (s *TemplateStore) GetPublishedByID(ctx context.Context, id string) (domain.Template, bool, error) {
+func (s *TemplateStore) GetPublishedByID(ctx context.Context, id string) (ports.PublishedTemplate, bool, error) {
 	if id == "" {
-		return domain.Template{}, false, nil
+		return ports.PublishedTemplate{}, false, nil
 	}
-	return s.scanOne(ctx, s.db, `
-		SELECT `+templateColumns+`
+	t, err := scanPublishedTemplate(s.db.QueryRowContext(ctx, `
+		SELECT `+publicTemplateColumns+`
 		FROM metaldogs_templates
 		WHERE id = $1 AND status = $2
-	`, id, domain.TemplatePublished)
+	`, id, domain.TemplatePublished))
+	if err == sql.ErrNoRows {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	if err != nil {
+		return ports.PublishedTemplate{}, false, err
+	}
+	return t, true, nil
 }
 
 func (s *TemplateStore) SetStatus(ctx context.Context, id, status string) error {
@@ -364,6 +380,37 @@ func (s *TemplateStore) scanOne(ctx context.Context, q rowQuerier, query string,
 		return domain.Template{}, false, err
 	}
 	return t, true, nil
+}
+
+func scanPublishedTemplate(row scannable) (ports.PublishedTemplate, error) {
+	var t ports.PublishedTemplate
+	var photo, texts, out []byte
+	var publishedAt sql.NullTime
+	err := row.Scan(
+		&t.ID, &t.Slug, &t.Genre, &t.StyleCategory, &t.Version,
+		&photo, &texts, &out,
+		&publishedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return ports.PublishedTemplate{}, err
+		}
+		return ports.PublishedTemplate{}, fmt.Errorf("metaldogs templates scan public: %w", err)
+	}
+	if err := json.Unmarshal(photo, &t.PhotoRequirements); err != nil {
+		return ports.PublishedTemplate{}, err
+	}
+	if err := json.Unmarshal(texts, &t.TextFields); err != nil {
+		return ports.PublishedTemplate{}, err
+	}
+	if err := json.Unmarshal(out, &t.OutputConfig); err != nil {
+		return ports.PublishedTemplate{}, err
+	}
+	if publishedAt.Valid {
+		ts := publishedAt.Time.UTC()
+		t.PublishedAt = &ts
+	}
+	return t, nil
 }
 
 func scanTemplate(row scannable) (domain.Template, error) {

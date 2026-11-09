@@ -6,124 +6,146 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akarso/shopanda/internal/platform/plugin"
-	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
-	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
+// Transport DTOs — explicit copies of public fields (never embed domain types).
+
+type PublicPhotoRequirements struct {
+	Pose           string `json:"pose"`
+	BackgroundHint string `json:"background_hint"`
+	LightingHint   string `json:"lighting_hint"`
+}
+
+type PublicEditableText struct {
+	Key            string `json:"key"`
+	MaxLength      int    `json:"max_length"`
+	AllowedCharset string `json:"allowed_charset"`
+}
+
+type PublicFixedText struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type PublicTextFields struct {
+	Editable []PublicEditableText `json:"editable"`
+	Fixed    []PublicFixedText    `json:"fixed"`
+}
+
+type PublicPrintArea struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type PublicOutputConfig struct {
+	CanvasWidth  int             `json:"canvas_width"`
+	CanvasHeight int             `json:"canvas_height"`
+	Monochrome   bool            `json:"monochrome"`
+	PrintArea    PublicPrintArea `json:"print_area"`
+}
+
 // PublicTemplate is the customer-facing template DTO (C1).
-// Never includes prompts, model parameters, hashes, or reference paths.
 type PublicTemplate struct {
-	ID                string                   `json:"id"`
-	Slug              string                   `json:"slug"`
-	Genre             string                   `json:"genre"`
-	StyleCategory     string                   `json:"style_category"`
-	Version           int                      `json:"version"`
-	PublishedAt       *time.Time               `json:"published_at"`
-	PhotoRequirements domain.PhotoRequirements `json:"photo_requirements"`
-	TextFields        domain.TextFields        `json:"text_fields"`
-	OutputConfig      domain.OutputConfig      `json:"output_config"`
-	ThumbnailURL      *string                  `json:"thumbnail_url"` // null until asset ingest
+	ID                string                  `json:"id"`
+	Slug              string                  `json:"slug"`
+	Genre             string                  `json:"genre"`
+	StyleCategory     string                  `json:"style_category"`
+	Version           int                     `json:"version"`
+	PublishedAt       *time.Time              `json:"published_at"`
+	PhotoRequirements PublicPhotoRequirements `json:"photo_requirements"`
+	TextFields        PublicTextFields        `json:"text_fields"`
+	OutputConfig      PublicOutputConfig      `json:"output_config"`
+	ThumbnailURL      *string                 `json:"thumbnail_url"` // null until asset ingest
 }
 
-func toPublicTemplate(t domain.Template) PublicTemplate {
+func toPublicTemplate(t ports.PublishedTemplate) PublicTemplate {
+	editable := make([]PublicEditableText, 0, len(t.TextFields.Editable))
+	for _, e := range t.TextFields.Editable {
+		editable = append(editable, PublicEditableText{
+			Key: e.Key, MaxLength: e.MaxLength, AllowedCharset: e.AllowedCharset,
+		})
+	}
+	fixed := make([]PublicFixedText, 0, len(t.TextFields.Fixed))
+	for _, f := range t.TextFields.Fixed {
+		fixed = append(fixed, PublicFixedText{Key: f.Key, Value: f.Value})
+	}
 	return PublicTemplate{
-		ID:                t.ID,
-		Slug:              t.Slug,
-		Genre:             t.Genre,
-		StyleCategory:     t.StyleCategory,
-		Version:           t.Version,
-		PublishedAt:       t.PublishedAt,
-		PhotoRequirements: t.PhotoRequirements,
-		TextFields:        t.TextFields,
-		OutputConfig:      t.OutputConfig,
-		ThumbnailURL:      nil,
+		ID:            t.ID,
+		Slug:          t.Slug,
+		Genre:         t.Genre,
+		StyleCategory: t.StyleCategory,
+		Version:       t.Version,
+		PublishedAt:   t.PublishedAt,
+		PhotoRequirements: PublicPhotoRequirements{
+			Pose: t.PhotoRequirements.Pose, BackgroundHint: t.PhotoRequirements.BackgroundHint,
+			LightingHint: t.PhotoRequirements.LightingHint,
+		},
+		TextFields: PublicTextFields{Editable: editable, Fixed: fixed},
+		OutputConfig: PublicOutputConfig{
+			CanvasWidth: t.OutputConfig.CanvasWidth, CanvasHeight: t.OutputConfig.CanvasHeight,
+			Monochrome: t.OutputConfig.Monochrome,
+			PrintArea: PublicPrintArea{
+				X: t.OutputConfig.PrintArea.X, Y: t.OutputConfig.PrintArea.Y,
+				Width: t.OutputConfig.PrintArea.Width, Height: t.OutputConfig.PrintArea.Height,
+			},
+		},
+		ThumbnailURL: nil,
 	}
-}
-
-func catalogFromApp(app *plugin.App) (*application.TemplateCatalog, bool) {
-	if app == nil || app.Bootstrap == nil || app.Bootstrap.DB == nil {
-		return nil, false
-	}
-	return &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}, true
 }
 
 // ListTemplates returns GET /api/customizer/templates?genre=.
-// Resolves TemplateStore from app.Bootstrap.DB per request (fail closed → 503).
-func ListTemplates(app *plugin.App) http.Handler {
+// cat may be nil when Init could not wire a DB-backed catalog → 503.
+func ListTemplates(cat *application.TemplateCatalog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		cat, ok := catalogFromApp(app)
-		if !ok {
+		if cat == nil || cat.Store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
 			return
 		}
-		serveListTemplates(w, r, cat)
+		genre := strings.TrimSpace(r.URL.Query().Get("genre"))
+		rows, err := cat.ListPublished(r.Context(), genre)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		out := make([]PublicTemplate, 0, len(rows))
+		for _, t := range rows {
+			out = append(out, toPublicTemplate(t))
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"templates": out})
 	})
-}
-
-// ListTemplatesWithCatalog is the testable core for list (injected store).
-func ListTemplatesWithCatalog(cat *application.TemplateCatalog) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		serveListTemplates(w, r, cat)
-	})
-}
-
-func serveListTemplates(w http.ResponseWriter, r *http.Request, cat *application.TemplateCatalog) {
-	genre := strings.TrimSpace(r.URL.Query().Get("genre"))
-	rows, err := cat.ListPublished(r.Context(), genre)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	out := make([]PublicTemplate, 0, len(rows))
-	for _, t := range rows {
-		out = append(out, toPublicTemplate(t))
-	}
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{"templates": out})
 }
 
 // GetTemplate returns GET /api/customizer/templates/{id} (published UUID only).
-func GetTemplate(app *plugin.App) http.Handler {
+func GetTemplate(cat *application.TemplateCatalog) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		cat, ok := catalogFromApp(app)
-		if !ok {
+		if cat == nil || cat.Store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "unavailable")
 			return
 		}
-		serveGetTemplate(w, r, cat)
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" || !looksLikeUUID(id) {
+			writeJSONError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		t, ok, err := cat.GetPublishedByID(r.Context(), id)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(toPublicTemplate(t))
 	})
-}
-
-// GetTemplateWithCatalog is the testable core for get (injected store).
-func GetTemplateWithCatalog(cat *application.TemplateCatalog) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		serveGetTemplate(w, r, cat)
-	})
-}
-
-func serveGetTemplate(w http.ResponseWriter, r *http.Request, cat *application.TemplateCatalog) {
-	id := strings.TrimSpace(r.PathValue("id"))
-	if id == "" || !looksLikeUUID(id) {
-		writeJSONError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	t, ok, err := cat.GetPublishedByID(r.Context(), id)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	if !ok {
-		writeJSONError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(toPublicTemplate(t))
 }
 
 func writeJSONError(w http.ResponseWriter, code int, errCode string) {
@@ -132,7 +154,6 @@ func writeJSONError(w http.ResponseWriter, code int, errCode string) {
 }
 
 func looksLikeUUID(s string) bool {
-	// Accept canonical UUID shape only (C1 path is UUID id). Invalid → 404.
 	if len(s) != 36 {
 		return false
 	}

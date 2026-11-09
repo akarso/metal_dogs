@@ -1,31 +1,33 @@
 # CR-11: C1 templates read API
 
-- Closed: 2026-11-09
+- Status: **open** — PR [#23](https://github.com/akarso/metal_dogs/pull/23) (not closed until merge + green CI)
 - Slices: `C1`
-- Milestone progress: M2 → C1 done (C2+ / G4 still open)
+- Milestone progress: M2 → C1 (pending merge)
 
 ## What shipped
 
-- `ports.TemplateStore.ListPublished` / `GetPublishedByID` + postgres adapter (+ DSN tests)
-- Public routes `GET /api/customizer/templates` and `GET /api/customizer/templates/{id}` (UUID); drafts excluded; unknown genre → empty list; bad/missing id → `404`
-- Public DTO omits prompts / model params / hashes / reference paths; `thumbnail_url` always `null`
-- Handlers resolve DB from `app.Bootstrap` per request (`503` if missing); unit tests inject catalog
-- `docs/architecture/api.md` created; G3/CR-10 marked fully merged
+- `ports.PublishedTemplate` public-read model; postgres `ListPublished` / `GetPublishedByID` select only DTO columns (no prompt/model/hash/path)
+- Public routes `GET /api/customizer/templates` and `GET /api/customizer/templates/{id}`; http-owned nested DTOs (no embedded domain types)
+- `TemplateCatalog` wired once in plugin Init when `Bootstrap.DB` is set; nil catalog → `503 unavailable`
+- Drafts and retired excluded; unknown genre → empty list; bad/missing id → `404`
+- `thumbnail_url` always `null` until asset ingest
+- `docs/architecture/api.md` (genre exact/case-sensitive)
 
 ## Verification results
 
 | Item | Result |
 | --- | --- |
-| httptest DTO shape / draft exclusion / genre / 404 | Pass |
-| Plugin route registration | Pass |
-| DSN ListPublished / GetPublishedByID | Pass with `SHOPANDA_TEST_DSN` |
-| Docs links | Pass |
+| httptest DTO shape / draft+retired / genre / 404 / 503 / 500 | Pass locally |
+| Plugin route registration | Pass locally |
+| DSN ListPublished / GetPublishedByID (+ retired) | Pass with `SHOPANDA_TEST_DSN` locally |
+| Docs links | Pass locally |
+| GitHub Actions CI | **Blocked** — jobs complete in ~3s with empty steps (org/billing; also red on `main` after #22). Re-run required when Actions execute again. |
 
 ## Tests added
 
-- `httpapi/templates_test.go` — secrets leak guard, genre filter, 404 cases
-- `adapters/postgres/template_store_test.go` — list/get published round-trip
-- Plugin / registerPlugins assert new route patterns
+- `httpapi/templates_test.go` — list/get secret guards, retired 404, nil catalog 503, store error 500, genre 200
+- `adapters/postgres/template_store_test.go` — list/get published + retired exclusion
+- Plugin / registerPlugins / sync_obs assert template route patterns
 
 ## Flags / migrations / rollback
 
@@ -34,9 +36,10 @@
 
 ## Documentation updated
 
-- [x] ROADMAP C1 DONE; G3 DONE; api.md; plugin README; CR-11; CR log; CR-10 closed note
+- [x] ROADMAP C1 pending merge; api.md; plugin README; CR-11; CR log
 
 ## Follow-ups
 
+- Unblock GitHub Actions billing so DSN CI jobs actually run
 - C2+: real `thumbnail_url` via asset ingest + signed GET
-- C3 designs; S1 gallery consumes list DTO
+- C3 designs; S1 gallery consumes list DTO (exact genre casing)

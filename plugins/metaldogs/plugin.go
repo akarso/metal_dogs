@@ -5,6 +5,8 @@ import (
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
+	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -56,16 +58,23 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	p.assets = store
 
+	// Wire catalog once at Init when Bootstrap.DB is present. Nil catalog →
+	// template handlers return 503 (unit tests register routes without DB).
+	var templates *application.TemplateCatalog
+	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
+		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
+	}
+
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}
 	if err := app.RegisterPublicRoute("GET /api/customizer/health", httpapi.Health(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: health route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/templates", httpapi.ListTemplates(app)); err != nil {
+	if err := app.RegisterPublicRoute("GET /api/customizer/templates", httpapi.ListTemplates(templates)); err != nil {
 		return fmt.Errorf("metaldogs plugin: templates list route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/templates/{id}", httpapi.GetTemplate(app)); err != nil {
+	if err := app.RegisterPublicRoute("GET /api/customizer/templates/{id}", httpapi.GetTemplate(templates)); err != nil {
 		return fmt.Errorf("metaldogs plugin: templates get route: %w", err)
 	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {

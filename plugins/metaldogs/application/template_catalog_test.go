@@ -121,10 +121,18 @@ func (m *memStore) PublishedBySlug(_ context.Context, slug string) (domain.Templ
 	return domain.Template{}, false, nil
 }
 
-func (m *memStore) ListPublished(_ context.Context, genre string) ([]domain.Template, error) {
+func toPublished(r domain.Template) ports.PublishedTemplate {
+	return ports.PublishedTemplate{
+		ID: r.ID, Slug: r.Slug, Genre: r.Genre, StyleCategory: r.StyleCategory,
+		Version: r.Version, PublishedAt: r.PublishedAt,
+		PhotoRequirements: r.PhotoRequirements, TextFields: r.TextFields, OutputConfig: r.OutputConfig,
+	}
+}
+
+func (m *memStore) ListPublished(_ context.Context, genre string) ([]ports.PublishedTemplate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []domain.Template
+	var out []ports.PublishedTemplate
 	for _, r := range m.rows {
 		if r.Status != domain.TemplatePublished {
 			continue
@@ -132,23 +140,23 @@ func (m *memStore) ListPublished(_ context.Context, genre string) ([]domain.Temp
 		if genre != "" && r.Genre != genre {
 			continue
 		}
-		out = append(out, r)
+		out = append(out, toPublished(r))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	if out == nil {
-		out = []domain.Template{}
+		out = []ports.PublishedTemplate{}
 	}
 	return out, nil
 }
 
-func (m *memStore) GetPublishedByID(_ context.Context, id string) (domain.Template, bool, error) {
+func (m *memStore) GetPublishedByID(_ context.Context, id string) (ports.PublishedTemplate, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.rows[id]
 	if !ok || r.Status != domain.TemplatePublished {
-		return domain.Template{}, false, nil
+		return ports.PublishedTemplate{}, false, nil
 	}
-	return r, true, nil
+	return toPublished(r), true, nil
 }
 
 func (m *memStore) SetStatus(_ context.Context, id, status string) error {

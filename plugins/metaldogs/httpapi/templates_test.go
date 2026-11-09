@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,11 +18,10 @@ import (
 
 type tplMem struct {
 	rows map[string]domain.Template
+	err  error
 }
 
-func (m *tplMem) InsertDraft(context.Context, domain.Template) error {
-	return nil
-}
+func (m *tplMem) InsertDraft(context.Context, domain.Template) error { return nil }
 func (m *tplMem) LatestBySlug(context.Context, string) (domain.Template, bool, error) {
 	return domain.Template{}, false, nil
 }
@@ -45,8 +45,19 @@ func (m *tplMem) RetireExclusive(context.Context, string) (domain.Template, erro
 	return domain.Template{}, nil
 }
 
-func (m *tplMem) ListPublished(_ context.Context, genre string) ([]domain.Template, error) {
-	var out []domain.Template
+func publishedView(r domain.Template) ports.PublishedTemplate {
+	return ports.PublishedTemplate{
+		ID: r.ID, Slug: r.Slug, Genre: r.Genre, StyleCategory: r.StyleCategory,
+		Version: r.Version, PublishedAt: r.PublishedAt,
+		PhotoRequirements: r.PhotoRequirements, TextFields: r.TextFields, OutputConfig: r.OutputConfig,
+	}
+}
+
+func (m *tplMem) ListPublished(_ context.Context, genre string) ([]ports.PublishedTemplate, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	var out []ports.PublishedTemplate
 	for _, r := range m.rows {
 		if r.Status != domain.TemplatePublished {
 			continue
@@ -54,17 +65,20 @@ func (m *tplMem) ListPublished(_ context.Context, genre string) ([]domain.Templa
 		if genre != "" && r.Genre != genre {
 			continue
 		}
-		out = append(out, r)
+		out = append(out, publishedView(r))
 	}
 	return out, nil
 }
 
-func (m *tplMem) GetPublishedByID(_ context.Context, id string) (domain.Template, bool, error) {
+func (m *tplMem) GetPublishedByID(_ context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	if m.err != nil {
+		return ports.PublishedTemplate{}, false, m.err
+	}
 	r, ok := m.rows[id]
 	if !ok || r.Status != domain.TemplatePublished {
-		return domain.Template{}, false, nil
+		return ports.PublishedTemplate{}, false, nil
 	}
-	return r, true, nil
+	return publishedView(r), true, nil
 }
 
 var _ ports.TemplateStore = (*tplMem)(nil)
@@ -91,10 +105,23 @@ func samplePublished(id, slug, genre string) domain.Template {
 	}
 }
 
-func TestListTemplates_DTOExcludesSecretsAndDrafts(t *testing.T) {
+func assertNoSecrets(t *testing.T, raw string) {
+	t.Helper()
+	for _, leak := range []string{
+		"SECRET PROMPT", "secret-model", "content_hash", "prompt_instructions",
+		"model_parameters", "reference_pattern", "thumbnail_path", "secret/ref", "secret/thumb",
+	} {
+		if strings.Contains(raw, leak) {
+			t.Fatalf("DTO leaked %q: %s", leak, raw)
+		}
+	}
+}
+
+func TestListTemplates_DTOExcludesSecretsAndNonPublished(t *testing.T) {
 	t.Parallel()
 	pubID := "11111111-1111-4111-8111-111111111111"
 	draftID := "22222222-2222-4222-8222-222222222222"
+	retiredID := "33333333-3333-4333-8333-333333333333"
 	store := &tplMem{rows: map[string]domain.Template{
 		pubID: samplePublished(pubID, "head-front-blackmetal", "black_metal"),
 		draftID: func() domain.Template {
@@ -102,23 +129,23 @@ func TestListTemplates_DTOExcludesSecretsAndDrafts(t *testing.T) {
 			d.Status = domain.TemplateDraft
 			return d
 		}(),
+		retiredID: func() domain.Template {
+			r := samplePublished(retiredID, "retired-slug", "punk")
+			r.Status = domain.TemplateRetired
+			return r
+		}(),
 	}}
 	cat := &application.TemplateCatalog{Store: store}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/customizer/templates", nil)
-	httpapi.ListTemplatesWithCatalog(cat).ServeHTTP(rec, req)
+	httpapi.ListTemplates(cat).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	raw := rec.Body.String()
-	if strings.Contains(raw, "SECRET PROMPT") || strings.Contains(raw, "secret-model") ||
-		strings.Contains(raw, "content_hash") || strings.Contains(raw, "prompt_instructions") ||
-		strings.Contains(raw, "model_parameters") || strings.Contains(raw, "reference_pattern") ||
-		strings.Contains(raw, "thumbnail_path") {
-		t.Fatalf("DTO leaked secrets: %s", raw)
-	}
-	if strings.Contains(raw, "drafty") {
-		t.Fatal("draft must not appear in list")
+	assertNoSecrets(t, raw)
+	if strings.Contains(raw, "drafty") || strings.Contains(raw, "retired-slug") {
+		t.Fatalf("non-published leaked: %s", raw)
 	}
 	var body struct {
 		Templates []httpapi.PublicTemplate `json:"templates"`
@@ -142,20 +169,50 @@ func TestListTemplates_GenreFilter(t *testing.T) {
 	cat := &application.TemplateCatalog{Store: store}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/customizer/templates?genre=punk", nil)
-	httpapi.ListTemplatesWithCatalog(cat).ServeHTTP(rec, req)
+	httpapi.ListTemplates(cat).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
 	var body struct {
 		Templates []httpapi.PublicTemplate `json:"templates"`
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
 	if len(body.Templates) != 1 || body.Templates[0].Slug != "b" {
 		t.Fatalf("body = %+v", body)
 	}
 }
 
-func TestGetTemplate_404ForDraftUnknownAndBadID(t *testing.T) {
+func TestGetTemplate_HappyPathExcludesSecrets(t *testing.T) {
+	t.Parallel()
+	pubID := "11111111-1111-4111-8111-111111111111"
+	store := &tplMem{rows: map[string]domain.Template{
+		pubID: samplePublished(pubID, "pub", "punk"),
+	}}
+	cat := &application.TemplateCatalog{Store: store}
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/customizer/templates/{id}", httpapi.GetTemplate(cat))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates/"+pubID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertNoSecrets(t, rec.Body.String())
+	var dto httpapi.PublicTemplate
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatal(err)
+	}
+	if dto.ID != pubID || dto.Slug != "pub" || dto.ThumbnailURL != nil {
+		t.Fatalf("dto = %+v", dto)
+	}
+}
+
+func TestGetTemplate_404ForDraftRetiredUnknownAndBadID(t *testing.T) {
 	t.Parallel()
 	pubID := "11111111-1111-4111-8111-111111111111"
 	draftID := "22222222-2222-4222-8222-222222222222"
+	retiredID := "33333333-3333-4333-8333-333333333333"
 	store := &tplMem{rows: map[string]domain.Template{
 		pubID: samplePublished(pubID, "pub", "punk"),
 		draftID: func() domain.Template {
@@ -163,12 +220,15 @@ func TestGetTemplate_404ForDraftUnknownAndBadID(t *testing.T) {
 			d.Status = domain.TemplateDraft
 			return d
 		}(),
+		retiredID: func() domain.Template {
+			r := samplePublished(retiredID, "retired", "punk")
+			r.Status = domain.TemplateRetired
+			return r
+		}(),
 	}}
 	cat := &application.TemplateCatalog{Store: store}
-	h := httpapi.GetTemplateWithCatalog(cat)
-
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/customizer/templates/{id}", h)
+	mux.Handle("GET /api/customizer/templates/{id}", httpapi.GetTemplate(cat))
 
 	cases := []struct {
 		path string
@@ -176,6 +236,7 @@ func TestGetTemplate_404ForDraftUnknownAndBadID(t *testing.T) {
 	}{
 		{"/api/customizer/templates/" + pubID, http.StatusOK},
 		{"/api/customizer/templates/" + draftID, http.StatusNotFound},
+		{"/api/customizer/templates/" + retiredID, http.StatusNotFound},
 		{"/api/customizer/templates/00000000-0000-4000-8000-000000000099", http.StatusNotFound},
 		{"/api/customizer/templates/not-a-uuid", http.StatusNotFound},
 	}
@@ -185,5 +246,61 @@ func TestGetTemplate_404ForDraftUnknownAndBadID(t *testing.T) {
 		if rec.Code != tc.code {
 			t.Fatalf("%s: status=%d want %d body=%s", tc.path, rec.Code, tc.code, rec.Body.String())
 		}
+		if tc.code == http.StatusNotFound {
+			var errBody map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "not_found" {
+				t.Fatalf("%s error json = %s", tc.path, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestTemplates_NilCatalog_503(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	httpapi.ListTemplates(nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("list status=%d", rec.Code)
+	}
+	var errBody map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "unavailable" {
+		t.Fatalf("list body=%s", rec.Body.String())
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/customizer/templates/{id}", httpapi.GetTemplate(nil))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates/11111111-1111-4111-8111-111111111111", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("get status=%d", rec.Code)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "unavailable" {
+		t.Fatalf("get body=%s", rec.Body.String())
+	}
+}
+
+func TestTemplates_StoreError_500(t *testing.T) {
+	t.Parallel()
+	store := &tplMem{err: errors.New("db down")}
+	cat := &application.TemplateCatalog{Store: store}
+	rec := httptest.NewRecorder()
+	httpapi.ListTemplates(cat).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("list status=%d", rec.Code)
+	}
+	var errBody map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "internal_error" {
+		t.Fatalf("list body=%s", rec.Body.String())
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /api/customizer/templates/{id}", httpapi.GetTemplate(cat))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/templates/11111111-1111-4111-8111-111111111111", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("get status=%d", rec.Code)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] != "internal_error" {
+		t.Fatalf("get body=%s", rec.Body.String())
 	}
 }

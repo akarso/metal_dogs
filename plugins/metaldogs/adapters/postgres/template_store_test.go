@@ -183,12 +183,28 @@ func TestTemplateStore_ListPublished_AndGetByID(t *testing.T) {
 	if err != nil || !ok || got.Slug != "tpl-a" {
 		t.Fatalf("get published: %+v ok=%v err=%v", got, ok, err)
 	}
+	// Projection must not require (or expose) prompt/model — empty on public view.
+	if got.PhotoRequirements.Pose != "head_front" {
+		t.Fatalf("public projection incomplete: %+v", got)
+	}
 	draft, ok, err := store.LatestDraftBySlug(ctx, "tpl-draft")
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.GetPublishedByID(ctx, draft.ID); err != nil || ok {
 		t.Fatalf("draft must not be gettable as published, ok=%v err=%v", ok, err)
+	}
+
+	retired, err := cat.Retire(ctx, "tpl-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetPublishedByID(ctx, retired.ID); err != nil || ok {
+		t.Fatalf("retired must not be gettable as published, ok=%v err=%v", ok, err)
+	}
+	afterRetire, err := store.ListPublished(ctx, "")
+	if err != nil || len(afterRetire) != 1 || afterRetire[0].ID != pubB.ID {
+		t.Fatalf("list after retire = %+v err=%v", afterRetire, err)
 	}
 }
 

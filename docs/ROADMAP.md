@@ -326,11 +326,11 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 ### Track C — Customizer domain & API
 
-#### C1 · Templates read API — size S — **DONE** (CR-11, 2026-11-09)
+#### C1 · Templates read API — size S — **DONE pending merge** (CR-11 / PR #23)
 
 - **Goal:** `GET /api/customizer/templates?genre=` and `GET /api/customizer/templates/{id}` returning only `published` templates with DTOs (no prompts, no model parameters, no reference pattern URLs beyond a thumbnail signed URL).
-- **Scope:** `ListPublished` / `GetPublishedByID` on `TemplateStore`; public DTO with `thumbnail_url: null` until asset ingest; `404` for draft/unknown; platform `Cache-Control: no-store`.
-- **Tests:** Feature tests for filtering, draft exclusion, DTO shape (prompt must never appear), caching headers (`no-store` prefix).
+- **Scope:** Public-read SQL projection (`ListPublished` / `GetPublishedByID` never select prompt/model/hash/path columns); http-owned DTOs; catalog wired in plugin Init; `thumbnail_url: null` until asset ingest; `404` for draft/retired/unknown; platform `Cache-Control: no-store`.
+- **Tests:** Feature tests for filtering, draft/retired exclusion, list+get secret omission, nil-catalog `503`, store-error `500`, caching headers (`no-store` prefix).
 - **Safe delivery:** Flagged; no published templates exist yet.
 - **Docs:** API contract in `architecture/api.md` (created here); CR-11.
 

@@ -21,7 +21,7 @@ Published catalog only. Drafts and retired versions never appear. Responses omit
 
 ### Query
 
-- `genre` — optional exact genre filter. Omitted/empty → all published. Unknown genre → `200` with empty `templates` array.
+- `genre` — optional **exact, case-sensitive** genre filter (must match authored `genre` byte-for-byte after trim). Omitted/empty → all published. Unknown / differently cased genre (e.g. `Black_Metal` vs `black_metal`) → `200` with empty `templates` array.
 
 ### Path
 
