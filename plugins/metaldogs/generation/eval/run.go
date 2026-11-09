@@ -12,6 +12,7 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/ocr"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/openai"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 )
 
 // Options configures an offline evaluation run.
@@ -131,10 +132,6 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	sample := SampleResult{
 		PhotoName: base,
 		NameCheck: ocr.NameHeuristic(def.DogName),
-		Validation: ValidationResult{
-			Status:  "skipped",
-			Message: "G3 output validation not wired yet",
-		},
 	}
 	raw, err := os.ReadFile(photoPath)
 	if err != nil {
@@ -196,6 +193,18 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	sample.UsageOutputTokens = res.UsageOutputTokens
 	sample.UsageTotalTokens = res.UsageTotalTokens
 	sample.HasAlpha = res.HasAlpha
+
+	vr := validate.Validate(res.ImagePNG, def.OutputConfig)
+	sample.Validation = ValidationResult{
+		Status:   vr.Status,
+		Codes:    vr.Codes,
+		Warnings: vr.Warnings,
+		Message:  vr.Message,
+	}
+	if vr.Failed() {
+		sample.Error = vr.Message
+		sample.ErrorClass = string(generation.ErrorRejectedInput)
+	}
 	return sample
 }
 

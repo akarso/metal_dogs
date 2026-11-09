@@ -11,11 +11,12 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/ocr"
 )
 
-// ValidationResult is a placeholder slot for G3 checks (skipped in G0).
+// ValidationResult records G3 output checks for one sample.
 type ValidationResult struct {
-	Status  string   `json:"status"` // skipped | pass | fail
-	Codes   []string `json:"codes,omitempty"`
-	Message string   `json:"message,omitempty"`
+	Status   string   `json:"status"` // pass | fail (skipped only if generate never ran)
+	Codes    []string `json:"codes,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+	Message  string   `json:"message,omitempty"`
 }
 
 // SampleResult is one photo's generation outcome in the report.

@@ -21,6 +21,7 @@ type TemplateDef struct {
 	DogName       string                `json:"dog_name" yaml:"dog_name"`
 	Model         string                `json:"model" yaml:"model"`
 	Parameters    generation.Parameters `json:"parameters" yaml:"parameters"`
+	OutputConfig  domain.OutputConfig   `json:"output_config" yaml:"output_config"`
 }
 
 // LoadTemplate reads a Template v1 YAML/JSON or a legacy G0 stub.
@@ -64,6 +65,7 @@ func templateDefFromDomain(t domain.Template) TemplateDef {
 		PromptVersion: t.PromptInstructions.PromptVersion,
 		Model:         t.ModelParameters.Model,
 		Parameters:    generation.Parameters{Width: w, Height: h, Seed: seed},
+		OutputConfig:  t.OutputConfig,
 	}
 }
 
@@ -98,5 +100,26 @@ func loadLegacyStub(raw []byte, path string) (TemplateDef, error) {
 	default:
 		return TemplateDef{}, fmt.Errorf("eval: template parameters: width and height must both be set or both omitted (got %dx%d)", w, h)
 	}
+	applyLegacyOutputDefaults(&def)
 	return def, nil
+}
+
+// applyLegacyOutputDefaults fills OutputConfig from Parameters (or 64×64) with
+// Monochrome true when the stub omitted canvas size.
+func applyLegacyOutputDefaults(def *TemplateDef) {
+	if def.OutputConfig.CanvasWidth > 0 || def.OutputConfig.CanvasHeight > 0 {
+		return
+	}
+	w, h := def.Parameters.Width, def.Parameters.Height
+	if w == 0 {
+		w = generation.DefaultDimension
+	}
+	if h == 0 {
+		h = generation.DefaultDimension
+	}
+	def.OutputConfig = domain.OutputConfig{
+		CanvasWidth:  w,
+		CanvasHeight: h,
+		Monochrome:   true,
+	}
 }

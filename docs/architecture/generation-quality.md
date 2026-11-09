@@ -51,7 +51,11 @@ Confirm one live smoke before the full ≥20×5 matrix (field name / MIME / mode
 
 ## Name check
 
-`generation/ocr.NameHeuristic` only records the expected name for human review (`manual_required`). Real OCR is deferred to G3.
+`generation/ocr.NameHeuristic` only records the expected name for human review (`manual_required`). Byte-reading OCR (`name_ocr_mismatch`) is still deferred; G3 wires deterministic PNG checks (`generation/validate`) into `report.json` instead.
+
+## Output validation (G3)
+
+After each successful generate, eval runs `validate.Validate` against the template `output_config`. Hard fails (`decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`) mark the sample failed. `no_transparency` is a warning until ADR-0008 Accept.
 
 ## Open questions answered by this spike
 

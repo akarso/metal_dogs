@@ -82,7 +82,7 @@ func TestRun_FakeProvider_WritesReportAndPNG(t *testing.T) {
 		t.Fatalf("parameters = %+v", report.Parameters)
 	}
 	sample := report.Samples[0]
-	if sample.Error != "" || sample.OutputFile != "dog.jpg.png" || sample.Validation.Status != "skipped" {
+	if sample.Error != "" || sample.OutputFile != "dog.jpg.png" || sample.Validation.Status != "pass" {
 		t.Fatalf("sample = %+v", sample)
 	}
 	if sample.ProviderModel != "fake-g0-v1" {
@@ -310,6 +310,49 @@ func TestAssembleRequestFields_FromTemplate(t *testing.T) {
 	}
 	if def.PromptVersion != "g0-unversioned" || def.Model != "" || def.Parameters.Width != 0 || def.Parameters.Height != 0 {
 		t.Fatalf("defaults = %+v", def)
+	}
+	if def.OutputConfig.CanvasWidth != generation.DefaultDimension || def.OutputConfig.CanvasHeight != generation.DefaultDimension || !def.OutputConfig.Monochrome {
+		t.Fatalf("output_config defaults = %+v", def.OutputConfig)
+	}
+}
+
+func TestRun_ValidationFail_MarksSample(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tplPath := filepath.Join(root, "t.json")
+	photosDir := filepath.Join(root, "photos")
+	outDir := filepath.Join(root, "out")
+	if err := os.MkdirAll(photosDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Canvas 8×8 but claim 16×16 → dimensions_mismatch after fake generate.
+	tpl := `{
+  "id": "bad-canvas",
+  "prompt": "p",
+  "parameters": {"width": 8, "height": 8, "seed": 1},
+  "output_config": {"canvas_width": 16, "canvas_height": 16, "monochrome": true}
+}`
+	if err := os.WriteFile(tplPath, []byte(tpl), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photosDir, "dog.jpg"), []byte{0xff, 0xd8, 0xff}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	report, err := eval.Run(context.Background(), eval.Options{
+		TemplatePath: tplPath,
+		PhotosDir:    photosDir,
+		OutDir:       outDir,
+		ProviderName: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := report.Samples[0]
+	if s.Validation.Status != "fail" || s.ErrorClass != string(generation.ErrorRejectedInput) {
+		t.Fatalf("sample = %+v", s)
+	}
+	if s.OutputFile == "" {
+		t.Fatal("expected PNG still written for inspection")
 	}
 }
 

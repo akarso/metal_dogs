@@ -62,22 +62,24 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, []byte, error) {
 	digest := requestDigest(req, params)
 
-	r, g, b := digest[0], digest[1], digest[2]
-	a := digest[3]
-	if a < 200 {
-		a = 255 // print-ish fixtures stay mostly opaque
-	}
-	hasAlpha := a < 255
-
+	// Monochrome + spatial gray levels so G3 blank/mono checks pass on fake eval.
 	img := image.NewRGBA(image.Rect(0, 0, params.Width, params.Height))
-	c := color.RGBA{R: r, G: g, B: b, A: a}
+	hasAlpha := false
 	for y := 0; y < params.Height; y++ {
 		for x := 0; x < params.Width; x++ {
-			img.SetRGBA(x, y, c)
+			level := (int(digest[0]) + x*7 + y*11 + int(digest[(x+y)%len(digest)])) % 16
+			g := uint8(level << 4)
+			a := uint8(255)
+			if digest[3] < 240 && (x+y)%7 == 0 {
+				a = 200 + digest[3]%40
+				hasAlpha = true
+			}
+			img.SetRGBA(x, y, color.RGBA{R: g, G: g, B: g, A: a})
 		}
 	}
 	// Deterministic 1px border from digest so golden checks can assert structure.
-	border := color.RGBA{R: digest[4], G: digest[5], B: digest[6], A: 255}
+	borderGray := digest[4]
+	border := color.RGBA{R: borderGray, G: borderGray, B: borderGray, A: 255}
 	for x := 0; x < params.Width; x++ {
 		img.SetRGBA(x, 0, border)
 		img.SetRGBA(x, params.Height-1, border)

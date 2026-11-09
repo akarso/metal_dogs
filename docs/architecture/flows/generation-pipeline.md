@@ -80,12 +80,12 @@ Retries of the provider call are **internal to one `GenerationJob` attempt count
 
 | Code | Severity | Meaning |
 | --- | --- | --- |
-| `dimensions_mismatch` | error | Output does not match template canvas or aspect |
-| `not_monochrome` | error | Colour content above tolerance |
-| `no_transparency` | error or warning | Depends on ADR-0008: error if provider promised alpha; warning triggers background-removal stage if configured |
-| `blank_or_low_detail` | error | Entropy/variance below threshold |
-| `decode_failed` | error | Not a valid image |
-| `name_ocr_mismatch` | warning | OCR heuristic did not find the dog name; surfaced to customer as "check the spelling before approving" |
+| `dimensions_mismatch` | error | Output does not match template canvas (`OutputConfig` width×height) |
+| `not_monochrome` | error | Colour content above tolerance (max−min RGB channel > 16 on 8-bit) when `OutputConfig.Monochrome` |
+| `no_transparency` | **warning** (G3) | No pixel with alpha &lt; 0xffff (incl. tRNS). Remains warning until ADR-0008 Accept; may become error or trigger background-removal later |
+| `blank_or_low_detail` | error | Near-uniform: ≤4 unique 4-bit-quantized colours **and** luminance variance below floor |
+| `decode_failed` | error | Not a valid / decodable PNG |
+| `name_ocr_mismatch` | warning (not emitted in G3) | Reserved for byte-reading OCR; G3 keeps `generation/ocr.NameHeuristic` on `name_check` only |
 
 ## Idempotency and concurrency guarantees
 

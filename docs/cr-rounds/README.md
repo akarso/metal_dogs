@@ -61,3 +61,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-07 | G0 offline eval harness (`metaldogs:eval` + fake provider) | M1 → 1/3 | [`CR-07-g0-eval-harness.md`](CR-07-g0-eval-harness.md) |
 | CR-08 | G1 OpenAI spike scaffold (exit gate open) | M1 scaffold | [`CR-08-g1-provider-spike-scaffold.md`](CR-08-g1-provider-spike-scaffold.md) |
 | CR-09 | G2 template format v1 (draft loader; nothing published) | M1 → G2 done | [`CR-09-g2-template-format.md`](CR-09-g2-template-format.md) |
+| CR-10 | G3 output validation (`generation/validate` + eval wire) | M2 → G3 done | [`CR-10-g3-output-validation.md`](CR-10-g3-output-validation.md) |
