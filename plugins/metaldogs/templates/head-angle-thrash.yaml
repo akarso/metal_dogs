@@ -1,0 +1,29 @@
+slug: head-angle-thrash
+genre: thrash
+style_category: head_portrait
+prompt_instructions:
+  text: >-
+    Monochrome thrash-metal style dog head at a three-quarter angle, sharp
+    linework, high contrast on black. Preserve breed and markings. No color.
+    Leave background clean for print isolation.
+  prompt_version: g2-v1
+model_parameters:
+  model: gpt-image-2.5-sunburst
+  width: 1024
+  height: 1024
+  seed: 2
+photo_requirements:
+  pose: head_angle
+  background_hint: plain
+  lighting_hint: directional
+text_fields:
+  editable:
+    - key: dog_name
+      max_length: 12
+      allowed_charset: latin_polish
+  fixed: []
+output_config:
+  canvas_width: 1024
+  canvas_height: 1024
+  monochrome: true
+  print_area: { x: 0, y: 0, width: 1024, height: 1024 }

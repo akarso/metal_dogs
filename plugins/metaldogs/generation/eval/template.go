@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"gopkg.in/yaml.v3"
 )
 
-// TemplateDef is the G0 file-backed template stub (full format lands in G2).
+// TemplateDef is the eval-facing view of a template (v1 or legacy stub).
 type TemplateDef struct {
 	ID            string                `json:"id" yaml:"id"`
 	Prompt        string                `json:"prompt" yaml:"prompt"`
@@ -21,12 +23,50 @@ type TemplateDef struct {
 	Parameters    generation.Parameters `json:"parameters" yaml:"parameters"`
 }
 
-// LoadTemplate reads a JSON or YAML template definition from path.
+// LoadTemplate reads a Template v1 YAML/JSON or a legacy G0 stub.
+// DogName is not taken from v1 files — set via Options.DogName / -dog-name.
 func LoadTemplate(path string) (TemplateDef, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return TemplateDef{}, fmt.Errorf("eval: read template: %w", err)
 	}
+	if isV1Template(raw, path) {
+		t, err := application.ValidatePath(path)
+		if err != nil {
+			return TemplateDef{}, fmt.Errorf("eval: %w", err)
+		}
+		return templateDefFromDomain(t), nil
+	}
+	return loadLegacyStub(raw, path)
+}
+
+func isV1Template(raw []byte, path string) bool {
+	var probe struct {
+		Slug               string `json:"slug" yaml:"slug"`
+		PromptInstructions any    `json:"prompt_instructions" yaml:"prompt_instructions"`
+		ID                 string `json:"id" yaml:"id"`
+		Prompt             string `json:"prompt" yaml:"prompt"`
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		_ = yaml.Unmarshal(raw, &probe)
+	default:
+		_ = json.Unmarshal(raw, &probe)
+	}
+	return probe.Slug != "" && probe.PromptInstructions != nil
+}
+
+func templateDefFromDomain(t domain.Template) TemplateDef {
+	return TemplateDef{
+		ID:            t.Slug,
+		Prompt:        t.PromptInstructions.Text,
+		PromptVersion: t.PromptInstructions.PromptVersion,
+		Model:         t.ModelParameters.Model,
+		Parameters:    t.GenerationParameters(),
+	}
+}
+
+func loadLegacyStub(raw []byte, path string) (TemplateDef, error) {
 	var def TemplateDef
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml":
@@ -47,11 +87,9 @@ func LoadTemplate(path string) (TemplateDef, error) {
 	if def.PromptVersion == "" {
 		def.PromptVersion = "g0-unversioned"
 	}
-	// Leave Model empty when omitted — providers treat empty as "use config default".
 	w, h := def.Parameters.Width, def.Parameters.Height
 	switch {
 	case w == 0 && h == 0:
-		// Unset canvas: providers apply their own default (OpenAI → 1024x1024).
 	case w > 0 && h > 0:
 		if err := def.Parameters.Validate(); err != nil {
 			return TemplateDef{}, fmt.Errorf("eval: template parameters: %w", err)

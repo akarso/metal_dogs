@@ -1,0 +1,29 @@
+slug: long-name-polish
+genre: black_metal
+style_category: typography_stress
+prompt_instructions:
+  text: >-
+    Monochrome metal-band style dog portrait with prominent name lettering.
+    High contrast black and white, clean background for print. Preserve breed
+    and markings. Typography must render Polish diacritics correctly.
+  prompt_version: g2-v1
+model_parameters:
+  model: gpt-image-2.5-sunburst
+  width: 1024
+  height: 1024
+  seed: 4
+photo_requirements:
+  pose: head_front
+  background_hint: plain
+  lighting_hint: even
+text_fields:
+  editable:
+    - key: dog_name
+      max_length: 16
+      allowed_charset: latin_polish
+  fixed: []
+output_config:
+  canvas_width: 1024
+  canvas_height: 1024
+  monochrome: true
+  print_area: { x: 0, y: 0, width: 1024, height: 1024 }

@@ -291,13 +291,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Docs:** ADR-0008 Proposed with OpenAI candidate; [`architecture/generation-quality.md`](architecture/generation-quality.md); CR-08.
 - **Exit gate:** Quality bar met for ≥4 of 5 templates; cost per accepted artwork acceptable including failed attempts. If not met, iterate within G1 before continuing M2.
 
-#### G2 · Template definition format v1 and prompt versioning — size M
+#### G2 · Template definition format v1 and prompt versioning — size M — **DONE** (CR-09, 2026-11-09)
 
 - **Goal:** Declarative `Template` with: id, status (`draft|published|retired`), genre, style category, reference pattern asset, prompt instructions and model parameters, photo requirements (`head_front|head_angle|full_body_profile|...`, background and lighting hints), editable text fields (name, max length, allowed characters) and fixed texts, output configuration (canvas size, print area, monochrome), `version`.
-- **Scope:** Loader from files (YAML/JSON) into the DB table with content hash; validation rules; the 5 spike templates authored.
-- **Tests:** Table-driven validation tests; round-trip load/persist; version bump on content change.
-- **Safe delivery:** Templates stored as `draft`; nothing published.
-- **Docs:** `architecture/domain-model.md` Template section; `runbooks/template-publishing.md`.
+- **Scope:** `metaldogs_templates` migration; domain Validate + content hash; `metaldogs:templates validate|load|publish|retire`; five YAML under `plugins/metaldogs/templates/`; eval accepts v1 + `-dog-name`.
+- **Tests:** Table-driven validation; hash sensitivity; postgres load/version bump/publish/retire; eval v1 fake run.
+- **Safe delivery:** Templates load as `draft`; nothing published in this CR.
+- **Docs:** `architecture/domain-model.md` Template section; `runbooks/template-publishing.md`; CR-09.
 
 #### G3 · Output validation — size M
 

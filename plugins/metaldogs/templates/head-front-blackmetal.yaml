@@ -1,0 +1,29 @@
+slug: head-front-blackmetal
+genre: black_metal
+style_category: head_portrait
+prompt_instructions:
+  text: >-
+    Monochrome black-metal style dog head portrait from the front, high contrast
+    ink on black, suitable for tee print. Preserve breed and markings. No color.
+    Leave background clean for print isolation.
+  prompt_version: g2-v1
+model_parameters:
+  model: gpt-image-2.5-sunburst
+  width: 1024
+  height: 1024
+  seed: 1
+photo_requirements:
+  pose: head_front
+  background_hint: plain
+  lighting_hint: even
+text_fields:
+  editable:
+    - key: dog_name
+      max_length: 12
+      allowed_charset: latin_polish
+  fixed: []
+output_config:
+  canvas_width: 1024
+  canvas_height: 1024
+  monochrome: true
+  print_area: { x: 0, y: 0, width: 1024, height: 1024 }

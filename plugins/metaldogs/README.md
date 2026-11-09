@@ -77,13 +77,25 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
 
 ```bash
 ./app metaldogs:eval \
-  -template plugins/metaldogs/generation/eval/testdata/template.json \
+  -template plugins/metaldogs/templates/head-front-blackmetal.yaml \
   -photos /path/to/photos \
   -out /tmp/metaldogs-eval \
-  -provider fake
+  -provider fake \
+  -dog-name Burek
 ```
 
-Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; validation `skipped` until G3). `--out` must have no non-dot entries. Default provider is `fake` (deterministic). Canvas ≤2048²; photo ≤20MiB. Non-zero exit if any sample fails.
+Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; validation `skipped` until G3). `--out` must have no non-dot entries. Default provider is `fake` (deterministic). Canvas ≤2048²; photo ≤20MiB. Non-zero exit if any sample fails. Accepts Template v1 YAML or a legacy G0 stub JSON.
+
+### Templates (G2)
+
+```bash
+./app metaldogs:templates validate -file plugins/metaldogs/templates/head-front-blackmetal.yaml
+./app metaldogs:templates load -file plugins/metaldogs/templates/head-front-blackmetal.yaml   # draft
+./app metaldogs:templates publish -slug head-front-blackmetal   # not done in G2 ship set
+./app metaldogs:templates retire -slug head-front-blackmetal
+```
+
+Definitions live under [`templates/`](templates/). See [`docs/runbooks/template-publishing.md`](../../docs/runbooks/template-publishing.md).
 
 ### OpenAI spike (G1)
 
@@ -91,8 +103,8 @@ Default model `gpt-image-2.5-sunburst` (`gpt-image-1` rejected). Adapter posts `
 
 ```bash
 export METALDOGS_OPENAI_API_KEY=sk-...
-./app metaldogs:eval -template plugins/metaldogs/generation/eval/testdata/spike/01-head-front-blackmetal.json \
-  -photos /path/to/photos -out /tmp/md-spike-01 -provider openai
+./app metaldogs:eval -template plugins/metaldogs/templates/head-front-blackmetal.yaml \
+  -photos /path/to/photos -out /tmp/md-spike-01 -provider openai -dog-name Burek
 # optional: -openai-model … -openai-base …
 # Paid smoke (not CI): METALDOGS_SMOKE=1 go test ./plugins/metaldogs/generation/openai -run Smoke -count=1
 ```

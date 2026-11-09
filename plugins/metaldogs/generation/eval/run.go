@@ -23,6 +23,7 @@ type Options struct {
 	OpenAIAPIKey string
 	OpenAIModel  string
 	OpenAIBase   string
+	DogName      string // sample name for GenerationRequest; default Burek via ParseArgs
 	Now          func() time.Time // optional; defaults to time.Now.UTC
 }
 
@@ -48,6 +49,11 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	def, err := LoadTemplate(opts.TemplatePath)
 	if err != nil {
 		return Report{}, err
+	}
+	if opts.DogName != "" {
+		def.DogName = opts.DogName
+	} else if def.DogName == "" {
+		def.DogName = "Burek"
 	}
 	provider, err := resolveProvider(opts)
 	if err != nil {

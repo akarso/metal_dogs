@@ -1,18 +1,17 @@
-# G1 spike template set
+# G1 spike scorecard kit
 
-Five representative Metal Dogs templates for the paid OpenAI spike (model
-`gpt-image-2.5-sunburst`). Prompts are placeholders — tune after the first smoke
-batch. Photos are **not** vendored; point `metaldogs:eval -photos` at a local
-folder with ≥20 varied dog photos.
+Template definitions moved to Template v1 YAML under
+[`plugins/metaldogs/templates/`](../../../templates/). Use those files with
+`metaldogs:eval` and fill `scorecard.json` from `scorecard.example.json`.
 
 ```bash
 export METALDOGS_OPENAI_API_KEY=sk-...
 ./app metaldogs:eval \
-  -template plugins/metaldogs/generation/eval/testdata/spike/01-head-front-blackmetal.json \
+  -template plugins/metaldogs/templates/head-front-blackmetal.yaml \
   -photos /path/to/spike-photos \
   -out /tmp/md-spike-01 \
-  -provider openai
+  -provider openai \
+  -dog-name Burek
 ```
 
 Score with the rubric in [`docs/architecture/generation-quality.md`](../../../../../../docs/architecture/generation-quality.md).
-Fill `scorecard.json` next to `report.json` (see `scorecard.example.json`).

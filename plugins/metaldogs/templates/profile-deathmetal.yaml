@@ -1,0 +1,29 @@
+slug: profile-deathmetal
+genre: death_metal
+style_category: profile_portrait
+prompt_instructions:
+  text: >-
+    Monochrome death-metal style dog in full-body profile, aggressive silhouette,
+    high contrast ink on black. Preserve breed and markings. No color. Leave
+    background clean for print isolation.
+  prompt_version: g2-v1
+model_parameters:
+  model: gpt-image-2.5-sunburst
+  width: 1024
+  height: 1024
+  seed: 3
+photo_requirements:
+  pose: full_body_profile
+  background_hint: plain
+  lighting_hint: even
+text_fields:
+  editable:
+    - key: dog_name
+      max_length: 12
+      allowed_charset: latin_polish
+  fixed: []
+output_config:
+  canvas_width: 1024
+  canvas_height: 1024
+  monochrome: true
+  print_area: { x: 0, y: 0, width: 1024, height: 1024 }

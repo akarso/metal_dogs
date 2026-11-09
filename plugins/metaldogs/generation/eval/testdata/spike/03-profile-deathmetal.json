@@ -1,8 +1,0 @@
-{
-  "id": "spike-03-profile-deathmetal",
-  "prompt": "Monochrome death-metal dog full-body profile silhouette with ornate metal frame, high contrast, print-ready on black fabric. Keep proportions recognisable.",
-  "prompt_version": "g1-spike-v1",
-  "dog_name": "Max",
-  "model": "gpt-image-2.5-sunburst",
-  "parameters": { "width": 1024, "height": 1024, "seed": 3 }
-}
