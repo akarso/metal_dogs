@@ -334,7 +334,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; no published templates exist yet.
 - **Docs:** API contract in `architecture/api.md` (created here); CR-11.
 
-#### C2 · Uploads — size M — **DONE pending merge** (CR-12)
+#### C2 · Uploads — size M — **DONE pending merge** (CR-12 / PR #24)
 
 - **Goal:** `POST /api/customizer/uploads` (multipart) → `SourceAsset` in private storage; server-side checks: size limit, real MIME by sniffing, decode to verify format and dimensions, min/max dimensions, EXIF stripped, re-encoded; returns `upload_id` and a short-lived signed preview URL; uploads expire if not attached to a design (O2).
 - **Scope:** Migration `003` `metaldogs_assets`; `imageprep` + shared `imagemime.Sniff`; `UploadService` Put + insert + signed GET; JPEG/PNG only (WebP → 415); retention stub `delete_after=+2h` (no sweep — O2).

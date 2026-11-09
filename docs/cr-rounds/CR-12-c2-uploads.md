@@ -1,6 +1,6 @@
 # CR-12: C2 uploads API
 
-- Status: **open** — PR pending (not closed until merge + green CI)
+- Status: **open** — PR [#24](https://github.com/akarso/metal_dogs/pull/24) (not closed until merge + green CI)
 - Slices: `C2`
 - Milestone progress: M2 → C2 (pending merge)
 
