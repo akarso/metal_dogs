@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 )
 
 const (
@@ -149,7 +149,7 @@ func (p *Provider) Generate(ctx context.Context, req generation.GenerationReques
 	if reqID == "" {
 		reqID = fmt.Sprintf("openai-%d", usage.Created)
 	}
-	hasAlpha := pngHasAlpha(png)
+	hasAlpha := validate.HasUsefulAlpha(png)
 	return generation.GenerationResult{
 		ImagePNG:          png,
 		HasAlpha:          hasAlpha,
@@ -402,26 +402,6 @@ func parseImagesResponse(raw []byte) ([]byte, parsedUsage, error) {
 		u.TotalTokens = parsed.Usage.TotalTokens
 	}
 	return decoded, u, nil
-}
-
-// pngHasAlpha reports whether any decoded pixel has useful transparency
-// (a < 0xffff), including RGB+tRNS. Colour type alone is not enough: opaque
-// RGBA must be false; type 0/2 with tRNS must be true.
-func pngHasAlpha(pngBytes []byte) bool {
-	img, err := png.Decode(bytes.NewReader(pngBytes))
-	if err != nil {
-		return false
-	}
-	b := img.Bounds()
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			_, _, _, a := img.At(x, y).RGBA()
-			if a < 0xffff {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func mapHTTPError(status int, raw []byte) error {

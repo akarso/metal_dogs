@@ -11,19 +11,28 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/ocr"
 )
 
-// ValidationResult is a placeholder slot for G3 checks (skipped in G0).
+// ValidationResult records G3 output checks for one sample.
+// Status is pass|fail after bytes are validated, or skipped when validation never ran
+// (pre-generate failure, or post-generate persist/collision failure).
+// Codes are hard-fail only; Warnings hold soft codes (e.g. no_transparency).
 type ValidationResult struct {
-	Status  string   `json:"status"` // skipped | pass | fail
-	Codes   []string `json:"codes,omitempty"`
-	Message string   `json:"message,omitempty"`
+	Status   string   `json:"status"` // pass | fail | skipped
+	Codes    []string `json:"codes,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+	Message  string   `json:"message,omitempty"`
 }
+
+const (
+	validationSkippedNoGenerate = "validation skipped: generate did not run"
+	validationSkippedNoPersist  = "validation skipped: output was not persisted"
+)
 
 // SampleResult is one photo's generation outcome in the report.
 type SampleResult struct {
-	PhotoName      string           `json:"photo_name"`
-	OutputFile     string           `json:"output_file,omitempty"`
-	ProviderReqID  string           `json:"provider_request_id,omitempty"`
-	ProviderModel  string           `json:"provider_model,omitempty"`
+	PhotoName         string           `json:"photo_name"`
+	OutputFile        string           `json:"output_file,omitempty"`
+	ProviderReqID     string           `json:"provider_request_id,omitempty"`
+	ProviderModel     string           `json:"provider_model,omitempty"`
 	LatencyMS         int64            `json:"latency_ms"`
 	CostMinorUnits    int64            `json:"cost_minor_units"`
 	UsageInputTokens  int              `json:"usage_input_tokens,omitempty"`

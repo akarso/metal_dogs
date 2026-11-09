@@ -12,6 +12,7 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/ocr"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/openai"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 )
 
 // Options configures an offline evaluation run.
@@ -23,7 +24,7 @@ type Options struct {
 	OpenAIAPIKey string
 	OpenAIModel  string
 	OpenAIBase   string
-	DogName      string // sample name for GenerationRequest; default Burek via ParseArgs
+	DogName      string           // sample name for GenerationRequest; default Burek via ParseArgs
 	Now          func() time.Time // optional; defaults to time.Now.UTC
 }
 
@@ -126,15 +127,19 @@ func ensureEmptyOutDir(outDir string) error {
 	return nil
 }
 
+func skippedValidation(msg string) ValidationResult {
+	return ValidationResult{
+		Status:  "skipped",
+		Message: msg,
+	}
+}
+
 func runOne(ctx context.Context, provider generation.ImageProvider, def TemplateDef, photoPath, outDir string, written map[string]string) SampleResult {
 	base := filepath.Base(photoPath)
 	sample := SampleResult{
-		PhotoName: base,
-		NameCheck: ocr.NameHeuristic(def.DogName),
-		Validation: ValidationResult{
-			Status:  "skipped",
-			Message: "G3 output validation not wired yet",
-		},
+		PhotoName:  base,
+		NameCheck:  ocr.NameHeuristic(def.DogName),
+		Validation: skippedValidation(validationSkippedNoGenerate),
 	}
 	raw, err := os.ReadFile(photoPath)
 	if err != nil {
@@ -164,6 +169,9 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 		sample.ErrorClass = string(generation.ClassifyError(err))
 		return sample
 	}
+
+	// Provider returned bytes; any persist failure below is not a generate miss.
+	sample.Validation = skippedValidation(validationSkippedNoPersist)
 
 	outName := outputPNGName(base)
 	if prev, ok := written[outName]; ok {
@@ -196,6 +204,18 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	sample.UsageOutputTokens = res.UsageOutputTokens
 	sample.UsageTotalTokens = res.UsageTotalTokens
 	sample.HasAlpha = res.HasAlpha
+
+	vr := validate.Validate(res.ImagePNG, def.OutputConfig)
+	sample.Validation = ValidationResult{
+		Status:   vr.Status,
+		Codes:    vr.Codes,
+		Warnings: vr.Warnings,
+		Message:  vr.Message,
+	}
+	if vr.Failed() {
+		sample.Error = vr.Message
+		sample.ErrorClass = string(generation.ErrorValidationFailed)
+	}
 	return sample
 }
 

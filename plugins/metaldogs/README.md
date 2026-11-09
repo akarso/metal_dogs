@@ -84,7 +84,7 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
   -dog-name Burek
 ```
 
-Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; validation `skipped` until G3). `--out` must have no non-dot entries. Default provider is `fake` (deterministic). Canvas ≤2048²; photo ≤20MiB. Non-zero exit if any sample fails. Accepts Template v1 YAML or a legacy G0 stub JSON.
+Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; `validation.status` = `pass`/`fail`/`skipped` via `generation/validate`). Hard validation failures set sample `error` / `error_class=validation_failed` (non-zero CLI exit). `--out` must have no non-dot entries. Default provider is `fake` (deterministic monochrome fixtures). Canvas ≤2048²; photo ≤20MiB. Accepts Template v1 YAML or a legacy G0 stub JSON.
 
 ### Templates (G2)
 

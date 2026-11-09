@@ -46,7 +46,7 @@ The project requires one provider at first, chosen on quality, cost, latency, da
 
 ## Harness (G0 / G1)
 
-Offline CLI `metaldogs:eval` writes PNGs + `report.json` (latency, cost slot, validation placeholder `skipped` until G3). Default provider `fake` is deterministic. `-provider openai` uses the candidate adapter (key via env). Spike runbook: [`../architecture/generation-quality.md`](../architecture/generation-quality.md).
+Offline CLI `metaldogs:eval` writes PNGs + `report.json` (latency, cost slot, G3 `validation` pass/fail). Default provider `fake` is deterministic. `-provider openai` uses the candidate adapter (key via env). Spike runbook: [`../architecture/generation-quality.md`](../architecture/generation-quality.md).
 
 ## Alternatives considered
 

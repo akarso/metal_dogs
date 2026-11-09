@@ -34,4 +34,4 @@
 
 - G1: real provider adapter + spike report against these criteria
 - G2: replace file stub with versioned Template format
-- G3: fill `validation` in report (stop `skipped`)
+- G3: fill `validation` in report (stop `skipped`) — **done in CR-10**
