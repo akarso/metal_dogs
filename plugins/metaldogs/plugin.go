@@ -58,11 +58,18 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	p.assets = store
 
-	// Wire catalog once at Init when Bootstrap.DB is present. Nil catalog →
-	// template handlers return 503 (unit tests register routes without DB).
+	// Wire catalog/uploads once at Init when Bootstrap.DB is present. Nil deps →
+	// handlers return 503 (unit tests register routes without DB).
 	var templates *application.TemplateCatalog
+	var uploads *application.UploadService
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
+		uploads = &application.UploadService{
+			Assets: postgres.NewAssetRepo(app.Bootstrap.DB),
+			Store:  store,
+			IDs:    ports.UUIDGenerator{},
+			Clock:  ports.SystemClock{},
+		}
 	}
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
@@ -76,6 +83,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if err := app.RegisterPublicRoute("GET /api/customizer/templates/{id}", httpapi.GetTemplate(templates)); err != nil {
 		return fmt.Errorf("metaldogs plugin: templates get route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/uploads", httpapi.CreateUpload(uploads)); err != nil {
+		return fmt.Errorf("metaldogs plugin: uploads route: %w", err)
 	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)

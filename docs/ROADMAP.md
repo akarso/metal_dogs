@@ -266,7 +266,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; pin absorb 2026-11-08)
 
 - **Goal:** Plugin `AssetStore` over platform `media.SignedURLStorage` with namespaced private keys.
-- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570) + [shopanda#571](https://github.com/akarso/shopanda/pull/571) at pin `a8cbcb18`). Local prefer `./var/media` (never FileServer). Writers/EXIF/ownership → C2+.
+- **Scope:** Keys `private/blobs/metaldogs/...` enforced in mediastore; TTL cap; inline signed GET; no product shim ([shopanda#570](https://github.com/akarso/shopanda/pull/570) + [shopanda#571](https://github.com/akarso/shopanda/pull/571) at pin `a8cbcb18`). Local prefer `./var/media` (never FileServer). C2 landed Put + EXIF strip; ownership → C3; retention sweep → O2.
 - **Tests:** Prefix reject; localfs ObjectKey→Put→GET contract; Init on fake SignedURLStorage.
 - **Safe delivery:** Nothing writes yet. ADR notes remaining ops limits (S3 bucket policy, log redaction).
 - **Docs:** ADR-0004 Accepted (with honest limits); CR-05.
@@ -326,7 +326,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 ### Track C — Customizer domain & API
 
-#### C1 · Templates read API — size S — **DONE pending merge** (CR-11 / PR #23)
+#### C1 · Templates read API — size S — **DONE** (CR-11 / PR #23)
 
 - **Goal:** `GET /api/customizer/templates?genre=` and `GET /api/customizer/templates/{id}` returning only `published` templates with DTOs (no prompts, no model parameters, no reference pattern URLs beyond a thumbnail signed URL).
 - **Scope:** Public-read SQL projection (`ListPublished` / `GetPublishedByID` never select prompt/model/hash/path columns); http-owned DTOs; catalog wired in plugin Init; `thumbnail_url: null` until asset ingest; `404` for draft/retired/unknown; platform `Cache-Control: no-store`.
@@ -334,12 +334,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; no published templates exist yet.
 - **Docs:** API contract in `architecture/api.md` (created here); CR-11.
 
-#### C2 · Uploads — size M
+#### C2 · Uploads — size M — **DONE pending merge** (CR-12)
 
 - **Goal:** `POST /api/customizer/uploads` (multipart) → `SourceAsset` in private storage; server-side checks: size limit, real MIME by sniffing, decode to verify format and dimensions, min/max dimensions, EXIF stripped, re-encoded; returns `upload_id` and a short-lived signed preview URL; uploads expire if not attached to a design (O2).
-- **Tests:** Feature tests: oversize, wrong MIME with image extension, corrupt image, EXIF present → stripped, dimension bounds; unit tests for the validator.
-- **Safe delivery:** Flagged; storage is private.
-- **Docs:** Limits in `architecture/api.md`; privacy note in `O1`.
+- **Scope:** Migration `003` `metaldogs_assets`; `imageprep` + shared `imagemime.Sniff`; `UploadService` Put + insert + signed GET; JPEG/PNG only (WebP → 415); retention stub `delete_after=+2h` (no sweep — O2).
+- **Tests:** Feature tests: happy path, wrong MIME with image extension, missing field, nil deps `503`; unit: sniff/bounds/EXIF strip; DSN Insert/GetByID.
+- **Safe delivery:** Flagged; storage is private; unauthenticated until C3 attach.
+- **Docs:** Limits in `architecture/api.md`; ADR-0004 Put call site; CR-12.
 
 #### C3 · Designs and ownership token — size M
 

@@ -1,6 +1,6 @@
 # ADR-0004: Private S3-compatible storage with short-lived signed URLs
 
-- **Status:** Accepted for port wiring (F4 / CR-05); isolation/enforcement incomplete until C2 writers + ops checks below
+- **Status:** Accepted (F4 port; **C2** first Put call site via `POST /api/customizer/uploads`)
 - **Date:** 2026-10-15
 - **Related slices:** `F4`, `C2`, `C5`, `E5`, `E6`, `O2`, `O6`
 - **Related ADRs:** [ADR-0007](0007-guest-design-ownership-tokens.md)
@@ -15,14 +15,14 @@ Uploaded photos are private personal data. Shopanda provides `media.SignedURLSto
 2. Object keys: `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (`ports.AssetKeyPrefix`). The mediastore adapter **rejects** any other key for Put/Head/Delete/SignedGetURL.
 3. Delivery via short-lived signed URLs (`SignedGetURL` caps TTL ≤ 15m, default 60s). Inline disposition only for allowlisted image extensions (`jpg/jpeg/png/webp`); other keys force attachment. Caller `Content-Type` outside that allowlist is overridden. URLs must not be logged.
 4. Plugin `AssetStore` wraps `media.SignedURLStorage` only.
-5. `metaldogs_assets` metadata + EXIF strip + ownership 404s: **C2+**.
+5. `metaldogs_assets` metadata + EXIF-strip re-encode on upload: **landed in C2**. Guest ownership / 404 hiding of foreign assets: **C3+**. Retention sweep of expired unattached uploads: **O2**.
 6. Local layout: config default and examples use `./var/media` (not under a static web root). Private keys share that root — operators must **never** FileServer `base_path` / `base_url`. Platform localfs uses `0700`/`0600` (chmod ancestors on private write), EvalSymlinks containment, and versioned HMAC tokens with v0 compat parse.
 
 ## Honest limits (not yet fail-closed)
 
-- S3 “private” is ACL/Cache-Control under `IsPrivatePath`; a public bucket policy can still expose keys — production IAM/bucket policy is operator-owned (runbook / C2+).
+- S3 “private” is ACL/Cache-Control under `IsPrivatePath`; a public bucket policy can still expose keys — production IAM/bucket policy is operator-owned (runbook / O2+).
 - Log redaction of `local-signed/` / `X-Amz-Signature` is policy, not automated yet.
-- No Put call sites until C2; port + prefix guard + contract tests ship in F4.
+- First product Put call site: `application.UploadService` (C2 / CR-12).
 
 ## Alternatives considered
 

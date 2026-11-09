@@ -107,7 +107,8 @@ func TestPlugin_Init_RegistersHealthAndObsPing(t *testing.T) {
 		patterns[r.Pattern] = true
 	}
 	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
-		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] {
+		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
+		!patterns["POST /api/customizer/uploads"] {
 		t.Fatalf("routes = %+v", routes)
 	}
 	found := false

@@ -169,8 +169,9 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 		patterns[r.Pattern] = true
 	}
 	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
-		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] {
-		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates", routes)
+		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
+		!patterns["POST /api/customizer/uploads"] {
+		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads", routes)
 	}
 	if patterns["GET /api/customizer/dev-assets/{token}"] {
 		t.Fatal("dev-assets shim must not be registered after platform SignedURL absorb")

@@ -210,7 +210,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `internal/application/integration/sync_runtime.go` (+ test) | Sync handler re-injects payload `request_id` into ctx when worker ctx has none | F3 residual (not in upstream #568) |
 | `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go`, `config_test.go` MetalDogs cases | Product registration / migrate / config coverage | F1+ |
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Depends on residual `BoundQueue` + sync reinjection above | F3 |
-| `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; nothing writes yet | F4 |
+| `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; C2 `UploadService` Put + `metaldogs_assets` | F4 / C2 |
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
 | `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
 

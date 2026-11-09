@@ -1,8 +1,9 @@
 # CR-11: C1 templates read API
 
-- Status: **open** — PR [#23](https://github.com/akarso/metal_dogs/pull/23) (not closed until merge + green CI)
+- Status: **closed** — merged via PR [#23](https://github.com/akarso/metal_dogs/pull/23) (`6d281127`)
+- Closed: 2026-11-09
 - Slices: `C1`
-- Milestone progress: M2 → C1 (pending merge)
+- Milestone progress: M2 → C1 done
 
 ## What shipped
 
@@ -36,7 +37,7 @@
 
 ## Documentation updated
 
-- [x] ROADMAP C1 pending merge; api.md; plugin README; CR-11; CR log
+- [x] ROADMAP C1 DONE; api.md; plugin README; CR-11; CR log
 
 ## Follow-ups
 

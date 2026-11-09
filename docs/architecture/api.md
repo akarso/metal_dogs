@@ -66,6 +66,52 @@ Published catalog only. Drafts and retired versions never appear. Responses omit
 
 Handlers do not set public `max-age`. Platform middleware forces `Cache-Control: no-store` on `/api/customizer/*`.
 
+## Uploads (C2)
+
+| Method | Path | Auth | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/customizer/uploads` | public | `201` upload DTO |
+
+Multipart field name: **`file`**. Ownership tokens arrive in C3 (upload rows are unauthenticated until attached to a design). Storage keys are never returned.
+
+### Limits
+
+| Constraint | Value |
+| --- | --- |
+| Accepted types | JPEG, PNG only (magic sniff; extension ignored). WebP → `415` until re-encode path exists |
+| Max payload | `generation.MaxPhotoBytes` (20 MiB) |
+| Decoded bounds | min **256×256**, max **2048×2048** (both edges) |
+| Pipeline | sniff → size → decode → bounds → re-encode (JPEG q90 / PNG) to strip EXIF → SHA-256 → `AssetStore.Put` + `metaldogs_assets` |
+| Preview URL TTL | `ports.DefaultSignedGetTTL` (60s) |
+| Retention stub | `delete_after = now + 2h` on insert; sweep is **O2** (not C2) |
+
+### Success DTO (`201`)
+
+```json
+{
+  "upload_id": "uuid",
+  "preview_url": "https://…signed…",
+  "width": 1024,
+  "height": 1024,
+  "mime_type": "image/jpeg",
+  "expires_at": "2026-11-09T14:00:00Z"
+}
+```
+
+`expires_at` is asset retention (`delete_after`), not the signed URL expiry.
+
+### Errors
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `400` | `{"error":"bad_request"}` | Missing `file` field / malformed multipart |
+| `413` | `{"error":"payload_too_large"}` | Body or file exceeds 20 MiB |
+| `415` | `{"error":"unsupported_media_type"}` | Non-JPEG/PNG (incl. WebP) or garbage with `.jpg` name |
+| `422` | `{"error":"invalid_image"}` | Magic ok but decode fails |
+| `422` | `{"error":"dimensions_out_of_range"}` | Outside 256–2048 on either edge |
+| `503` | `{"error":"unavailable"}` | No DB or AssetStore wired |
+| `500` | `{"error":"internal_error"}` | Put/insert/sign failure |
+
 ## Safe delivery
 
-No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Flag default off.
+No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads require media + DB. Flag default off.
