@@ -116,6 +116,9 @@ func loadLegacyStub(raw []byte, path string) (TemplateDef, error) {
 	if err := applyLegacyOutputDefaults(&def, ocWrap.OutputConfig); err != nil {
 		return TemplateDef{}, err
 	}
+	if err := syncParametersToCanvas(&def); err != nil {
+		return TemplateDef{}, err
+	}
 	return def, nil
 }
 
@@ -172,4 +175,21 @@ func setDefaultCanvasMono(def *TemplateDef) {
 	def.OutputConfig.CanvasWidth = w
 	def.OutputConfig.CanvasHeight = h
 	def.OutputConfig.Monochrome = true
+}
+
+// syncParametersToCanvas couples generate size to G3 canvas: omitted parameters
+// inherit canvas; when both are set they must match (providers request canvas size).
+func syncParametersToCanvas(def *TemplateDef) error {
+	cw, ch := def.OutputConfig.CanvasWidth, def.OutputConfig.CanvasHeight
+	pw, ph := def.Parameters.Width, def.Parameters.Height
+	switch {
+	case pw == 0 && ph == 0:
+		def.Parameters.Width = cw
+		def.Parameters.Height = ch
+		return nil
+	case pw == cw && ph == ch:
+		return nil
+	default:
+		return fmt.Errorf("eval: parameters %dx%d must match output_config canvas %dx%d", pw, ph, cw, ch)
+	}
 }

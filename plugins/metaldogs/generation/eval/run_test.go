@@ -317,11 +317,15 @@ func TestAssembleRequestFields_FromTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if def.PromptVersion != "g0-unversioned" || def.Model != "" || def.Parameters.Width != 0 || def.Parameters.Height != 0 {
+	if def.PromptVersion != "g0-unversioned" || def.Model != "" {
 		t.Fatalf("defaults = %+v", def)
 	}
 	if def.OutputConfig.CanvasWidth != generation.DefaultDimension || def.OutputConfig.CanvasHeight != generation.DefaultDimension || !def.OutputConfig.Monochrome {
 		t.Fatalf("output_config defaults = %+v", def.OutputConfig)
+	}
+	// Parameters must sync to canvas so Fake/OpenAI request the same size Validate expects.
+	if def.Parameters.Width != generation.DefaultDimension || def.Parameters.Height != generation.DefaultDimension {
+		t.Fatalf("parameters must match canvas defaults, got %+v", def.Parameters)
 	}
 }
 
@@ -334,12 +338,12 @@ func TestRun_ValidationFail_MarksSample(t *testing.T) {
 	if err := os.MkdirAll(photosDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	// Canvas 8×8 but claim 16×16 → dimensions_mismatch after fake generate.
+	// 1×1 fake fixture is always blank_or_low_detail → validation_failed after persist.
 	tpl := `{
-  "id": "bad-canvas",
+  "id": "tiny-blank",
   "prompt": "p",
-  "parameters": {"width": 8, "height": 8, "seed": 1},
-  "output_config": {"canvas_width": 16, "canvas_height": 16, "monochrome": true}
+  "parameters": {"width": 1, "height": 1, "seed": 1},
+  "output_config": {"canvas_width": 1, "canvas_height": 1, "monochrome": true}
 }`
 	if err := os.WriteFile(tplPath, []byte(tpl), 0o640); err != nil {
 		t.Fatal(err)
@@ -362,6 +366,68 @@ func TestRun_ValidationFail_MarksSample(t *testing.T) {
 	}
 	if s.OutputFile == "" {
 		t.Fatal("expected PNG still written for inspection")
+	}
+}
+
+func TestLoadTemplate_RejectsParamsCanvasMismatch(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","parameters":{"width":8,"height":8},"output_config":{"canvas_width":16,"canvas_height":16}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eval.LoadTemplate(path); err == nil {
+		t.Fatal("expected parameters/canvas mismatch error")
+	}
+}
+
+func TestLoadTemplate_CanvasOnly_SyncsParameters(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","output_config":{"canvas_width":128,"canvas_height":128}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	def, err := eval.LoadTemplate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Parameters.Width != 128 || def.Parameters.Height != 128 {
+		t.Fatalf("parameters = %+v, want synced 128x128", def.Parameters)
+	}
+	if def.OutputConfig.CanvasWidth != 128 || !def.OutputConfig.Monochrome {
+		t.Fatalf("output_config = %+v", def.OutputConfig)
+	}
+}
+
+func TestRun_CanvasOnly_FakePasses(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tplPath := filepath.Join(root, "t.json")
+	photosDir := filepath.Join(root, "photos")
+	outDir := filepath.Join(root, "out")
+	if err := os.MkdirAll(photosDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	tpl := `{"id":"canvas-only","prompt":"p","output_config":{"canvas_width":8,"canvas_height":8}}`
+	if err := os.WriteFile(tplPath, []byte(tpl), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photosDir, "dog.jpg"), []byte{0xff, 0xd8, 0xff}, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	report, err := eval.Run(context.Background(), eval.Options{
+		TemplatePath: tplPath,
+		PhotosDir:    photosDir,
+		OutDir:       outDir,
+		ProviderName: "fake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := report.Samples[0]
+	if s.Validation.Status != "pass" || s.Error != "" {
+		t.Fatalf("sample = %+v", s)
 	}
 }
 

@@ -154,6 +154,26 @@ func TestValidate_PremultipliedLowAlphaChroma(t *testing.T) {
 	}
 }
 
+func TestValidate_MonochromeLowAlphaToleranceEdge(t *testing.T) {
+	t.Parallel()
+	// Straight Δ=17 at very low alpha used to round back to Δ≤16 after 8-bit
+	// un-premultiply; 16-bit comparison must still fail mono.
+	img := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			g := uint8(((x*7 + y*11) % 16) << 4)
+			img.SetNRGBA(x, y, color.NRGBA{R: g, G: g, B: g, A: 255})
+		}
+	}
+	img.SetNRGBA(3, 3, color.NRGBA{R: 17, G: 0, B: 0, A: 4})
+	got := validate.Validate(encodePNG(t, img), domain.OutputConfig{
+		CanvasWidth: 8, CanvasHeight: 8, Monochrome: true,
+	})
+	if !got.Failed() || !contains(got.Codes, validate.CodeNotMonochrome) {
+		t.Fatalf("delta 17 at A=4 must fail mono, got %+v", got)
+	}
+}
+
 func TestValidate_MonochromeTolerance_Boundary(t *testing.T) {
 	t.Parallel()
 	cfg := domain.OutputConfig{CanvasWidth: 24, CanvasHeight: 24, Monochrome: true}

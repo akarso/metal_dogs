@@ -7,11 +7,12 @@
 ## What shipped
 
 - Package `plugins/metaldogs/generation/validate`: `Validate(png, OutputConfig) Result` with hard-fail codes `decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`; `no_transparency` in `Warnings` only until ADR-0008 Accept
-- `png.DecodeConfig` size cap (`domain.MaxCanvasDimension`) before full decode; mono uses un-premultiplied RGB; blank ignores near-transparent pixels
-- Shared `HasUsefulAlpha` (same decode bound) used by OpenAI adapter `HasAlpha` metadata
-- Eval: `TemplateDef.OutputConfig` from v1 YAML; legacy stubs reject partial/non-positive canvas, default `Monochrome: true` when omitted; hard fail → `error_class=validation_failed`; `validation.status=skipped` with distinct messages (generate did not run vs output not persisted)
+- `png.DecodeConfig` size cap (`domain.MaxCanvasDimension`) before full decode; mono uses un-premultiplied **16-bit** RGB; blank ignores near-transparent pixels
+- Shared `HasUsefulAlpha` (same decode bound) used by OpenAI adapter and Fake `HasAlpha` (final PNG bytes after border)
+- Eval: `TemplateDef.OutputConfig` from v1 YAML; legacy stubs reject partial/non-positive canvas and **parameters≠canvas**; omitted parameters inherit canvas; hard fail → `error_class=validation_failed`; `validation.status=skipped` with distinct messages (generate did not run vs output not persisted)
+- Domain: model WxH must match canvas when set; omitted model size → `GenerationWidthHeight` returns canvas; file YAML omitted `monochrome` defaults `true`
 - `Validate` fail-closed on unset/partial canvas; mono vs blank alpha floors documented for C4 decision
-- Fake provider renders monochrome spatial fixtures so offline eval passes G3 checks
+- Fake provider renders monochrome spatial fixtures so offline eval passes G3 checks (≥4×4)
 - OCR unchanged: `NameHeuristic` only; no `name_ocr_mismatch` emission
 - No job/worker wiring (C4)
 
@@ -26,8 +27,10 @@
 
 ## Tests added
 
-- `generation/validate/*_test.go` — decode/empty/oversize IHDR, dimensions, mono (±tolerance, premultiplied low-A), transparency warning with empty `Codes`, blank, transparent silhouette
-- `generation/eval` — `validation.status=pass` / `skipped` / `fail`+`validation_failed`; partial `output_config` rejected; monochrome default
+- `generation/validate/*_test.go` — decode/empty/oversize IHDR, dimensions, mono (±tolerance, premultiplied low-A, low-A Δ=17 edge), transparency warning with empty `Codes`, blank, transparent silhouette
+- `generation/eval` — `validation.status=pass` / `skipped` / `fail`+`validation_failed`; partial/`params≠canvas` rejected; canvas-only syncs parameters; monochrome default
+- `domain` — model/canvas mismatch rejected; omitted model size → canvas; file omit mono → true
+- `generation` — Fake `HasAlpha` matches `HasUsefulAlpha` on final bytes (incl. ≤5×5 border clobber)
 
 ## Flags / migrations / rollback
 

@@ -47,6 +47,9 @@ func TestTemplate_Validate_Table(t *testing.T) {
 		{name: "bad slug", mutate: func(t *domain.Template) { t.Slug = "Bad Slug" }, wantErr: "invalid slug"},
 		{name: "missing pose", mutate: func(t *domain.Template) { t.PhotoRequirements.Pose = "" }, wantErr: "unknown photo pose"},
 		{name: "partial WxH", mutate: func(t *domain.Template) { t.ModelParameters.Height = 0 }, wantErr: "both be set"},
+		{name: "model canvas mismatch", mutate: func(t *domain.Template) {
+			t.ModelParameters.Width, t.ModelParameters.Height = 512, 512
+		}, wantErr: "must match output_config canvas"},
 		{name: "missing model", mutate: func(t *domain.Template) { t.ModelParameters.Model = "" }, wantErr: "model required"},
 		{name: "bad charset", mutate: func(tpl *domain.Template) {
 			tpl.TextFields.Editable[0].AllowedCharset = "emoji"
@@ -133,6 +136,47 @@ func TestMaxCanvasDimension_MatchesGeneration(t *testing.T) {
 	t.Parallel()
 	if domain.MaxCanvasDimension != generation.MaxDimension {
 		t.Fatalf("MaxCanvasDimension=%d generation.MaxDimension=%d", domain.MaxCanvasDimension, generation.MaxDimension)
+	}
+}
+
+func TestTemplate_Validate_AllowsOmittedModelSize(t *testing.T) {
+	t.Parallel()
+	tpl := validTemplate()
+	tpl.ModelParameters.Width, tpl.ModelParameters.Height = 0, 0
+	if err := tpl.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	w, h, _ := tpl.GenerationWidthHeight()
+	if w != 1024 || h != 1024 {
+		t.Fatalf("GenerationWidthHeight = %dx%d, want canvas 1024x1024", w, h)
+	}
+}
+
+func TestFileDefinition_OmitsMonochromeDefaultsTrue(t *testing.T) {
+	t.Parallel()
+	def := domain.FileDefinition{
+		Slug:          "head-front-test",
+		Genre:         "g",
+		StyleCategory: "s",
+		PromptInstructions: domain.PromptInstructions{
+			Text: "p", PromptVersion: "v",
+		},
+		ModelParameters: domain.ModelParameters{Model: "m", Width: 64, Height: 64},
+		PhotoRequirements: domain.PhotoRequirements{Pose: "head_front"},
+		TextFields: domain.TextFields{
+			Editable: []domain.EditableText{{Key: "dog_name", MaxLength: 8, AllowedCharset: "latin_polish"}},
+		},
+		OutputConfig: domain.FileOutputConfig{
+			CanvasWidth: 64, CanvasHeight: 64,
+			PrintArea: domain.PrintArea{Width: 64, Height: 64},
+		},
+	}
+	tpl := def.ToTemplate()
+	if !tpl.OutputConfig.Monochrome {
+		t.Fatal("omitted monochrome must default true")
+	}
+	if err := tpl.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

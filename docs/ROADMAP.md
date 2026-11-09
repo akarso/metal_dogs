@@ -301,7 +301,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 #### G3 · Output validation — size M — **DONE pending merge** (CR-10 / PR #22)
 
-- **Goal:** Deterministic checks on provider output before it becomes a preview: exact canvas WxH, monochrome tolerance (un-premultiplied), transparency warning, PNG decode integrity with IHDR size cap, near-uniform blank detection; dog-name OCR remains heuristic-only.
+- **Goal:** Deterministic checks on provider output before it becomes a preview: exact canvas WxH, monochrome tolerance (un-premultiplied 16-bit), transparency warning, PNG decode integrity with IHDR size cap, near-uniform blank detection; dog-name OCR remains heuristic-only.
 - **Scope:** `generation/validate.Validate` (hard fail: `decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`; `no_transparency` warning-only until ADR-0008 Accept). Wired into `metaldogs:eval` (`error_class=validation_failed`); job wiring deferred to C4. Not in G3: aspect-only checks beyond WxH, deeper “garbage” classifiers, byte-reading OCR, background-removal.
 - **Tests:** Unit tests with fixture images for each rule; negative cases; eval fake run asserts `validation.status=pass`.
 - **Safe delivery:** Pure functions; wired into the job in C4.

@@ -117,6 +117,15 @@ type PrintArea struct {
 	Height int `json:"height" yaml:"height"`
 }
 
+// FileOutputConfig is the on-disk output_config shape. Monochrome uses a pointer
+// so omitted keys default to true (match legacy eval stubs); explicit false is kept.
+type FileOutputConfig struct {
+	CanvasWidth  int       `json:"canvas_width" yaml:"canvas_width"`
+	CanvasHeight int       `json:"canvas_height" yaml:"canvas_height"`
+	Monochrome   *bool     `json:"monochrome" yaml:"monochrome"`
+	PrintArea    PrintArea `json:"print_area" yaml:"print_area"`
+}
+
 // FileDefinition is the on-disk YAML/JSON shape (no status/version/id).
 type FileDefinition struct {
 	Slug                 string             `json:"slug" yaml:"slug"`
@@ -126,13 +135,17 @@ type FileDefinition struct {
 	ModelParameters      ModelParameters    `json:"model_parameters" yaml:"model_parameters"`
 	PhotoRequirements    PhotoRequirements  `json:"photo_requirements" yaml:"photo_requirements"`
 	TextFields           TextFields         `json:"text_fields" yaml:"text_fields"`
-	OutputConfig         OutputConfig       `json:"output_config" yaml:"output_config"`
+	OutputConfig         FileOutputConfig   `json:"output_config" yaml:"output_config"`
 	ReferencePatternPath string             `json:"reference_pattern_path,omitempty" yaml:"reference_pattern_path,omitempty"`
 	ThumbnailPath        string             `json:"thumbnail_path,omitempty" yaml:"thumbnail_path,omitempty"`
 }
 
 // ToTemplate builds an unsaved Template from a file definition.
 func (d FileDefinition) ToTemplate() Template {
+	mono := true
+	if d.OutputConfig.Monochrome != nil {
+		mono = *d.OutputConfig.Monochrome
+	}
 	t := Template{
 		Slug:                 strings.TrimSpace(d.Slug),
 		Genre:                strings.TrimSpace(d.Genre),
@@ -141,7 +154,12 @@ func (d FileDefinition) ToTemplate() Template {
 		ModelParameters:      d.ModelParameters,
 		PhotoRequirements:    d.PhotoRequirements,
 		TextFields:           d.TextFields,
-		OutputConfig:         d.OutputConfig,
+		OutputConfig: OutputConfig{
+			CanvasWidth:  d.OutputConfig.CanvasWidth,
+			CanvasHeight: d.OutputConfig.CanvasHeight,
+			Monochrome:   mono,
+			PrintArea:    d.OutputConfig.PrintArea,
+		},
 		ReferencePatternPath: strings.TrimSpace(d.ReferencePatternPath),
 		ThumbnailPath:        strings.TrimSpace(d.ThumbnailPath),
 		Status:               TemplateDraft,
@@ -194,22 +212,26 @@ func (t Template) Validate() error {
 	if _, ok := AllowedPoses[t.PhotoRequirements.Pose]; !ok {
 		return fmt.Errorf("template: unknown photo pose %q", t.PhotoRequirements.Pose)
 	}
-	w, h := t.ModelParameters.Width, t.ModelParameters.Height
-	switch {
-	case w == 0 && h == 0:
-		// provider default size
-	case w > 0 && h > 0:
-		if w > MaxCanvasDimension || h > MaxCanvasDimension {
-			return fmt.Errorf("template: model_parameters width/height must be <= %d (got %dx%d)", MaxCanvasDimension, w, h)
-		}
-	default:
-		return fmt.Errorf("template: model_parameters width and height must both be set or both omitted (got %dx%d)", w, h)
-	}
 	if t.OutputConfig.CanvasWidth <= 0 || t.OutputConfig.CanvasHeight <= 0 {
 		return fmt.Errorf("template: output_config canvas dimensions required")
 	}
 	if t.OutputConfig.CanvasWidth > MaxCanvasDimension || t.OutputConfig.CanvasHeight > MaxCanvasDimension {
 		return fmt.Errorf("template: output_config canvas exceeds max %d", MaxCanvasDimension)
+	}
+	w, h := t.ModelParameters.Width, t.ModelParameters.Height
+	cw, ch := t.OutputConfig.CanvasWidth, t.OutputConfig.CanvasHeight
+	switch {
+	case w == 0 && h == 0:
+		// Omitted: adapters/eval request at output_config canvas size.
+	case w > 0 && h > 0:
+		if w > MaxCanvasDimension || h > MaxCanvasDimension {
+			return fmt.Errorf("template: model_parameters width/height must be <= %d (got %dx%d)", MaxCanvasDimension, w, h)
+		}
+		if w != cw || h != ch {
+			return fmt.Errorf("template: model_parameters width/height must match output_config canvas (got %dx%d, canvas %dx%d)", w, h, cw, ch)
+		}
+	default:
+		return fmt.Errorf("template: model_parameters width and height must both be set or both omitted (got %dx%d)", w, h)
 	}
 	pa := t.OutputConfig.PrintArea
 	if pa.Width <= 0 || pa.Height <= 0 {
@@ -301,7 +323,12 @@ func (t Template) ContentHashDigest() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// GenerationWidthHeight returns model canvas size for eval/adapters (may be 0,0).
+// GenerationWidthHeight returns the request size for eval/adapters: model WxH when
+// set, otherwise output_config canvas (so generate and G3 Validate stay coupled).
 func (t Template) GenerationWidthHeight() (width, height int, seed int64) {
-	return t.ModelParameters.Width, t.ModelParameters.Height, t.ModelParameters.Seed
+	w, h := t.ModelParameters.Width, t.ModelParameters.Height
+	if w == 0 && h == 0 {
+		return t.OutputConfig.CanvasWidth, t.OutputConfig.CanvasHeight, t.ModelParameters.Seed
+	}
+	return w, h, t.ModelParameters.Seed
 }

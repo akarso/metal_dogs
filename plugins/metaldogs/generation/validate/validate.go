@@ -27,7 +27,8 @@ const (
 )
 
 // MonochromeTolerance is the max (maxRGB−minRGB) on 8-bit non-premultiplied
-// channels for monochrome pass.
+// channels for monochrome pass. Compared in 16-bit as Tolerance×0x101 so
+// low-alpha fringe near the edge does not false-pass after round-trip.
 const MonochromeTolerance = 16
 
 // AlphaChromaFloor is the minimum 8-bit alpha for a pixel to contribute to
@@ -92,14 +93,15 @@ func Validate(pngBytes []byte, cfg domain.OutputConfig) Result {
 				hasAlpha = true
 			}
 			a8 := uint8(a16 >> 8)
-			r8, g8, b8 := unpremultiply8(r16, g16, b16, a16)
+			rU, gU, bU := unpremultiply16(r16, g16, b16, a16)
+			r8, g8, b8 := uint8(rU>>8), uint8(gU>>8), uint8(bU>>8)
 
-			// Mono: any non-zero alpha pixel, on un-premultiplied channels (low-A
-			// chroma must not collapse toward black via Color.RGBA() premul).
+			// Mono: any non-zero alpha pixel, on un-premultiplied 16-bit channels
+			// (avoids 8-bit rounding false-pass for low-A fringe near tolerance).
 			if cfg.Monochrome && !monoFail && a16 > 0 {
-				mx := max3(r8, g8, b8)
-				mn := min3(r8, g8, b8)
-				if int(mx)-int(mn) > MonochromeTolerance {
+				mx := max3u32(rU, gU, bU)
+				mn := min3u32(rU, gU, bU)
+				if mx-mn > uint32(MonochromeTolerance)*0x101 {
 					monoFail = true
 				}
 			}
@@ -171,21 +173,19 @@ func decodePNGBounded(pngBytes []byte) (image.Image, error) {
 	return img, nil
 }
 
-// unpremultiply8 recovers approximately non-premultiplied 8-bit RGB from
+// unpremultiply16 recovers approximately non-premultiplied 16-bit RGB from
 // color.Color.RGBA() (which is alpha-premultiplied in 16-bit).
-func unpremultiply8(r16, g16, b16, a16 uint32) (r8, g8, b8 uint8) {
+func unpremultiply16(r16, g16, b16, a16 uint32) (r, g, b uint32) {
 	if a16 == 0 {
 		return 0, 0, 0
 	}
 	if a16 == 0xffff {
-		return uint8(r16 >> 8), uint8(g16 >> 8), uint8(b16 >> 8)
+		return r16, g16, b16
 	}
-	return uint8((r16 * 0xffff / a16) >> 8),
-		uint8((g16 * 0xffff / a16) >> 8),
-		uint8((b16 * 0xffff / a16) >> 8)
+	return r16 * 0xffff / a16, g16 * 0xffff / a16, b16 * 0xffff / a16
 }
 
-func max3(a, b, c uint8) uint8 {
+func max3u32(a, b, c uint32) uint32 {
 	m := a
 	if b > m {
 		m = b
@@ -196,7 +196,7 @@ func max3(a, b, c uint8) uint8 {
 	return m
 }
 
-func min3(a, b, c uint8) uint8 {
+func min3u32(a, b, c uint32) uint32 {
 	m := a
 	if b < m {
 		m = b

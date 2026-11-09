@@ -81,13 +81,13 @@ Retries of the provider call are **internal to one `GenerationJob` attempt count
 | Code | Severity | Meaning |
 | --- | --- | --- |
 | `dimensions_mismatch` | error | Output does not match template canvas, or `OutputConfig` canvas edges are not both &gt; 0 (fail closed for partial cfg) |
-| `not_monochrome` | error | Colour content above tolerance (max−min on **un-premultiplied** 8-bit RGB &gt; 16) when `OutputConfig.Monochrome`; any pixel with alpha &gt; 0. Blank uses `AlphaChromaFloor` (16); mono does not — decide before C4 whether live fringe warrants aligning floors |
+| `not_monochrome` | error | Colour content above tolerance (max−min on **un-premultiplied 16-bit** RGB &gt; 16×0x101) when `OutputConfig.Monochrome`; any pixel with alpha &gt; 0. Blank uses `AlphaChromaFloor` (16); mono does not — decide before C4 whether live fringe warrants aligning floors |
 | `no_transparency` | **warning** (G3) | No pixel with alpha &lt; 0xffff (incl. tRNS). Emitted only in `Warnings` (not `Codes`) until ADR-0008 Accept |
 | `blank_or_low_detail` | error | Near-uniform among pixels with alpha ≥ floor: ≤4 unique 4-bit-quantized colours **and** luminance variance below floor; fully transparent → blank |
 | `decode_failed` | error | Not a valid / decodable PNG, or IHDR width/height ≤0 or &gt; `MaxCanvasDimension` (decode-bomb guard) |
 | `name_ocr_mismatch` | warning (not emitted in G3) | Reserved for byte-reading OCR; G3 keeps `generation/ocr.NameHeuristic` on `name_check` only |
 
-Eval maps hard validation failure to sample `error_class=validation_failed` (aligned with job `terminal_reason`); do not reuse `rejected_input` (photo/prompt rejection).
+Eval maps hard validation failure to sample `error_class=validation_failed` (aligned with job `terminal_reason`); do not reuse `rejected_input` (photo/prompt rejection). Generate request size is coupled to `output_config` canvas: domain rejects model WxH ≠ canvas when both are set; omitted model size / legacy parameters inherit canvas so Fake and OpenAI request the same dimensions Validate checks. File YAML omitted `monochrome` defaults to `true` (explicit `false` kept).
 
 ## Idempotency and concurrency guarantees
 

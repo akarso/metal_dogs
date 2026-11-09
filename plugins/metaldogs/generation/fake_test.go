@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 )
 
 func TestFake_Generate_Deterministic(t *testing.T) {
@@ -41,6 +42,26 @@ func TestFake_Generate_Deterministic(t *testing.T) {
 	}
 	if got := img.Bounds(); got.Dx() != 16 || got.Dy() != 16 {
 		t.Fatalf("bounds = %v, want 16x16", got)
+	}
+}
+
+func TestFake_HasAlpha_MatchesFinalBytes(t *testing.T) {
+	t.Parallel()
+	// On ≤5×5 canvases the opaque border overwrites every translucent candidate;
+	// HasAlpha must reflect final PNG bytes, not the pre-border paint flag.
+	for _, dim := range []int{4, 5, 8} {
+		res, err := generation.Fake().Generate(context.Background(), generation.GenerationRequest{
+			PhotoBytes: []byte{1, 2, 3, 4},
+			Prompt:     "p",
+			Parameters: generation.Parameters{Width: dim, Height: dim, Seed: 1},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		useful := validate.HasUsefulAlpha(res.ImagePNG)
+		if res.HasAlpha != useful {
+			t.Fatalf("dim=%d HasAlpha=%v HasUsefulAlpha=%v", dim, res.HasAlpha, useful)
+		}
 	}
 }
 

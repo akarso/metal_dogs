@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"image/png"
 	"time"
+
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 )
 
 const fakeModel = "fake-g0-v1"
@@ -62,9 +64,9 @@ func (fakeProvider) Generate(ctx context.Context, req GenerationRequest) (Genera
 func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, []byte, error) {
 	digest := requestDigest(req, params)
 
-	// Monochrome + spatial gray levels so G3 blank/mono checks pass on fake eval.
+	// Monochrome + spatial gray levels so G3 blank/mono checks pass on fake eval
+	// for canvases large enough to keep interior detail (≥4×4 typical).
 	img := image.NewRGBA(image.Rect(0, 0, params.Width, params.Height))
-	hasAlpha := false
 	for y := 0; y < params.Height; y++ {
 		for x := 0; x < params.Width; x++ {
 			level := (int(digest[0]) + x*7 + y*11 + int(digest[(x+y)%len(digest)])) % 16
@@ -72,7 +74,6 @@ func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, []by
 			a := uint8(255)
 			if digest[3] < 240 && (x+y)%7 == 0 {
 				a = 200 + digest[3]%40
-				hasAlpha = true
 			}
 			img.SetRGBA(x, y, color.RGBA{R: g, G: g, B: g, A: a})
 		}
@@ -93,5 +94,7 @@ func renderFakePNG(req GenerationRequest, params Parameters) ([]byte, bool, []by
 	if err := png.Encode(&buf, img); err != nil {
 		return nil, false, nil, err
 	}
-	return buf.Bytes(), hasAlpha, digest, nil
+	pngBytes := buf.Bytes()
+	// Derive HasAlpha from final bytes (border may have overwritten translucent pixels).
+	return pngBytes, validate.HasUsefulAlpha(pngBytes), digest, nil
 }
