@@ -121,6 +121,36 @@ func (m *memStore) PublishedBySlug(_ context.Context, slug string) (domain.Templ
 	return domain.Template{}, false, nil
 }
 
+func (m *memStore) ListPublished(_ context.Context, genre string) ([]ports.PublishedTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []ports.PublishedTemplate
+	for _, r := range m.rows {
+		if r.Status != domain.TemplatePublished {
+			continue
+		}
+		if genre != "" && r.Genre != genre {
+			continue
+		}
+		out = append(out, ports.PublishedFromDomain(r))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	if out == nil {
+		out = []ports.PublishedTemplate{}
+	}
+	return out, nil
+}
+
+func (m *memStore) GetPublishedByID(_ context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok || r.Status != domain.TemplatePublished {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	return ports.PublishedFromDomain(r), true, nil
+}
+
 func (m *memStore) SetStatus(_ context.Context, id, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

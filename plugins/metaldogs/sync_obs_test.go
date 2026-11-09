@@ -106,7 +106,8 @@ func TestPlugin_Init_RegistersHealthAndObsPing(t *testing.T) {
 	for _, r := range routes {
 		patterns[r.Pattern] = true
 	}
-	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] {
+	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
+		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] {
 		t.Fatalf("routes = %+v", routes)
 	}
 	found := false

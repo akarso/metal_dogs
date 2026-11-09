@@ -19,17 +19,16 @@ import (
 
 type stubSignedMedia struct{}
 
-func (stubSignedMedia) Name() string                              { return "stub" }
-func (stubSignedMedia) Save(string, io.Reader) error              { return nil }
-func (stubSignedMedia) Delete(string) error                       { return nil }
-func (stubSignedMedia) URL(string) string                         { return "" }
-func (stubSignedMedia) Head(context.Context, string) error        { return os.ErrNotExist }
+func (stubSignedMedia) Name() string                       { return "stub" }
+func (stubSignedMedia) Save(string, io.Reader) error       { return nil }
+func (stubSignedMedia) Delete(string) error                { return nil }
+func (stubSignedMedia) URL(string) string                  { return "" }
+func (stubSignedMedia) Head(context.Context, string) error { return os.ErrNotExist }
 func (stubSignedMedia) SignedURL(context.Context, string, media.SignURLOptions) (string, error) {
 	return "", os.ErrNotExist
 }
 
 var _ media.SignedURLStorage = stubSignedMedia{}
-
 
 func findPlugin(t *testing.T, registry *plugin.Registry, name string) plugin.Plugin {
 	t.Helper()
@@ -121,8 +120,9 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	for _, r := range routes {
 		patterns[r.Pattern] = true
 	}
-	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] {
-		t.Fatalf("PublicRoutes = %+v, want enabled + health", routes)
+	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
+		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] {
+		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates", routes)
 	}
 	foundAdminHealth := false
 	for _, r := range app.AdminRoutes() {

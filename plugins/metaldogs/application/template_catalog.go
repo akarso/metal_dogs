@@ -222,3 +222,23 @@ func (c *TemplateCatalog) Retire(ctx context.Context, slug string) (domain.Templ
 	}
 	return c.Store.RetireExclusive(ctx, slug)
 }
+
+// ListPublished returns public-read projections, optionally filtered by genre.
+func (c *TemplateCatalog) ListPublished(ctx context.Context, genre string) ([]ports.PublishedTemplate, error) {
+	if c == nil || c.Store == nil {
+		return nil, fmt.Errorf("template catalog: store required")
+	}
+	return c.Store.ListPublished(ctx, strings.TrimSpace(genre))
+}
+
+// GetPublishedByID returns a public-read projection by id when published.
+func (c *TemplateCatalog) GetPublishedByID(ctx context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	if c == nil || c.Store == nil {
+		return ports.PublishedTemplate{}, false, fmt.Errorf("template catalog: store required")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	return c.Store.GetPublishedByID(ctx, id)
+}
