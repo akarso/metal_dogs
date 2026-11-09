@@ -24,3 +24,7 @@ CREATE TABLE metaldogs_templates (
 
 CREATE INDEX metaldogs_templates_slug_status_idx ON metaldogs_templates (slug, status);
 CREATE INDEX metaldogs_templates_status_idx ON metaldogs_templates (status);
+-- At most one published version per slug (domain / C1 invariant).
+CREATE UNIQUE INDEX metaldogs_templates_one_published_per_slug_idx
+    ON metaldogs_templates (slug)
+    WHERE status = 'published';

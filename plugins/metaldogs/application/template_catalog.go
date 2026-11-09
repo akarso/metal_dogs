@@ -2,6 +2,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,7 +21,7 @@ type TemplateCatalog struct {
 	IDs   ports.IDGenerator
 }
 
-// ParseFile reads a Template v1 YAML or JSON definition from path.
+// ParseFile reads a Template v1 YAML or JSON definition from path (unknown fields rejected).
 func ParseFile(path string) (domain.FileDefinition, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -29,11 +30,15 @@ func ParseFile(path string) (domain.FileDefinition, error) {
 	var def domain.FileDefinition
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(raw, &def); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
+		dec.KnownFields(true)
+		if err := dec.Decode(&def); err != nil {
 			return domain.FileDefinition{}, fmt.Errorf("template catalog: parse yaml: %w", err)
 		}
 	case ".json":
-		if err := json.Unmarshal(raw, &def); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&def); err != nil {
 			return domain.FileDefinition{}, fmt.Errorf("template catalog: parse json: %w", err)
 		}
 	default:
@@ -42,9 +47,13 @@ func ParseFile(path string) (domain.FileDefinition, error) {
 	return def, nil
 }
 
-// ValidatePath parses and validates a template file; optional asset paths must exist relative to the file dir.
+// ValidatePath parses and validates a template file; optional asset paths must stay under the file dir.
 func ValidatePath(path string) (domain.Template, error) {
-	def, err := ParseFile(path)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("template catalog: abs path: %w", err)
+	}
+	def, err := ParseFile(absPath)
 	if err != nil {
 		return domain.Template{}, err
 	}
@@ -52,7 +61,7 @@ func ValidatePath(path string) (domain.Template, error) {
 	if err := t.Validate(); err != nil {
 		return domain.Template{}, err
 	}
-	base := filepath.Dir(path)
+	base := filepath.Dir(absPath)
 	if err := checkOptionalPath(base, t.ReferencePatternPath); err != nil {
 		return domain.Template{}, err
 	}
@@ -71,11 +80,16 @@ func checkOptionalPath(base, rel string) error {
 	if rel == "" {
 		return nil
 	}
-	abs := rel
-	if !filepath.IsAbs(rel) {
-		abs = filepath.Join(base, rel)
+	if filepath.IsAbs(rel) {
+		return fmt.Errorf("template catalog: asset path %q must be relative to the template file", rel)
 	}
-	st, err := os.Stat(abs)
+	joined := filepath.Join(base, rel)
+	clean := filepath.Clean(joined)
+	relToBase, err := filepath.Rel(base, clean)
+	if err != nil || strings.HasPrefix(relToBase, "..") {
+		return fmt.Errorf("template catalog: asset path %q escapes template directory", rel)
+	}
+	st, err := os.Stat(clean)
 	if err != nil {
 		return fmt.Errorf("template catalog: asset path %q: %w", rel, err)
 	}
@@ -88,10 +102,11 @@ func checkOptionalPath(base, rel string) error {
 // LoadResult describes a LoadDraft outcome.
 type LoadResult struct {
 	Template domain.Template
-	Created  bool // false when content_hash matched latest row (no-op)
+	Created  bool // false when a draft with the same content_hash already exists
 }
 
-// LoadDraft validates the file and inserts a new draft version when the content hash changed.
+// LoadDraft validates the file and inserts a new draft when no draft matches the content hash.
+// Matching published/retired rows do not count as a no-op (a new draft is created so publish can proceed).
 func (c *TemplateCatalog) LoadDraft(ctx context.Context, path string) (LoadResult, error) {
 	if c == nil || c.Store == nil || c.IDs == nil {
 		return LoadResult{}, fmt.Errorf("template catalog: store and id generator required")
@@ -100,15 +115,19 @@ func (c *TemplateCatalog) LoadDraft(ctx context.Context, path string) (LoadResul
 	if err != nil {
 		return LoadResult{}, err
 	}
-	latest, ok, err := c.Store.LatestBySlug(ctx, t.Slug)
+	existing, ok, err := c.Store.DraftBySlugHash(ctx, t.Slug, t.ContentHash)
 	if err != nil {
 		return LoadResult{}, err
 	}
-	if ok && latest.ContentHash == t.ContentHash {
-		return LoadResult{Template: latest, Created: false}, nil
+	if ok {
+		return LoadResult{Template: existing, Created: false}, nil
+	}
+	latest, okLatest, err := c.Store.LatestBySlug(ctx, t.Slug)
+	if err != nil {
+		return LoadResult{}, err
 	}
 	version := 1
-	if ok {
+	if okLatest {
 		version = latest.Version + 1
 	}
 	t.ID = c.IDs.New()
@@ -120,7 +139,8 @@ func (c *TemplateCatalog) LoadDraft(ctx context.Context, path string) (LoadResul
 	return LoadResult{Template: t, Created: true}, nil
 }
 
-// Publish promotes a draft (latest draft, or specific version) to published and retires prior published.
+// Publish promotes a draft (latest draft when version=0, or an explicit version) to published.
+// Explicit --version may re-publish a retired row. Other drafts for the slug are retired atomically.
 func (c *TemplateCatalog) Publish(ctx context.Context, slug string, version int) (domain.Template, error) {
 	if c == nil || c.Store == nil {
 		return domain.Template{}, fmt.Errorf("template catalog: store required")
@@ -143,26 +163,18 @@ func (c *TemplateCatalog) Publish(ctx context.Context, slug string, version int)
 		return domain.Template{}, err
 	}
 	if !ok {
-		return domain.Template{}, fmt.Errorf("template catalog: version not found for slug %q", slug)
+		return domain.Template{}, fmt.Errorf("template catalog: version not found for slug %q (load a draft first, or pass -version)", slug)
 	}
 	if t.Status == domain.TemplatePublished {
 		return t, nil
 	}
-	// Latest-draft path requires draft; explicit --version may re-publish a retired row (runbook rollback).
 	if version <= 0 && t.Status != domain.TemplateDraft {
 		return domain.Template{}, fmt.Errorf("template catalog: cannot publish status %q (want draft)", t.Status)
 	}
 	if version > 0 && t.Status != domain.TemplateDraft && t.Status != domain.TemplateRetired {
 		return domain.Template{}, fmt.Errorf("template catalog: cannot publish status %q", t.Status)
 	}
-	if err := c.Store.RetirePublishedExcept(ctx, slug, t.ID); err != nil {
-		return domain.Template{}, err
-	}
-	if err := c.Store.SetStatus(ctx, t.ID, domain.TemplatePublished); err != nil {
-		return domain.Template{}, err
-	}
-	t.Status = domain.TemplatePublished
-	return t, nil
+	return c.Store.PublishExclusive(ctx, slug, t.ID)
 }
 
 // Retire marks the published template for slug as retired.
@@ -185,5 +197,6 @@ func (c *TemplateCatalog) Retire(ctx context.Context, slug string) (domain.Templ
 		return domain.Template{}, err
 	}
 	t.Status = domain.TemplateRetired
+	t.PublishedAt = nil
 	return t, nil
 }

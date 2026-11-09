@@ -38,16 +38,18 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 7. Publish when ready for C1:
 
 ```bash
-./app metaldogs:templates publish -slug <slug>
-# or: ./app metaldogs:templates publish -slug <slug> -version N
+./app metaldogs:templates publish -slug <slug>            # latest draft
+./app metaldogs:templates publish -slug <slug> -version N # draft or retired row (rollback)
 ```
+
+Default publish takes the **highest-version draft**. Publishing is transactional: it retires any other `published` row for the slug **and** retires leftover older drafts so a later bare `publish` cannot revive a stale draft. Prefer `-version N` when rolling back.
 
 ## Procedure: change a published template
 
 1. Edit the file; content hash changes.
 2. Validate and test as above.
-3. `metaldogs:templates load` → creates version N+1 as `draft`; version N stays `published`.
-4. Publish N+1 → N becomes `retired` for new designs; existing designs pinned to N continue to work.
+3. `metaldogs:templates load` → creates version N+1 as `draft` when no draft already has that `content_hash` (matching published/retired hashes do **not** count as a no-op).
+4. Publish N+1 → prior published and other drafts become `retired`; existing designs pinned to older versions continue to work.
 
 ## Procedure: retire a template
 
@@ -55,7 +57,7 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 ./app metaldogs:templates retire -slug <slug>
 ```
 
-Existing designs and orders are unaffected.
+Existing designs and orders are unaffected. After retire, `load` the same YAML again to create a fresh draft before a default `publish`.
 
 ## Regression after a change
 

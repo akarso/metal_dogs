@@ -23,14 +23,12 @@ func NewTemplateStore(db *sql.DB) *TemplateStore {
 
 var _ ports.TemplateStore = (*TemplateStore)(nil)
 
-// InsertDraft inserts a draft template row.
+// InsertDraft inserts a draft template row (always status=draft).
 func (s *TemplateStore) InsertDraft(ctx context.Context, t domain.Template) error {
 	if t.ID == "" || t.Slug == "" || t.Version < 1 || t.ContentHash == "" {
 		return fmt.Errorf("metaldogs templates: id, slug, version, content_hash required")
 	}
-	if t.Status == "" {
-		t.Status = domain.TemplateDraft
-	}
+	t.Status = domain.TemplateDraft
 	prompt, err := json.Marshal(t.PromptInstructions)
 	if err != nil {
 		return err
@@ -68,12 +66,12 @@ func (s *TemplateStore) InsertDraft(ctx context.Context, t domain.Template) erro
 			$1,$2,$3,$4,$5,$6,$7,
 			$8::jsonb,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,
 			$13,$14,$15,$16,
-			COALESCE($17, now()), $18
+			COALESCE($17, now()), NULL
 		)
-	`, t.ID, t.Slug, t.Status, t.Genre, t.StyleCategory, t.Version, t.ContentHash,
+	`, t.ID, t.Slug, domain.TemplateDraft, t.Genre, t.StyleCategory, t.Version, t.ContentHash,
 		prompt, model, photo, texts, out,
 		refAsset, thumbAsset, t.ReferencePatternPath, t.ThumbnailPath,
-		nullTime(t.CreatedAt), nullTimePtr(t.PublishedAt),
+		nullTime(t.CreatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("metaldogs templates insert: %w", err)
@@ -82,7 +80,7 @@ func (s *TemplateStore) InsertDraft(ctx context.Context, t domain.Template) erro
 }
 
 func (s *TemplateStore) LatestBySlug(ctx context.Context, slug string) (domain.Template, bool, error) {
-	return s.scanOne(ctx, `
+	return s.scanOne(ctx, s.db, `
 		SELECT `+templateColumns+`
 		FROM metaldogs_templates
 		WHERE slug = $1
@@ -92,7 +90,7 @@ func (s *TemplateStore) LatestBySlug(ctx context.Context, slug string) (domain.T
 }
 
 func (s *TemplateStore) GetBySlugVersion(ctx context.Context, slug string, version int) (domain.Template, bool, error) {
-	return s.scanOne(ctx, `
+	return s.scanOne(ctx, s.db, `
 		SELECT `+templateColumns+`
 		FROM metaldogs_templates
 		WHERE slug = $1 AND version = $2
@@ -100,7 +98,7 @@ func (s *TemplateStore) GetBySlugVersion(ctx context.Context, slug string, versi
 }
 
 func (s *TemplateStore) LatestDraftBySlug(ctx context.Context, slug string) (domain.Template, bool, error) {
-	return s.scanOne(ctx, `
+	return s.scanOne(ctx, s.db, `
 		SELECT `+templateColumns+`
 		FROM metaldogs_templates
 		WHERE slug = $1 AND status = $2
@@ -109,8 +107,18 @@ func (s *TemplateStore) LatestDraftBySlug(ctx context.Context, slug string) (dom
 	`, slug, domain.TemplateDraft)
 }
 
+func (s *TemplateStore) DraftBySlugHash(ctx context.Context, slug, contentHash string) (domain.Template, bool, error) {
+	return s.scanOne(ctx, s.db, `
+		SELECT `+templateColumns+`
+		FROM metaldogs_templates
+		WHERE slug = $1 AND status = $2 AND content_hash = $3
+		ORDER BY version DESC
+		LIMIT 1
+	`, slug, domain.TemplateDraft, contentHash)
+}
+
 func (s *TemplateStore) PublishedBySlug(ctx context.Context, slug string) (domain.Template, bool, error) {
-	return s.scanOne(ctx, `
+	return s.scanOne(ctx, s.db, `
 		SELECT `+templateColumns+`
 		FROM metaldogs_templates
 		WHERE slug = $1 AND status = $2
@@ -123,16 +131,17 @@ func (s *TemplateStore) SetStatus(ctx context.Context, id, status string) error 
 	if id == "" {
 		return fmt.Errorf("metaldogs templates: id required")
 	}
+	var res sql.Result
 	var err error
 	switch status {
 	case domain.TemplatePublished:
-		_, err = s.db.ExecContext(ctx, `
+		res, err = s.db.ExecContext(ctx, `
 			UPDATE metaldogs_templates
 			SET status = $2, published_at = now()
 			WHERE id = $1
 		`, id, status)
 	default:
-		_, err = s.db.ExecContext(ctx, `
+		res, err = s.db.ExecContext(ctx, `
 			UPDATE metaldogs_templates
 			SET status = $2
 			WHERE id = $1
@@ -141,19 +150,76 @@ func (s *TemplateStore) SetStatus(ctx context.Context, id, status string) error 
 	if err != nil {
 		return fmt.Errorf("metaldogs templates set status: %w", err)
 	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs templates set status rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("metaldogs templates: id %q not found", id)
+	}
 	return nil
 }
 
-func (s *TemplateStore) RetirePublishedExcept(ctx context.Context, slug, exceptID string) error {
-	_, err := s.db.ExecContext(ctx, `
+// PublishExclusive retires other published and other drafts for slug, then publishes id.
+func (s *TemplateStore) PublishExclusive(ctx context.Context, slug, id string) (domain.Template, error) {
+	if slug == "" || id == "" {
+		return domain.Template{}, fmt.Errorf("metaldogs templates: slug and id required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_templates
 		SET status = $3
 		WHERE slug = $1 AND status = $2 AND id <> $4
-	`, slug, domain.TemplatePublished, domain.TemplateRetired, exceptID)
-	if err != nil {
-		return fmt.Errorf("metaldogs templates retire published: %w", err)
+	`, slug, domain.TemplatePublished, domain.TemplateRetired, id); err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates retire published: %w", err)
 	}
-	return nil
+	// Stale drafts must not remain selectable by LatestDraftBySlug after publish.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE metaldogs_templates
+		SET status = $3
+		WHERE slug = $1 AND status = $2 AND id <> $4
+	`, slug, domain.TemplateDraft, domain.TemplateRetired, id); err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates retire drafts: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE metaldogs_templates
+		SET status = $2, published_at = now()
+		WHERE id = $1
+	`, id, domain.TemplatePublished)
+	if err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates publish: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return domain.Template{}, err
+	}
+	if n == 0 {
+		return domain.Template{}, fmt.Errorf("metaldogs templates: id %q not found", id)
+	}
+	t, ok, err := s.scanOne(ctx, tx, `
+		SELECT `+templateColumns+`
+		FROM metaldogs_templates
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return domain.Template{}, err
+	}
+	if !ok {
+		return domain.Template{}, fmt.Errorf("metaldogs templates: id %q missing after publish", id)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Template{}, fmt.Errorf("metaldogs templates commit: %w", err)
+	}
+	return t, nil
+}
+
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 const templateColumns = `
@@ -163,8 +229,8 @@ const templateColumns = `
 	created_at, published_at
 `
 
-func (s *TemplateStore) scanOne(ctx context.Context, query string, args ...any) (domain.Template, bool, error) {
-	row := s.db.QueryRowContext(ctx, query, args...)
+func (s *TemplateStore) scanOne(ctx context.Context, q rowQuerier, query string, args ...any) (domain.Template, bool, error) {
+	row := q.QueryRowContext(ctx, query, args...)
 	var t domain.Template
 	var prompt, model, photo, texts, out []byte
 	var refAsset, thumbAsset sql.NullString
@@ -206,18 +272,12 @@ func (s *TemplateStore) scanOne(ctx context.Context, query string, args ...any) 
 		ts := publishedAt.Time.UTC()
 		t.PublishedAt = &ts
 	}
+	t.NormalizeForHash()
 	return t, true, nil
 }
 
 func nullTime(t time.Time) any {
 	if t.IsZero() {
-		return nil
-	}
-	return t.UTC()
-}
-
-func nullTimePtr(t *time.Time) any {
-	if t == nil || t.IsZero() {
 		return nil
 	}
 	return t.UTC()

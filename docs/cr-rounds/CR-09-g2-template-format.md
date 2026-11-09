@@ -6,9 +6,10 @@
 
 ## What shipped
 
-- Migration `002_create_templates.sql` → `metaldogs_templates`
-- Domain `Template` Validate + content hash; application catalog LoadDraft / Publish / Retire
-- Postgres `TemplateStore` + DSN round-trip tests
+- Migration `002_create_templates.sql` → `metaldogs_templates` (+ partial unique index: one `published` per slug)
+- Domain `Template` Validate (required model, unique editable keys) + normalized content hash; unknown YAML/JSON fields rejected
+- Application catalog: LoadDraft no-op only on matching **draft** hash; PublishExclusive transaction retires other published + leftover drafts
+- Postgres `TemplateStore` + DSN round-trip tests (UUID ids)
 - CLI `metaldogs:templates validate|load|publish|retire`
 - Five spike templates as YAML under `plugins/metaldogs/templates/`
 - Eval loads Template v1; sample dog name via `-dog-name` (default Burek)
@@ -17,16 +18,18 @@
 
 | Item | Result |
 | --- | --- |
-| Domain validation / hash | Pass |
-| Postgres load / version bump / publish / retire | Pass (DSN-gated) |
+| Domain validation / hash / required model | Pass |
+| Application catalog (in-memory fake store) | Pass |
+| Postgres load / version bump / publish / retire / reload-after-retire | Pass with `SHOPANDA_TEST_DSN` (UUID ids; partial unique published index) |
 | Eval v1 + fake | Pass |
 | Docs links | Pass |
 | Publish of authored set | **Not done** (safe delivery: drafts only) |
 
 ## Tests added
 
-- `domain/template_test.go` — table-driven Validate; hash stability
-- `adapters/postgres/template_store_test.go` — LoadDraft noop + bump + publish/retire
+- `domain/template_test.go` — table-driven Validate; hash stability; nil vs empty fixed
+- `application/template_catalog_test.go` — noop/bump, publish retires drafts, load-after-retire, explicit `-version` rollback, unknown YAML fields, path jail
+- `adapters/postgres/template_store_test.go` — DSN round-trip with `ports.UUIDGenerator`
 - `generation/eval` — LoadTemplate v1 YAML; Run with v1 + `-dog-name`
 
 ## Flags / migrations / rollback

@@ -9,8 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 )
 
 // Template status values (snake_case).
@@ -20,13 +18,16 @@ const (
 	TemplateRetired   = "retired"
 )
 
+// MaxCanvasDimension caps template canvas size (aligned with generation.MaxDimension).
+const MaxCanvasDimension = 2048
+
 // Allowed photo poses for Template.PhotoRequirements.Pose.
 var AllowedPoses = map[string]struct{}{
-	"head_front":         {},
-	"head_angle":         {},
-	"full_body_profile":  {},
-	"full_body_front":    {},
-	"other":              {},
+	"head_front":        {},
+	"head_angle":        {},
+	"full_body_profile": {},
+	"full_body_front":   {},
+	"other":             {},
 }
 
 // AllowedCharsets for editable text fields.
@@ -40,24 +41,24 @@ var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Template is a versioned catalog definition (file ↔ DB).
 type Template struct {
-	ID                    string
-	Slug                  string
-	Status                string
-	Genre                 string
-	StyleCategory         string
-	Version               int
-	ContentHash           string
-	PromptInstructions    PromptInstructions
-	ModelParameters       ModelParameters
-	PhotoRequirements     PhotoRequirements
-	TextFields            TextFields
-	OutputConfig          OutputConfig
-	ReferenceAssetID      string // optional UUID; empty until asset ingest
-	ThumbnailAssetID      string
-	ReferencePatternPath  string // file-relative; not an asset id
-	ThumbnailPath         string
-	CreatedAt             time.Time
-	PublishedAt           *time.Time
+	ID                   string
+	Slug                 string
+	Status               string
+	Genre                string
+	StyleCategory        string
+	Version              int
+	ContentHash          string
+	PromptInstructions   PromptInstructions
+	ModelParameters      ModelParameters
+	PhotoRequirements    PhotoRequirements
+	TextFields           TextFields
+	OutputConfig         OutputConfig
+	ReferenceAssetID     string // optional UUID; empty until asset ingest
+	ThumbnailAssetID     string
+	ReferencePatternPath string // file-relative; not an asset id
+	ThumbnailPath        string
+	CreatedAt            time.Time
+	PublishedAt          *time.Time
 }
 
 // PromptInstructions are server-only generation instructions.
@@ -76,9 +77,9 @@ type ModelParameters struct {
 
 // PhotoRequirements describe the expected customer photo.
 type PhotoRequirements struct {
-	Pose            string `json:"pose" yaml:"pose"`
-	BackgroundHint  string `json:"background_hint" yaml:"background_hint"`
-	LightingHint    string `json:"lighting_hint" yaml:"lighting_hint"`
+	Pose           string `json:"pose" yaml:"pose"`
+	BackgroundHint string `json:"background_hint" yaml:"background_hint"`
+	LightingHint   string `json:"lighting_hint" yaml:"lighting_hint"`
 }
 
 // TextFields holds editable and fixed text definitions.
@@ -132,7 +133,7 @@ type FileDefinition struct {
 
 // ToTemplate builds an unsaved Template from a file definition.
 func (d FileDefinition) ToTemplate() Template {
-	return Template{
+	t := Template{
 		Slug:                 strings.TrimSpace(d.Slug),
 		Genre:                strings.TrimSpace(d.Genre),
 		StyleCategory:        strings.TrimSpace(d.StyleCategory),
@@ -144,6 +145,18 @@ func (d FileDefinition) ToTemplate() Template {
 		ReferencePatternPath: strings.TrimSpace(d.ReferencePatternPath),
 		ThumbnailPath:        strings.TrimSpace(d.ThumbnailPath),
 		Status:               TemplateDraft,
+	}
+	t.NormalizeForHash()
+	return t
+}
+
+// NormalizeForHash ensures nil slices become empty so omitted vs [] hash identically.
+func (t *Template) NormalizeForHash() {
+	if t.TextFields.Editable == nil {
+		t.TextFields.Editable = []EditableText{}
+	}
+	if t.TextFields.Fixed == nil {
+		t.TextFields.Fixed = []FixedText{}
 	}
 }
 
@@ -164,17 +177,19 @@ func (t Template) Validate() error {
 	if strings.TrimSpace(t.PromptInstructions.PromptVersion) == "" {
 		return fmt.Errorf("template: prompt_instructions.prompt_version required")
 	}
+	if strings.TrimSpace(t.ModelParameters.Model) == "" {
+		return fmt.Errorf("template: model_parameters.model required")
+	}
 	if _, ok := AllowedPoses[t.PhotoRequirements.Pose]; !ok {
 		return fmt.Errorf("template: unknown photo pose %q", t.PhotoRequirements.Pose)
 	}
 	w, h := t.ModelParameters.Width, t.ModelParameters.Height
 	switch {
 	case w == 0 && h == 0:
-		// provider default
+		// provider default size
 	case w > 0 && h > 0:
-		params := generation.Parameters{Width: w, Height: h, Seed: t.ModelParameters.Seed}
-		if err := params.Validate(); err != nil {
-			return fmt.Errorf("template: model_parameters: %w", err)
+		if w > MaxCanvasDimension || h > MaxCanvasDimension {
+			return fmt.Errorf("template: model_parameters width/height must be <= %d (got %dx%d)", MaxCanvasDimension, w, h)
 		}
 	default:
 		return fmt.Errorf("template: model_parameters width and height must both be set or both omitted (got %dx%d)", w, h)
@@ -182,8 +197,8 @@ func (t Template) Validate() error {
 	if t.OutputConfig.CanvasWidth <= 0 || t.OutputConfig.CanvasHeight <= 0 {
 		return fmt.Errorf("template: output_config canvas dimensions required")
 	}
-	if t.OutputConfig.CanvasWidth > generation.MaxDimension || t.OutputConfig.CanvasHeight > generation.MaxDimension {
-		return fmt.Errorf("template: output_config canvas exceeds max %d", generation.MaxDimension)
+	if t.OutputConfig.CanvasWidth > MaxCanvasDimension || t.OutputConfig.CanvasHeight > MaxCanvasDimension {
+		return fmt.Errorf("template: output_config canvas exceeds max %d", MaxCanvasDimension)
 	}
 	pa := t.OutputConfig.PrintArea
 	if pa.Width <= 0 || pa.Height <= 0 {
@@ -192,18 +207,24 @@ func (t Template) Validate() error {
 	if pa.X < 0 || pa.Y < 0 || pa.X+pa.Width > t.OutputConfig.CanvasWidth || pa.Y+pa.Height > t.OutputConfig.CanvasHeight {
 		return fmt.Errorf("template: print_area outside canvas")
 	}
+	seenKeys := map[string]struct{}{}
 	hasDogName := false
 	for _, e := range t.TextFields.Editable {
-		if strings.TrimSpace(e.Key) == "" {
+		key := strings.TrimSpace(e.Key)
+		if key == "" {
 			return fmt.Errorf("template: editable text key required")
 		}
+		if _, dup := seenKeys[key]; dup {
+			return fmt.Errorf("template: duplicate editable key %q", key)
+		}
+		seenKeys[key] = struct{}{}
 		if e.MaxLength <= 0 {
-			return fmt.Errorf("template: editable %q max_length must be positive", e.Key)
+			return fmt.Errorf("template: editable %q max_length must be positive", key)
 		}
 		if _, ok := AllowedCharsets[e.AllowedCharset]; !ok {
-			return fmt.Errorf("template: editable %q unknown allowed_charset %q", e.Key, e.AllowedCharset)
+			return fmt.Errorf("template: editable %q unknown allowed_charset %q", key, e.AllowedCharset)
 		}
-		if e.Key == "dog_name" {
+		if key == "dog_name" {
 			hasDogName = true
 		}
 	}
@@ -239,8 +260,9 @@ type hashPayload struct {
 	ThumbnailPath        string             `json:"thumbnail_path"`
 }
 
-// ContentHash returns a stable SHA-256 hex digest of the definition body.
+// ContentHashDigest returns a stable SHA-256 hex digest of the definition body.
 func (t Template) ContentHashDigest() (string, error) {
+	t.NormalizeForHash()
 	payload := hashPayload{
 		Slug:                 t.Slug,
 		Genre:                t.Genre,
@@ -261,11 +283,7 @@ func (t Template) ContentHashDigest() (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// GenerationParameters maps model parameters into the generation port shape.
-func (t Template) GenerationParameters() generation.Parameters {
-	return generation.Parameters{
-		Width:  t.ModelParameters.Width,
-		Height: t.ModelParameters.Height,
-		Seed:   t.ModelParameters.Seed,
-	}
+// GenerationWidthHeight returns model canvas size for eval/adapters (may be 0,0).
+func (t Template) GenerationWidthHeight() (width, height int, seed int64) {
+	return t.ModelParameters.Width, t.ModelParameters.Height, t.ModelParameters.Seed
 }

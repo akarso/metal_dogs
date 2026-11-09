@@ -57,12 +57,13 @@ func isV1Template(raw []byte, path string) bool {
 }
 
 func templateDefFromDomain(t domain.Template) TemplateDef {
+	w, h, seed := t.GenerationWidthHeight()
 	return TemplateDef{
 		ID:            t.Slug,
 		Prompt:        t.PromptInstructions.Text,
 		PromptVersion: t.PromptInstructions.PromptVersion,
 		Model:         t.ModelParameters.Model,
-		Parameters:    t.GenerationParameters(),
+		Parameters:    generation.Parameters{Width: w, Height: h, Seed: seed},
 	}
 }
 
