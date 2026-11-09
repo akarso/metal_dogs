@@ -238,6 +238,9 @@ func TestRun_EmptyPhotoBytes_MarkedFailed(t *testing.T) {
 	if len(report.Samples) != 1 || report.Samples[0].ErrorClass != string(generation.ErrorRejectedInput) {
 		t.Fatalf("sample = %+v", report.Samples[0])
 	}
+	if report.Samples[0].Validation.Status != "skipped" {
+		t.Fatalf("validation = %+v", report.Samples[0].Validation)
+	}
 }
 
 func TestRun_ContextCancel_Classified(t *testing.T) {
@@ -267,6 +270,9 @@ func TestRun_ContextCancel_Classified(t *testing.T) {
 	}
 	if report.Samples[0].ErrorClass != string(generation.ErrorCanceled) {
 		t.Fatalf("sample = %+v", report.Samples[0])
+	}
+	if report.Samples[0].Validation.Status != "skipped" {
+		t.Fatalf("validation = %+v", report.Samples[0].Validation)
 	}
 }
 
@@ -348,7 +354,7 @@ func TestRun_ValidationFail_MarksSample(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := report.Samples[0]
-	if s.Validation.Status != "fail" || s.ErrorClass != string(generation.ErrorRejectedInput) {
+	if s.Validation.Status != "fail" || s.ErrorClass != string(generation.ErrorValidationFailed) {
 		t.Fatalf("sample = %+v", s)
 	}
 	if s.OutputFile == "" {
@@ -365,6 +371,34 @@ func TestLoadTemplate_RejectsPartialCanvas(t *testing.T) {
 	}
 	if _, err := eval.LoadTemplate(path); err == nil {
 		t.Fatal("expected partial width/height error")
+	}
+}
+
+func TestLoadTemplate_RejectsPartialOutputConfigCanvas(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","parameters":{"width":8,"height":8},"output_config":{"canvas_width":128}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eval.LoadTemplate(path); err == nil {
+		t.Fatal("expected partial output_config canvas error")
+	}
+}
+
+func TestLoadTemplate_OutputConfigDefaultsMonochrome(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "t.json")
+	body := `{"id":"a","prompt":"p","parameters":{"width":8,"height":8},"output_config":{"canvas_width":8,"canvas_height":8}}`
+	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	def, err := eval.LoadTemplate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !def.OutputConfig.Monochrome || def.OutputConfig.CanvasWidth != 8 {
+		t.Fatalf("expected monochrome default true, got %+v", def.OutputConfig)
 	}
 }
 
@@ -409,6 +443,12 @@ func TestRun_V1Template_FakeProvider(t *testing.T) {
 	}
 	if report.Samples[0].Error != "" {
 		t.Fatalf("sample: %+v", report.Samples[0])
+	}
+	if report.Samples[0].Validation.Status != "pass" {
+		t.Fatalf("validation = %+v", report.Samples[0].Validation)
+	}
+	if len(report.Samples[0].Validation.Codes) != 0 {
+		t.Fatalf("hard codes = %v", report.Samples[0].Validation.Codes)
 	}
 }
 

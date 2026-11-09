@@ -24,7 +24,7 @@ type Options struct {
 	OpenAIAPIKey string
 	OpenAIModel  string
 	OpenAIBase   string
-	DogName      string // sample name for GenerationRequest; default Burek via ParseArgs
+	DogName      string           // sample name for GenerationRequest; default Burek via ParseArgs
 	Now          func() time.Time // optional; defaults to time.Now.UTC
 }
 
@@ -127,11 +127,19 @@ func ensureEmptyOutDir(outDir string) error {
 	return nil
 }
 
+func skippedValidation() ValidationResult {
+	return ValidationResult{
+		Status:  "skipped",
+		Message: validationSkippedMessage,
+	}
+}
+
 func runOne(ctx context.Context, provider generation.ImageProvider, def TemplateDef, photoPath, outDir string, written map[string]string) SampleResult {
 	base := filepath.Base(photoPath)
 	sample := SampleResult{
-		PhotoName: base,
-		NameCheck: ocr.NameHeuristic(def.DogName),
+		PhotoName:  base,
+		NameCheck:  ocr.NameHeuristic(def.DogName),
+		Validation: skippedValidation(),
 	}
 	raw, err := os.ReadFile(photoPath)
 	if err != nil {
@@ -203,7 +211,7 @@ func runOne(ctx context.Context, provider generation.ImageProvider, def Template
 	}
 	if vr.Failed() {
 		sample.Error = vr.Message
-		sample.ErrorClass = string(generation.ErrorRejectedInput)
+		sample.ErrorClass = string(generation.ErrorValidationFailed)
 	}
 	return sample
 }

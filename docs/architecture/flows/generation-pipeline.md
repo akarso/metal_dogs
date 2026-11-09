@@ -81,11 +81,13 @@ Retries of the provider call are **internal to one `GenerationJob` attempt count
 | Code | Severity | Meaning |
 | --- | --- | --- |
 | `dimensions_mismatch` | error | Output does not match template canvas (`OutputConfig` width×height) |
-| `not_monochrome` | error | Colour content above tolerance (max−min RGB channel > 16 on 8-bit) when `OutputConfig.Monochrome` |
-| `no_transparency` | **warning** (G3) | No pixel with alpha &lt; 0xffff (incl. tRNS). Remains warning until ADR-0008 Accept; may become error or trigger background-removal later |
-| `blank_or_low_detail` | error | Near-uniform: ≤4 unique 4-bit-quantized colours **and** luminance variance below floor |
-| `decode_failed` | error | Not a valid / decodable PNG |
+| `not_monochrome` | error | Colour content above tolerance (max−min on **un-premultiplied** 8-bit RGB > 16) when `OutputConfig.Monochrome`; any pixel with alpha &gt; 0 |
+| `no_transparency` | **warning** (G3) | No pixel with alpha &lt; 0xffff (incl. tRNS). Emitted only in `Warnings` (not `Codes`) until ADR-0008 Accept |
+| `blank_or_low_detail` | error | Near-uniform among pixels with alpha ≥ floor: ≤4 unique 4-bit-quantized colours **and** luminance variance below floor; fully transparent → blank |
+| `decode_failed` | error | Not a valid / decodable PNG, or IHDR width/height ≤0 or &gt; `MaxCanvasDimension` (decode-bomb guard) |
 | `name_ocr_mismatch` | warning (not emitted in G3) | Reserved for byte-reading OCR; G3 keeps `generation/ocr.NameHeuristic` on `name_check` only |
+
+Eval maps hard validation failure to sample `error_class=validation_failed` (aligned with job `terminal_reason`); do not reuse `rejected_input` (photo/prompt rejection).
 
 ## Idempotency and concurrency guarantees
 

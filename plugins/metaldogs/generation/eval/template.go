@@ -69,17 +69,30 @@ func templateDefFromDomain(t domain.Template) TemplateDef {
 	}
 }
 
+// legacyOutputProbe distinguishes omitted vs zero canvas / monochrome keys.
+type legacyOutputProbe struct {
+	CanvasWidth  *int              `json:"canvas_width" yaml:"canvas_width"`
+	CanvasHeight *int              `json:"canvas_height" yaml:"canvas_height"`
+	Monochrome   *bool             `json:"monochrome" yaml:"monochrome"`
+	PrintArea    *domain.PrintArea `json:"print_area" yaml:"print_area"`
+}
+
 func loadLegacyStub(raw []byte, path string) (TemplateDef, error) {
 	var def TemplateDef
+	var ocWrap struct {
+		OutputConfig *legacyOutputProbe `json:"output_config" yaml:"output_config"`
+	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".yaml", ".yml":
 		if err := yaml.Unmarshal(raw, &def); err != nil {
 			return TemplateDef{}, fmt.Errorf("eval: parse yaml template: %w", err)
 		}
+		_ = yaml.Unmarshal(raw, &ocWrap)
 	default:
 		if err := json.Unmarshal(raw, &def); err != nil {
 			return TemplateDef{}, fmt.Errorf("eval: parse json template: %w", err)
 		}
+		_ = json.Unmarshal(raw, &ocWrap)
 	}
 	if def.ID == "" {
 		return TemplateDef{}, fmt.Errorf("eval: template id required")
@@ -100,16 +113,59 @@ func loadLegacyStub(raw []byte, path string) (TemplateDef, error) {
 	default:
 		return TemplateDef{}, fmt.Errorf("eval: template parameters: width and height must both be set or both omitted (got %dx%d)", w, h)
 	}
-	applyLegacyOutputDefaults(&def)
+	if err := applyLegacyOutputDefaults(&def, ocWrap.OutputConfig); err != nil {
+		return TemplateDef{}, err
+	}
 	return def, nil
 }
 
-// applyLegacyOutputDefaults fills OutputConfig from Parameters (or 64×64) with
-// Monochrome true when the stub omitted canvas size.
-func applyLegacyOutputDefaults(def *TemplateDef) {
-	if def.OutputConfig.CanvasWidth > 0 || def.OutputConfig.CanvasHeight > 0 {
-		return
+// applyLegacyOutputDefaults requires both canvas edges or neither; defaults
+// Monochrome to true when the key is omitted.
+func applyLegacyOutputDefaults(def *TemplateDef, oc *legacyOutputProbe) error {
+	if oc == nil {
+		setDefaultCanvasMono(def)
+		return nil
 	}
+	wPresent := oc.CanvasWidth != nil
+	hPresent := oc.CanvasHeight != nil
+	if wPresent != hPresent {
+		return fmt.Errorf("eval: output_config canvas_width and canvas_height must both be set or both omitted")
+	}
+	if !wPresent {
+		setDefaultCanvasMono(def)
+		if oc.Monochrome != nil {
+			def.OutputConfig.Monochrome = *oc.Monochrome
+		}
+		if oc.PrintArea != nil {
+			def.OutputConfig.PrintArea = *oc.PrintArea
+		}
+		return nil
+	}
+	cw, ch := *oc.CanvasWidth, *oc.CanvasHeight
+	if (cw == 0) != (ch == 0) {
+		return fmt.Errorf("eval: output_config canvas_width and canvas_height must both be set or both omitted (got %dx%d)", cw, ch)
+	}
+	if cw == 0 && ch == 0 {
+		setDefaultCanvasMono(def)
+	} else {
+		if cw > domain.MaxCanvasDimension || ch > domain.MaxCanvasDimension {
+			return fmt.Errorf("eval: output_config canvas exceeds max %d", domain.MaxCanvasDimension)
+		}
+		def.OutputConfig.CanvasWidth = cw
+		def.OutputConfig.CanvasHeight = ch
+	}
+	if oc.Monochrome != nil {
+		def.OutputConfig.Monochrome = *oc.Monochrome
+	} else {
+		def.OutputConfig.Monochrome = true
+	}
+	if oc.PrintArea != nil {
+		def.OutputConfig.PrintArea = *oc.PrintArea
+	}
+	return nil
+}
+
+func setDefaultCanvasMono(def *TemplateDef) {
 	w, h := def.Parameters.Width, def.Parameters.Height
 	if w == 0 {
 		w = generation.DefaultDimension
@@ -117,9 +173,7 @@ func applyLegacyOutputDefaults(def *TemplateDef) {
 	if h == 0 {
 		h = generation.DefaultDimension
 	}
-	def.OutputConfig = domain.OutputConfig{
-		CanvasWidth:  w,
-		CanvasHeight: h,
-		Monochrome:   true,
-	}
+	def.OutputConfig.CanvasWidth = w
+	def.OutputConfig.CanvasHeight = h
+	def.OutputConfig.Monochrome = true
 }

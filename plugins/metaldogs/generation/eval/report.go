@@ -12,19 +12,23 @@ import (
 )
 
 // ValidationResult records G3 output checks for one sample.
+// Status is pass|fail after a successful generate, or skipped when generate never ran.
+// Codes are hard-fail only; Warnings hold soft codes (e.g. no_transparency).
 type ValidationResult struct {
-	Status   string   `json:"status"` // pass | fail (skipped only if generate never ran)
+	Status   string   `json:"status"` // pass | fail | skipped
 	Codes    []string `json:"codes,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 	Message  string   `json:"message,omitempty"`
 }
 
+const validationSkippedMessage = "validation skipped: generate did not succeed"
+
 // SampleResult is one photo's generation outcome in the report.
 type SampleResult struct {
-	PhotoName      string           `json:"photo_name"`
-	OutputFile     string           `json:"output_file,omitempty"`
-	ProviderReqID  string           `json:"provider_request_id,omitempty"`
-	ProviderModel  string           `json:"provider_model,omitempty"`
+	PhotoName         string           `json:"photo_name"`
+	OutputFile        string           `json:"output_file,omitempty"`
+	ProviderReqID     string           `json:"provider_request_id,omitempty"`
+	ProviderModel     string           `json:"provider_model,omitempty"`
 	LatencyMS         int64            `json:"latency_ms"`
 	CostMinorUnits    int64            `json:"cost_minor_units"`
 	UsageInputTokens  int              `json:"usage_input_tokens,omitempty"`

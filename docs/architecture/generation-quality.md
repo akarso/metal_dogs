@@ -55,7 +55,7 @@ Confirm one live smoke before the full ≥20×5 matrix (field name / MIME / mode
 
 ## Output validation (G3)
 
-After each successful generate, eval runs `validate.Validate` against the template `output_config`. Hard fails (`decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`) mark the sample failed. `no_transparency` is a warning until ADR-0008 Accept.
+After each successful generate, eval runs `validate.Validate` against the template `output_config`. Hard fails (`decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`) mark the sample `error_class=validation_failed`. `no_transparency` is warning-only (`Warnings`, empty hard `Codes`) until ADR-0008 Accept. Generate never ran → `validation.status=skipped`.
 
 ## Open questions answered by this spike
 

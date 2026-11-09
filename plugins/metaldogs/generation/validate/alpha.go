@@ -1,14 +1,10 @@
 package validate
 
-import (
-	"bytes"
-	"image/png"
-)
-
 // HasUsefulAlpha reports whether any decoded PNG pixel has alpha < 0xffff
 // (including palette tRNS). Opaque RGB/truecolor without transparency returns false.
+// Oversize or undecodable PNGs return false (callers should Validate for hard fails).
 func HasUsefulAlpha(pngBytes []byte) bool {
-	img, err := png.Decode(bytes.NewReader(pngBytes))
+	img, err := decodePNGBounded(pngBytes)
 	if err != nil {
 		return false
 	}

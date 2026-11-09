@@ -299,13 +299,14 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Templates load as `draft`; nothing published in this CR.
 - **Docs:** `architecture/domain-model.md` Template section; `runbooks/template-publishing.md`; CR-09.
 
-#### G3 · Output validation — size M — **DONE** (CR-10, 2026-11-09)
+#### G3 · Output validation — size M — **DONE** (CR-10, 2026-11-09; PR #22)
 
-- **Goal:** Deterministic checks on provider output before it becomes a preview: dimensions and aspect, monochrome tolerance, transparency/mask presence (or background removal step if ADR-0008 says the provider cannot), file integrity, basic blank/garbage detection; optional dog-name OCR check flagged as `warning`.
-- **Scope:** `generation/validate.Validate` (hard fail: `decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`; `no_transparency` warning until ADR-0008 Accept). Wired into `metaldogs:eval` report; job wiring deferred to C4. OCR stays `NameHeuristic` (no `name_ocr_mismatch` yet).
+- **Goal:** Deterministic checks on provider output before it becomes a preview: exact canvas WxH, monochrome tolerance (un-premultiplied), transparency warning, PNG decode integrity with IHDR size cap, near-uniform blank detection; dog-name OCR remains heuristic-only.
+- **Scope:** `generation/validate.Validate` (hard fail: `decode_failed`, `dimensions_mismatch`, `not_monochrome`, `blank_or_low_detail`; `no_transparency` warning-only until ADR-0008 Accept). Wired into `metaldogs:eval` (`error_class=validation_failed`); job wiring deferred to C4. Not in G3: aspect-only checks beyond WxH, deeper “garbage” classifiers, byte-reading OCR, background-removal.
 - **Tests:** Unit tests with fixture images for each rule; negative cases; eval fake run asserts `validation.status=pass`.
 - **Safe delivery:** Pure functions; wired into the job in C4.
 - **Docs:** Validation codes listed in `architecture/flows/generation-pipeline.md`; CR-10.
+
 
 
 #### G4 · Mockup compositing — size S

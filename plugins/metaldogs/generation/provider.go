@@ -13,11 +13,12 @@ import (
 type ErrorClass string
 
 const (
-	ErrorTransient     ErrorClass = "transient"
-	ErrorPermanent     ErrorClass = "permanent"
-	ErrorRejectedInput ErrorClass = "rejected_input"
-	ErrorRateLimited   ErrorClass = "rate_limited"
-	ErrorCanceled      ErrorClass = "canceled"
+	ErrorTransient        ErrorClass = "transient"
+	ErrorPermanent        ErrorClass = "permanent"
+	ErrorRejectedInput    ErrorClass = "rejected_input"
+	ErrorRateLimited      ErrorClass = "rate_limited"
+	ErrorCanceled         ErrorClass = "canceled"
+	ErrorValidationFailed ErrorClass = "validation_failed" // G3 output checks; maps to job terminal_reason
 )
 
 // DefaultDimension is applied when width/height are unset.
