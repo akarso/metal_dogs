@@ -57,7 +57,11 @@ func CreateUpload(svc *application.UploadService) http.Handler {
 		if err != nil {
 			var ue *application.UploadError
 			if errors.As(err, &ue) {
-				writeJSONError(w, uploadStatus(ue.Code), ue.Code)
+				status := uploadStatus(ue.Code)
+				if status == http.StatusTooManyRequests {
+					w.Header().Set("Retry-After", "1")
+				}
+				writeJSONError(w, status, ue.Code)
 				return
 			}
 			writeJSONError(w, http.StatusInternalServerError, "internal_error")

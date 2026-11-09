@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"image/jpeg"
 	_ "image/jpeg"
 	"image/png"
@@ -173,12 +175,16 @@ func checkUprightBounds(w, h int) error {
 }
 
 // applyOrientation maps EXIF orientation 1–8 into an upright pixel buffer.
+// Materializes to RGBA once so jpeg.YCbCr does not pay At() conversion per pixel.
 func applyOrientation(src image.Image, orient int) image.Image {
 	if orient < 2 || orient > 8 {
 		return src
 	}
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
+	flat := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(flat, flat.Bounds(), src, b.Min, draw.Src)
+
 	var dst *image.RGBA
 	switch orient {
 	case 2, 3, 4:
@@ -186,26 +192,27 @@ func applyOrientation(src image.Image, orient int) image.Image {
 	case 5, 6, 7, 8:
 		dst = image.NewRGBA(image.Rect(0, 0, h, w))
 	default:
-		return src
+		return flat
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			c := src.At(b.Min.X+x, b.Min.Y+y)
+			i := y*flat.Stride + x*4
+			c := color.RGBA{R: flat.Pix[i], G: flat.Pix[i+1], B: flat.Pix[i+2], A: flat.Pix[i+3]}
 			switch orient {
 			case 2:
-				dst.Set(w-1-x, y, c)
+				dst.SetRGBA(w-1-x, y, c)
 			case 3:
-				dst.Set(w-1-x, h-1-y, c)
+				dst.SetRGBA(w-1-x, h-1-y, c)
 			case 4:
-				dst.Set(x, h-1-y, c)
+				dst.SetRGBA(x, h-1-y, c)
 			case 5:
-				dst.Set(y, x, c)
+				dst.SetRGBA(y, x, c)
 			case 6:
-				dst.Set(h-1-y, x, c)
+				dst.SetRGBA(h-1-y, x, c)
 			case 7:
-				dst.Set(h-1-y, w-1-x, c)
+				dst.SetRGBA(h-1-y, w-1-x, c)
 			case 8:
-				dst.Set(y, w-1-x, c)
+				dst.SetRGBA(y, w-1-x, c)
 			}
 		}
 	}

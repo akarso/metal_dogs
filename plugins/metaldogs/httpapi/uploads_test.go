@@ -265,6 +265,66 @@ func TestCreateUpload_NilService(t *testing.T) {
 	assertErrCode(t, rec, application.UploadErrUnavailable)
 }
 
+func TestCreateUpload_TooManyRequests(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	store := &blockingHTTPBlobStore{
+		inner:   &memBlobStore{},
+		started: started,
+		release: release,
+	}
+	svc := &application.UploadService{
+		Assets:      &memAssetRepo{},
+		Store:       store,
+		IDs:         testutil.NewSeqGenerator("up"),
+		Clock:       testutil.NewFakeClock(time.Date(2026, 11, 9, 15, 0, 0, 0, time.UTC)),
+		MaxInFlight: 1,
+	}
+	done := make(chan int, 1)
+	go func() {
+		rec := postUpload(t, svc, "file", "a.jpg", jpegBytes(t, 300))
+		done <- rec.Code
+	}()
+	<-started
+	rec := postUpload(t, svc, "file", "b.jpg", jpegBytes(t, 300))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrCode(t, rec, application.UploadErrTooManyRequests)
+	if rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After=%q", rec.Header().Get("Retry-After"))
+	}
+	close(release)
+	if code := <-done; code != http.StatusCreated {
+		t.Fatalf("first upload status=%d", code)
+	}
+}
+
+type blockingHTTPBlobStore struct {
+	inner   *memBlobStore
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingHTTPBlobStore) Put(ctx context.Context, key string, r io.Reader, ct string) error {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.inner.Put(ctx, key, r, ct)
+}
+func (b *blockingHTTPBlobStore) Head(ctx context.Context, key string) error {
+	return b.inner.Head(ctx, key)
+}
+func (b *blockingHTTPBlobStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return b.inner.SignedGetURL(ctx, key, ttl)
+}
+func (b *blockingHTTPBlobStore) Delete(ctx context.Context, key string) error {
+	return b.inner.Delete(ctx, key)
+}
+
+var _ ports.AssetStore = (*blockingHTTPBlobStore)(nil)
+
 func assertErrCode(t *testing.T, rec *httptest.ResponseRecorder, code string) {
 	t.Helper()
 	var body map[string]string

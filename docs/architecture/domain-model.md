@@ -99,12 +99,13 @@ erDiagram
     ASSET {
         uuid id PK
         enum type "source | artwork | mockup | production | reference | thumbnail"
-        string storage_key "private bucket"
+        string storage_key "private bucket, unique"
         string mime_type
         bigint size_bytes
         int width
         int height
-        string checksum
+        string checksum "sha256:<hex>"
+        string owner_ref "nullable; C3 capability/session bind"
         timestamptz created_at
         timestamptz delete_after "retention"
         timestamptz deleted_at

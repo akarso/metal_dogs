@@ -20,6 +20,7 @@ import (
 const UploadRetention = 2 * time.Hour
 
 // DefaultMaxConcurrentUploads caps in-process upload prep/Put concurrency (pre-O4).
+// Per OS process only: N replicas × this value is the cluster ceiling until O4.
 const DefaultMaxConcurrentUploads = 4
 
 // ChecksumSHA256Prefix prefixes stored checksums for forward clarity.
@@ -67,6 +68,8 @@ type UploadService struct {
 	Clock  ports.Clock
 	// MaxInFlight caps concurrent Create calls; 0 → DefaultMaxConcurrentUploads.
 	MaxInFlight int
+	// OnCleanupError is optional; op is "delete" or "soft_delete"; never pass URLs.
+	OnCleanupError func(op, assetID, storageKey string, err error)
 
 	once     sync.Once
 	inFlight chan struct{}
@@ -93,6 +96,13 @@ func (s *UploadService) release() {
 	case <-s.inFlight:
 	default:
 	}
+}
+
+func (s *UploadService) cleanupErr(op, assetID, storageKey string, err error) {
+	if err == nil || s.OnCleanupError == nil {
+		return
+	}
+	s.OnCleanupError(op, assetID, storageKey, err)
 }
 
 // Create sniffs/decodes/re-encodes, Puts the blob, inserts metadata, and returns a signed preview URL.
@@ -152,13 +162,23 @@ func (s *UploadService) Create(ctx context.Context, raw []byte) (UploadResult, e
 		return UploadResult{}, fmt.Errorf("upload: put: %w", err)
 	}
 	if err := s.Assets.Insert(ctx, asset); err != nil {
-		_ = s.Store.Delete(ctx, key)
+		if delErr := s.Store.Delete(ctx, key); delErr != nil {
+			s.cleanupErr("delete", id, key, delErr)
+			return UploadResult{}, fmt.Errorf("upload: insert: %w (blob delete failed: %v)", err, delErr)
+		}
 		return UploadResult{}, fmt.Errorf("upload: insert: %w", err)
 	}
 	url, err := s.Store.SignedGetURL(ctx, key, previewTTL)
 	if err != nil {
-		_ = s.Store.Delete(ctx, key)
-		_ = s.Assets.SoftDelete(ctx, id, now)
+		// SoftDelete first so GetByID cannot return an active row whose blob is already gone.
+		if softErr := s.Assets.SoftDelete(ctx, id, now); softErr != nil {
+			s.cleanupErr("soft_delete", id, key, softErr)
+			return UploadResult{}, fmt.Errorf("upload: signed url: %w (soft-delete failed: %v)", err, softErr)
+		}
+		if delErr := s.Store.Delete(ctx, key); delErr != nil {
+			s.cleanupErr("delete", id, key, delErr)
+			return UploadResult{}, fmt.Errorf("upload: signed url: %w (blob delete failed: %v)", err, delErr)
+		}
 		return UploadResult{}, fmt.Errorf("upload: signed url: %w", err)
 	}
 	return UploadResult{

@@ -72,7 +72,9 @@ Handlers do not set public `max-age`. Platform middleware forces `Cache-Control:
 | --- | --- | --- | --- |
 | `POST` | `/api/customizer/uploads` | public | `201` upload DTO |
 
-Multipart field name: **`file`**. Rows are unauthenticated until C3; schema has nullable `owner_ref` for capability/session bind. Storage keys are never returned. Plugin flag default off; in-process concurrency cap (`DefaultMaxConcurrentUploads`) until O4.
+Multipart field name: **`file`**. Rows are unauthenticated until C3; schema has nullable `owner_ref` for capability/session bind. Storage keys are never returned. Plugin flag default off.
+
+**Concurrency (pre-O4):** in-process semaphore `DefaultMaxConcurrentUploads` (4) per API process — **not** per IP and **not** cluster-wide. Ops ceiling ≈ `replicas × 4` until O4 adds route/IP limits. Do not treat this as abuse protection.
 
 ### Limits
 
@@ -80,11 +82,11 @@ Multipart field name: **`file`**. Rows are unauthenticated until C3; schema has 
 | --- | --- |
 | Accepted types | JPEG, PNG only (magic sniff; extension ignored). WebP → `415` until re-encode path exists |
 | Max payload | `generation.MaxPhotoBytes` (20 MiB); streamed via multipart reader (no double form buffer) |
-| Decoded bounds | `DecodeConfig` first (OOM gate) then upright min **256×256**, max **2048×2048** (both edges) + pixel cap |
+| Decoded bounds | `DecodeConfig` OOM gate (max edge / pixels; min deferred until upright) then upright min **256×256**, max **2048×2048** |
 | Pipeline | sniff → DecodeConfig bounds → full decode → EXIF Orientation normalize → re-encode (strip metadata) → `sha256:<hex>` → Put + insert |
 | Preview URL TTL | `ports.DefaultSignedGetTTL` (60s) — see `preview_url_expires_at` |
-| Retention stub | `delete_after = now + 2h` on insert; sweep is **O2** (not C2) |
-| Failure cleanup | Insert or SignedGetURL failure after Put → best-effort blob Delete; sign failure also SoftDelete row |
+| Retention stub | `delete_after = now + 2h` on insert; sweep is **O2** (not C2). Put-then-crash before Insert can orphan blobs with no row until store/DB reconcile lands in O2. |
+| Failure cleanup | Insert fail → Delete blob (errors surfaced). Sign fail → SoftDelete first, then Delete; SoftDelete failure leaves row+blob consistent and returns `500` |
 
 ### Success DTO (`201`)
 
@@ -111,7 +113,7 @@ Do **not** treat `delete_after` as preview validity — use `preview_url_expires
 | `415` | `{"error":"unsupported_media_type"}` | Non-JPEG/PNG (incl. WebP) or garbage with `.jpg` name |
 | `422` | `{"error":"invalid_image"}` | Magic ok but decode fails |
 | `422` | `{"error":"dimensions_out_of_range"}` | Outside 256–2048 on either edge (config or upright) |
-| `429` | `{"error":"too_many_requests"}` | In-process upload concurrency cap |
+| `429` | `{"error":"too_many_requests"}` + `Retry-After: 1` | In-process upload concurrency cap (per process) |
 | `503` | `{"error":"unavailable"}` | No DB or AssetStore wired |
 | `500` | `{"error":"internal_error"}` | Put/insert/sign failure (after compensating cleanup) |
 

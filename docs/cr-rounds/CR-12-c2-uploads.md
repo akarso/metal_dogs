@@ -9,7 +9,7 @@
 - Migration `003_create_assets.sql` (`metaldogs_assets`, `UNIQUE(storage_key)`, mime check, nullable `owner_ref`)
 - `domain.Asset`, `ports.AssetRepository` (Insert/GetByID/SoftDelete), postgres `AssetRepo`, shared `generation/imagemime.Sniff`
 - `application/imageprep`: sniff → `DecodeConfig` bounds/pixel gate → Orientation normalize → EXIF-strip re-encode
-- `UploadService`: Put + insert + signed GET; compensating blob Delete (+ SoftDelete on sign failure); in-process concurrency cap
+- `UploadService`: Put + insert + signed GET; SoftDelete-first then Delete on sign failure (errors logged via `OnCleanupError`); in-process concurrency cap (`replicas × 4` until O4)
 - Public `POST /api/customizer/uploads` streams multipart `file`; response splits `preview_url_expires_at` vs `delete_after`
 - WebP rejected `415`; retention stub `delete_after=+2h` (sweep = O2)
 
@@ -45,5 +45,6 @@
 
 - C3: bind `owner_ref` + capability token; refuse attach of foreign/unowned uploads
 - O2: `retention_sweep` for expired unattached uploads (and orphan blobs without rows)
-- O4: IP / route rate limits beyond in-process semaphore
+- O4: IP / route rate limits beyond in-process semaphore (document cluster ceiling = replicas × `DefaultMaxConcurrentUploads`)
+- O2: also reconcile orphan blobs with no `metaldogs_assets` row (Put-then-crash)
 - C5+: real `thumbnail_url` via asset ingest

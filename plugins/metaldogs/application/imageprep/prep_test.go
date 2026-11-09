@@ -131,6 +131,16 @@ func TestPrepare_OversizeIHDR_BeforeFullDecode(t *testing.T) {
 	}
 }
 
+func TestPrepare_OversizeSOF_BeforeFullDecode(t *testing.T) {
+	t.Parallel()
+	raw := jpegWithPatchedSOF(t, generation.MaxDimension+1, 1)
+	_, err := imageprep.Prepare(raw)
+	var pe *imageprep.Error
+	if err == nil || !asPrepErr(err, &pe) || pe.Code != imageprep.ErrDimensions {
+		t.Fatalf("oversize SOF must fail on DecodeConfig gate, err=%v", err)
+	}
+}
+
 func TestPrepare_EXIFStripped(t *testing.T) {
 	t.Parallel()
 	base := encodeJPEG(t, solidRGBA(280, 280))
@@ -201,17 +211,53 @@ func avgRed(img image.Image, x0, y0, x1, y1 int) int {
 }
 
 func injectExifOrientation(jpegBytes []byte, orient int) []byte {
-	// Minimal little-endian Exif APP1 with Orientation tag.
-	tiff := []byte{
-		'I', 'I',
-		0x2a, 0x00,
-		0x08, 0x00, 0x00, 0x00, // IFD0 at 8
-		0x01, 0x00, // 1 entry
-		0x12, 0x01, // tag Orientation
-		0x03, 0x00, // SHORT
-		0x01, 0x00, 0x00, 0x00,
-		byte(orient), 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, // next IFD
+	return injectExifOrientationEndian(jpegBytes, orient, true)
+}
+
+func TestPrepare_Orientation6_BigEndianEXIF(t *testing.T) {
+	t.Parallel()
+	src := solidRGBA(320, 280)
+	for y := 0; y < 24; y++ {
+		for x := 0; x < 24; x++ {
+			src.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	raw := injectExifOrientationEndian(encodeJPEG(t, src), 6, false)
+	got, err := imageprep.Prepare(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Width != 280 || got.Height != 320 {
+		t.Fatalf("upright dims = %dx%d, want 280x320", got.Width, got.Height)
+	}
+}
+
+func injectExifOrientationEndian(jpegBytes []byte, orient int, little bool) []byte {
+	var tiff []byte
+	if little {
+		tiff = []byte{
+			'I', 'I',
+			0x2a, 0x00,
+			0x08, 0x00, 0x00, 0x00,
+			0x01, 0x00,
+			0x12, 0x01,
+			0x03, 0x00,
+			0x01, 0x00, 0x00, 0x00,
+			byte(orient), 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+		}
+	} else {
+		tiff = []byte{
+			'M', 'M',
+			0x00, 0x2a,
+			0x00, 0x00, 0x00, 0x08,
+			0x00, 0x01,
+			0x01, 0x12,
+			0x00, 0x03,
+			0x00, 0x00, 0x00, 0x01,
+			0x00, byte(orient), 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00,
+		}
 	}
 	exif := append([]byte{'E', 'x', 'i', 'f', 0, 0}, tiff...)
 	seglen := len(exif) + 2
@@ -223,6 +269,28 @@ func injectExifOrientation(jpegBytes []byte, orient int) []byte {
 	out = append(out, app1...)
 	out = append(out, jpegBytes[2:]...)
 	return out
+}
+
+// jpegWithPatchedSOF encodes a tiny valid JPEG then rewrites SOF dimensions so
+// DecodeConfig rejects before full decode (parallel to PNG IHDR bomb).
+func jpegWithPatchedSOF(t *testing.T, w, h int) []byte {
+	t.Helper()
+	raw := encodeJPEG(t, solidRGBA(8, 8))
+	for i := 0; i+8 < len(raw); i++ {
+		if raw[i] != 0xff {
+			continue
+		}
+		switch raw[i+1] {
+		case 0xc0, 0xc1, 0xc2:
+			raw[i+5] = byte(h >> 8)
+			raw[i+6] = byte(h)
+			raw[i+7] = byte(w >> 8)
+			raw[i+8] = byte(w)
+			return raw
+		}
+	}
+	t.Fatal("SOF marker not found in encoded JPEG")
+	return nil
 }
 
 // rgbPNGWithDims builds a 1-pixel-row colour-type-2 PNG with arbitrary IHDR size

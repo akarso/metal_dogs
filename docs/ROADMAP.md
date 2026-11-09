@@ -337,7 +337,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### C2 · Uploads — size M — **DONE pending merge** (CR-12 / PR #24)
 
 - **Goal:** `POST /api/customizer/uploads` (multipart) → `SourceAsset` in private storage; server-side checks: size limit, real MIME by sniffing, decode to verify format and dimensions, min/max dimensions, EXIF stripped, re-encoded; returns `upload_id` and a short-lived signed preview URL; uploads expire if not attached to a design (O2).
-- **Scope:** Migration `003` `metaldogs_assets` (`owner_ref` nullable, `UNIQUE(storage_key)`); `DecodeConfig` OOM gate + Orientation normalize + EXIF strip; compensating Delete/SoftDelete on Insert/sign failure; in-process concurrency cap (O4 still owns IP rate limits); retention stub only (sweep = O2).
+- **Scope:** Migration `003` `metaldogs_assets` (`owner_ref` nullable, `UNIQUE(storage_key)`); `DecodeConfig` OOM gate + Orientation normalize + EXIF strip; SoftDelete-first compensating cleanup; in-process concurrency cap (`replicas × 4`, not IP — O4); retention stub only (sweep + orphan-blob reconcile = O2).
 - **Tests:** Feature: happy / wrong MIME / WebP / dims / corrupt / 413 / missing / nil 503; unit: IHDR bomb, Orientation=6, cleanup paths; DSN Insert/Get/SoftDelete + unique key.
 - **Safe delivery:** Flagged; storage private; unauthenticated until C3 (`owner_ref` reserved); no sweep yet — ops must treat unattached uploads as sticky until O2.
 - **Docs:** Limits + split TTL fields in `architecture/api.md`; ADR-0004 Put call site; CR-12.
