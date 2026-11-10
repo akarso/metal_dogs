@@ -1,7 +1,8 @@
 # ADR-0007: Guest designs are protected by per-design capability tokens
 
-- **Status:** Proposed (to be Accepted at close of `C3`)
+- **Status:** Accepted (C3 / CR-13)
 - **Date:** 2026-10-15
+- **Accepted:** 2026-11-10
 - **Related slices:** `C3`, `C4`, `C5`, `C6`, `E2`, `S2`, `S3`
 - **Related ADRs:** [ADR-0002](0002-storefront-customizer-and-shopanda-checkout.md), [ADR-0004](0004-private-object-storage-signed-urls.md)
 
@@ -35,5 +36,6 @@ MVP has no customer accounts (out of scope unless required for sales). Shopanda 
 
 ## Compliance
 
-- Feature tests: missing/wrong token → `404`; token in query string rejected; token never appears in logs (log capture assertion).
-- Unit test: token entropy ≥ 256 bits; only hash persisted.
+- Feature tests: missing/wrong token → `404`; token in query string rejected; token never appears in logs (log capture assertion — follow-up if access-log harness lands).
+- Unit test: token entropy ≥ 256 bits (32 CSPRNG bytes); only hash persisted.
+- `storefront.AuthMiddleware` skips JWT parsing for `/api/customizer/*` Bearer credentials so owner tokens are not rejected as malformed Shopanda JWTs (covered by middleware + create→GET→PATCH stack test).

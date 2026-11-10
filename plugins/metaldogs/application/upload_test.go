@@ -69,6 +69,42 @@ func (m *memAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) er
 	return nil
 }
 
+func (m *memAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[assetID]
+	if !ok || a.DeletedAt != nil || a.Type != domain.AssetTypeSource || a.OwnerRef != "" {
+		return ports.ErrAssetBindConflict
+	}
+	a.OwnerRef = ownerRef
+	a.DeleteAfter = deleteAfter
+	m.byID[assetID] = a
+	return nil
+}
+
+func (m *memAssetRepo) ClearOwnerRef(_ context.Context, assetID, ownerRef string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[assetID]
+	if !ok || a.OwnerRef != ownerRef || a.DeletedAt != nil {
+		return ports.ErrAssetBindConflict
+	}
+	a.OwnerRef = ""
+	m.byID[assetID] = a
+	return nil
+}
+func (m *memAssetRepo) ClearStorageKey(_ context.Context, assetID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[assetID]
+	if !ok || a.DeletedAt == nil {
+		return fmt.Errorf("clear storage_key: not soft-deleted or missing")
+	}
+	a.StorageKey = ""
+	m.byID[assetID] = a
+	return nil
+}
+
 type memBlobStore struct {
 	mu        sync.Mutex
 	objects   map[string][]byte

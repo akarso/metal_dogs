@@ -47,6 +47,9 @@ plugins/metaldogs/
 | `GET` | `/api/customizer/templates` | public | Published catalog (`?genre=`); DTO without prompts/model; `thumbnail_url` null until asset ingest |
 | `GET` | `/api/customizer/templates/{id}` | public | Published UUID only; draft/unknown → `404` |
 | `POST` | `/api/customizer/uploads` | public | Multipart `file` → oriented JPEG/PNG source + signed preview; media+DB; concurrency-capped |
+| `POST` | `/api/customizer/designs` | public | Create draft + `owner_token` once; binds upload |
+| `GET` | `/api/customizer/designs/{id}` | Bearer | Design DTO; wrong token → `404` |
+| `PATCH` | `/api/customizer/designs/{id}` | Bearer | Texts / replace photo (editable statuses only) |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).
@@ -56,7 +59,8 @@ Sync job (F3 sample): `integration.sync.metaldogs.obs.ping` — platform injects
 ## Private assets (F4 / C2 / ADR-0004)
 
 - Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). First writer: `UploadService` (C2).
-- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` for C3; retention stub `delete_after=+2h`; sweep = O2).
+- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` = design UUID when attached; unattached `delete_after=+2h`, attached `+7d` from activity; sweep = O2).
+- Designs: `POST/GET/PATCH /api/customizer/designs` with ADR-0007 Bearer owner tokens (platform JWT parse skipped on `/api/customizer/*`).
 - Keys: `private/blobs/metaldogs/...` via `ports.ObjectKey`; mediastore **rejects** any other key.
 - Delivery: wrap core `media.SignedURLStorage` (inline signed GET; TTL capped ≤15m). No product shim.
 - Local: `SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media` (never FileServer); `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) outside DEV.

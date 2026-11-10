@@ -204,6 +204,37 @@ func (s *TemplateStore) GetPublishedByID(ctx context.Context, id string) (ports.
 	return t, true, nil
 }
 
+// GetPublicByID returns public-read columns for any status (pinned design text validation).
+func (s *TemplateStore) GetPublicByID(ctx context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	if id == "" {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	t, err := scanPublishedTemplate(s.db.QueryRowContext(ctx, `
+		SELECT `+publicTemplateColumns+`
+		FROM metaldogs_templates
+		WHERE id = $1
+	`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	if err != nil {
+		return ports.PublishedTemplate{}, false, err
+	}
+	return t, true, nil
+}
+
+// GetByID returns a full template row by id for any status (admin/CLI).
+func (s *TemplateStore) GetByID(ctx context.Context, id string) (domain.Template, bool, error) {
+	if id == "" {
+		return domain.Template{}, false, nil
+	}
+	return s.scanOne(ctx, s.db, `
+		SELECT `+templateColumns+`
+		FROM metaldogs_templates
+		WHERE id = $1
+	`, id)
+}
+
 func (s *TemplateStore) SetStatus(ctx context.Context, id, status string) error {
 	if id == "" {
 		return fmt.Errorf("metaldogs templates: id required")

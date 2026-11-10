@@ -84,16 +84,130 @@ func (s *AssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) err
 	return nil
 }
 
+// BindOwnerRef sets owner_ref and delete_after on an active unbound source asset.
+func (s *AssetRepo) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return bindOwnerRef(ctx, s.db, assetID, ownerRef, deleteAfter)
+}
+
+// ClearOwnerRef clears owner_ref when it matches an active row (else ErrAssetBindConflict).
+func (s *AssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
+	return clearOwnerRef(ctx, s.db, assetID, ownerRef)
+}
+
+// ClearStorageKey nulls storage_key on a soft-deleted row after the blob was removed
+// (or already absent). Refuses to clear a live (deleted_at IS NULL) row.
+func (s *AssetRepo) ClearStorageKey(ctx context.Context, assetID string) error {
+	if assetID == "" {
+		return fmt.Errorf("metaldogs assets: id required")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET storage_key = NULL
+		WHERE id = $1 AND deleted_at IS NOT NULL
+	`, assetID)
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear storage_key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear storage_key rows: %w", err)
+	}
+	if n != 1 {
+		return fmt.Errorf("metaldogs assets clear storage_key: not soft-deleted or missing")
+	}
+	return nil
+}
+
+type execContexter interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func bindOwnerRef(ctx context.Context, db execContexter, assetID, ownerRef string, deleteAfter time.Time) error {
+	if assetID == "" || ownerRef == "" || deleteAfter.IsZero() {
+		return fmt.Errorf("metaldogs assets: asset id, owner_ref, delete_after required")
+	}
+	res, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets
+		SET owner_ref = $2, delete_after = $3
+		WHERE id = $1
+		  AND deleted_at IS NULL
+		  AND type = $4
+		  AND owner_ref IS NULL
+	`, assetID, ownerRef, deleteAfter.UTC(), domain.AssetTypeSource)
+	if err != nil {
+		return fmt.Errorf("metaldogs assets bind: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs assets bind rows: %w", err)
+	}
+	if n != 1 {
+		return ports.ErrAssetBindConflict
+	}
+	return nil
+}
+
+func clearOwnerRef(ctx context.Context, db execContexter, assetID, ownerRef string) error {
+	if assetID == "" || ownerRef == "" {
+		return fmt.Errorf("metaldogs assets: asset id and owner_ref required")
+	}
+	res, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets
+		SET owner_ref = NULL
+		WHERE id = $1 AND owner_ref = $2 AND deleted_at IS NULL
+	`, assetID, ownerRef)
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear owner_ref: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear owner_ref rows: %w", err)
+	}
+	if n != 1 {
+		return ports.ErrAssetBindConflict
+	}
+	return nil
+}
+
+func softDeleteAsset(ctx context.Context, db execContexter, id string, at time.Time) error {
+	if id == "" {
+		return fmt.Errorf("metaldogs assets: id required")
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET deleted_at = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id, at.UTC())
+	if err != nil {
+		return fmt.Errorf("metaldogs assets soft delete: %w", err)
+	}
+	// Idempotent: already soft-deleted (or missing) is fine for replace after retention.
+	return nil
+}
+
+func touchAssetDeleteAfter(ctx context.Context, db execContexter, id string, deleteAfter time.Time) error {
+	if id == "" || deleteAfter.IsZero() {
+		return fmt.Errorf("metaldogs assets: id and delete_after required")
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET delete_after = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id, deleteAfter.UTC())
+	if err != nil {
+		return fmt.Errorf("metaldogs assets touch delete_after: %w", err)
+	}
+	// Zero rows: source already soft-deleted — caller may still update design texts.
+	return nil
+}
+
 type assetScanner interface {
 	Scan(dest ...any) error
 }
 
 func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	var a domain.Asset
-	var owner sql.NullString
+	var storageKey, owner sql.NullString
 	var deletedAt sql.NullTime
 	err := row.Scan(
-		&a.ID, &a.Type, &a.StorageKey, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height, &a.Checksum, &owner,
+		&a.ID, &a.Type, &storageKey, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height, &a.Checksum, &owner,
 		&a.CreatedAt, &a.DeleteAfter, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -101,6 +215,9 @@ func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	}
 	if err != nil {
 		return domain.Asset{}, false, fmt.Errorf("metaldogs assets scan: %w", err)
+	}
+	if storageKey.Valid {
+		a.StorageKey = storageKey.String
 	}
 	if owner.Valid {
 		a.OwnerRef = owner.String

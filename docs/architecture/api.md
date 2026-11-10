@@ -117,6 +117,65 @@ Do **not** treat `delete_after` as preview validity — use `preview_url_expires
 | `503` | `{"error":"unavailable"}` | No DB or AssetStore wired |
 | `500` | `{"error":"internal_error"}` | Put/insert/sign failure (after compensating cleanup) |
 
+## Designs (C3)
+
+| Method | Path | Auth | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/customizer/designs` | public | `201` design DTO + `owner_token` once |
+| `GET` | `/api/customizer/designs/{id}` | `Authorization: Bearer <owner_token>` | `200` design DTO |
+| `PATCH` | `/api/customizer/designs/{id}` | Bearer | `200` design DTO |
+
+Platform `AuthMiddleware` does **not** JWT-parse `Authorization` on `/api/customizer` and `/api/customizer/*` (owner tokens are opaque base64url, not Shopanda JWTs; scheme match is case-insensitive). Token in query string is rejected (`400`). Wrong/missing Bearer, unknown id, or past `expires_at` → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
+
+### Create body
+
+```json
+{ "template_id": "uuid", "upload_id": "uuid", "texts": { "dog_name": "Burek" } }
+```
+
+All three fields required; `template_id` / `upload_id` must be UUID-shaped (`400` otherwise). Template must be published. Upload must be an active unbound `source` asset. Editable texts validated (charset/max length); unknown keys rejected; fixed template texts merged server-side. Asset `owner_ref` set to design id; attached `delete_after` moves to 7 days from activity.
+
+`owner_token` is returned whenever `CreateBound` commits, including when post-commit preview lookup fails (empty preview). `GET` still returns `500` on asset metadata I/O errors and signs again on success.
+
+### PATCH body
+
+Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `generation_failed`, or `preview_ready` (else `409` `invalid_transition`). Text validation uses the **pinned** template row (any status). Replace-photo soft-deletes the previous source (keeps it from re-attach), binds the new upload under `SELECT … FOR UPDATE` with status/source predicates, and bumps retention.
+
+### Success DTO
+
+```json
+{
+  "id": "uuid",
+  "status": "draft",
+  "template_id": "uuid",
+  "template_version": 1,
+  "texts": { "dog_name": "Burek", "tagline": "METAL" },
+  "upload_id": "uuid",
+  "created_at": "2026-11-10T12:00:00Z",
+  "expires_at": "2026-12-10T12:00:00Z",
+  "source_preview_url": "https://…signed…",
+  "source_preview_url_expires_at": "2026-11-10T12:01:00Z",
+  "owner_token": "base64url…"
+}
+```
+
+`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` only on that soft-deleted row (missing object is success; other cleanup failures are logged). Source preview TTL is 60s when signing succeeds. If the active source row is missing/soft-deleted, `upload_id` is omitted; a live source with a signer failure keeps `upload_id` and an empty preview. Asset metadata I/O errors are `500`.
+
+### Errors
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `400` | `bad_request` | Malformed JSON / non-UUID ids / token in query / empty patch |
+| `404` | `not_found` | Unknown id / missing or wrong Bearer / expired design |
+| `409` | `invalid_transition` | PATCH in non-editable status |
+| `409` | `conflict` | Lost optimistic race (`updated_at` / source predicate); safe to retry |
+| `422` | `template_unavailable` | Create: template not published; PATCH texts: pinned row missing |
+| `422` | `upload_unavailable` | Missing/deleted/non-source upload |
+| `422` | `upload_already_attached` | Upload `owner_ref` already set |
+| `422` | `invalid_texts` | Charset / length / unknown or missing keys |
+| `503` | `unavailable` | No DB / AssetStore / catalog |
+| `500` | `internal_error` | Persistence failure |
+
 ## Safe delivery
 
-No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads require media + DB. Flag default off.
+No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads and designs require media + DB. Flag default off.

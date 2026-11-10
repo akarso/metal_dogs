@@ -1,7 +1,8 @@
 # ADR-0006: Separate status machines for `Design`, `GenerationJob`, and fulfilment
 
-- **Status:** Proposed (to be Accepted at close of `C3`)
+- **Status:** Accepted (C3 / CR-13 — Design machine + transitions; GenerationJob/fulfillment enums remain for later slices)
 - **Date:** 2026-10-15
+- **Accepted:** 2026-11-10
 - **Related slices:** `C3`, `C4`, `C6`, `E4`, `P1`–`P4`
 - **Related ADRs:** [ADR-0005](0005-immutable-order-design-snapshot.md)
 

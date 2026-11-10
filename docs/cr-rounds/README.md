@@ -63,4 +63,5 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-09 | G2 template format v1 (draft loader; nothing published) | M1 → G2 done | [`CR-09-g2-template-format.md`](CR-09-g2-template-format.md) |
 | CR-10 | G3 output validation (`generation/validate` + eval wire) | M2 → G3 done | [`CR-10-g3-output-validation.md`](CR-10-g3-output-validation.md) |
 | CR-11 | C1 templates read API (list + get published DTOs) | M2 → C1 done | [`CR-11-c1-templates-read-api.md`](CR-11-c1-templates-read-api.md) |
-| CR-12 | C2 uploads (`POST /uploads` + `metaldogs_assets`) | M2 → C2 (pending merge) | [`CR-12-c2-uploads.md`](CR-12-c2-uploads.md) |
+| CR-12 | C2 uploads (`POST /uploads` + `metaldogs_assets`) | M2 → C2 done | [`CR-12-c2-uploads.md`](CR-12-c2-uploads.md) |
+| CR-13 | C3 designs + ownership tokens | M2 → C3 (pending merge) | [`CR-13-c3-designs.md`](CR-13-c3-designs.md) |

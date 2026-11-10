@@ -275,6 +275,10 @@ func (t Template) Validate() error {
 		if f.Key == "" || f.Value == "" {
 			return fmt.Errorf("template: fixed text key and value required")
 		}
+		if _, overlap := seenKeys[f.Key]; overlap {
+			return fmt.Errorf("template: fixed key %q overlaps editable", f.Key)
+		}
+		seenKeys[f.Key] = struct{}{}
 	}
 	if t.Status != "" {
 		switch t.Status {

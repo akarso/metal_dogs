@@ -242,3 +242,16 @@ func (c *TemplateCatalog) GetPublishedByID(ctx context.Context, id string) (port
 	}
 	return c.Store.GetPublishedByID(ctx, id)
 }
+
+// GetPinnedByID returns public text-field projection for a template id at any status
+// (used to validate PATCH against the snapshotted template row; no prompt/model columns).
+func (c *TemplateCatalog) GetPinnedByID(ctx context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	if c == nil || c.Store == nil {
+		return ports.PublishedTemplate{}, false, fmt.Errorf("template catalog: store required")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	return c.Store.GetPublicByID(ctx, id)
+}

@@ -29,6 +29,11 @@ type TemplateStore interface {
 	ListPublished(ctx context.Context, genre string) ([]PublishedTemplate, error)
 	// GetPublishedByID returns a public-read projection by id, if published.
 	GetPublishedByID(ctx context.Context, id string) (PublishedTemplate, bool, error)
+	// GetPublicByID returns public-read columns for a template id at any status
+	// (pinned design text validation; never loads prompt/model columns).
+	GetPublicByID(ctx context.Context, id string) (PublishedTemplate, bool, error)
+	// GetByID returns a full template row by id regardless of status (admin/CLI).
+	GetByID(ctx context.Context, id string) (domain.Template, bool, error)
 	// SetStatus updates status (and published_at when publishing). Errors if id missing.
 	SetStatus(ctx context.Context, id, status string) error
 	// PublishExclusive retires other published + other drafts for slug and publishes id in one transaction.

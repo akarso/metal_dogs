@@ -158,6 +158,55 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_CustomizerBearerSkipped(t *testing.T) {
+	parser := &stubTokenParser{err: errors.New("jwt: malformed token")}
+	mw := storefront.AuthMiddleware(parser)
+
+	cases := []struct {
+		name   string
+		path   string
+		header string
+		wantOK bool
+	}{
+		{"canonical", "/api/customizer/designs/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "Bearer " + base64urlOwnerToken, true},
+		{"lowercase scheme", "/api/customizer/designs/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "bearer " + base64urlOwnerToken, true},
+		{"exact prefix", "/api/customizer", "Bearer " + base64urlOwnerToken, true},
+		{"sibling path still JWT", "/api/customizer-other", "Bearer " + base64urlOwnerToken, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser.lastToken = ""
+			var gotID identity.Identity
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotID = auth.IdentityFrom(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest("GET", tc.path, nil)
+			req.Header.Set("Authorization", tc.header)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if tc.wantOK {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+				}
+				if !gotID.IsGuest() {
+					t.Fatalf("expected guest, got %+v", gotID)
+				}
+				if parser.lastToken != "" {
+					t.Fatalf("JWT parser must not see customizer Bearer, got %q", parser.lastToken)
+				}
+				return
+			}
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("sibling path want 401 got %d", rec.Code)
+			}
+		})
+	}
+}
+
+// raw base64url owner-token shape (no JWT dots) — must not hit Issuer.Parse.
+const base64urlOwnerToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 func TestAuthMiddleware_MalformedHeader(t *testing.T) {
 	parser := &stubTokenParser{}
 	mw := storefront.AuthMiddleware(parser)
