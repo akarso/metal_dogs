@@ -309,12 +309,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 
 
-#### G4 · Mockup compositing — size S
+#### G4 · Mockup compositing — size S — **open** (CR-15 in progress)
 
 - **Goal:** Compose validated artwork onto a prepared black-tee mockup image within a defined print area, producing a web-sized preview PNG/WebP. No customer interaction with placement.
-- **Tests:** Golden-image tests with tolerance; print-area bounds tests.
-- **Safe delivery:** Pure function; wired in C5.
-- **Docs:** Mockup asset requirements documented; distinction preview vs production restated.
+- **Scope (partial):** `generation/mockup.Compose` (contain-scale + center; dimension cap; longest-edge ≤1024 when base exceeds it). Embedded fixture is still an **80×100 placeholder** — not a real web-sized garment base; template `output_config.print_area` not yet driving placement. Close when a real web-sized base lands (or docs stop calling the preview web-sized).
+- **Tests:** Unit: placement/bounds/letterbox+alpha; worker asserts mockup asset on fake preview_ready.
+- **Safe delivery:** Pure function; wired from generate worker in C5.
+- **Docs:** Pipeline stage contract; CR-15.
 
 #### G5 · Production artwork preparation — size M
 
@@ -358,11 +359,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; provider `fake` unless `plugins.metaldogs.generation.provider` set (C4 accepts only `fake`).
 - **Docs:** `architecture/flows/generation-pipeline.md`; runbook `generation-job-stuck-or-failed.md` → real content; ADR-0003 Accepted.
 
-#### C5 · Preview assets — size S
+#### C5 · Preview assets — size S — **open** (CR-15 in progress)
 
 - **Goal:** Design response includes signed URLs (short TTL) for `artwork_preview` and `mockup_preview`; mockup produced in the generate job after validation (G4).
-- **Tests:** Feature: URLs expire; asset of another design not retrievable; mockup exists iff artwork validated.
+- **Scope (partial):** Worker persists artwork before mockup (`PersistArtwork`); compose/key/decode permanent; mockup Put transient; prior mockup/artwork blobs deleted after soft-delete; design GET signs only when job.DesignID, asset owner_ref, and type match (lookup I/O → 500). Still blocked on G4 web-sized base for customer-quality mockups.
+- **Tests:** Unit: ownership/type/signer/I/O cases; worker mockup; Postgres CompleteSuccess mockup replace.
 - **Safe delivery:** Flagged.
+- **Docs:** `architecture/api.md` design DTO; pipeline compose stage; CR-15.
 
 #### C6 · Approve — size M
 

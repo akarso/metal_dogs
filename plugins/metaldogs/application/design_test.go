@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,7 +71,6 @@ func (m *designMemRepo) CreateBound(ctx context.Context, d domain.Design, _ time
 func (m *designMemRepo) ReplaceSource(ctx context.Context, d domain.Design, expectedOld string, expectedUpdatedAt time.Time, deleteAfter time.Time) (string, error) {
 	return "", m.UpdateEditable(ctx, d, expectedOld, expectedUpdatedAt, deleteAfter)
 }
-
 
 func copyTexts(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
@@ -305,7 +305,6 @@ func (m *bindingDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, 
 	}
 	return oldKey, nil
 }
-
 
 func publishedTpl(id string) domain.Template {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -770,7 +769,7 @@ func TestDesignService_ReplaceSource_AlreadySweptOld_NoHardCleanupLog(t *testing
 	}()
 	_ = designs.Insert(context.Background(), domain.Design{
 		ID: designID, TemplateID: tplID, TemplateVersion: 2, Status: domain.DesignDraft,
-		Texts: map[string]string{"dog_name": "Burek", "tagline": "METAL"},
+		Texts:         map[string]string{"dog_name": "Burek", "tagline": "METAL"},
 		SourceAssetID: uploadID, OwnerTokenHash: hash,
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(domain.DesignRetentionUnordered),
 	})
@@ -905,5 +904,287 @@ func TestDesignService_Get_ExpiredNotFound(t *testing.T) {
 	var de *application.DesignError
 	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrNotFound {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// designJobRepo is a GetByID-only stub for preview URL tests.
+type designJobRepo struct {
+	byID map[string]domain.GenerationJob
+}
+
+func (r *designJobRepo) Insert(context.Context, domain.GenerationJob) error { return nil }
+func (r *designJobRepo) GetByID(_ context.Context, id string) (domain.GenerationJob, bool, error) {
+	j, ok := r.byID[id]
+	return j, ok, nil
+}
+func (r *designJobRepo) GetByIdempotency(context.Context, string, string) (domain.GenerationJob, bool, error) {
+	return domain.GenerationJob{}, false, nil
+}
+func (r *designJobRepo) GetActiveByDesign(context.Context, string) (domain.GenerationJob, bool, error) {
+	return domain.GenerationJob{}, false, nil
+}
+func (r *designJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time) error {
+	return nil
+}
+func (r *designJobRepo) ClaimForWork(context.Context, string, time.Duration) (domain.GenerationJob, error) {
+	return domain.GenerationJob{}, nil
+}
+func (r *designJobRepo) ClaimLeaseExpired(context.Context, string, time.Duration) (bool, error) {
+	return false, nil
+}
+func (r *designJobRepo) InvalidateClaim(context.Context, string) error              { return nil }
+func (r *designJobRepo) Update(context.Context, domain.GenerationJob, string) error { return nil }
+func (r *designJobRepo) PersistArtwork(context.Context, domain.GenerationJob, domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return nil, nil
+}
+func (r *designJobRepo) CompleteSuccess(context.Context, domain.GenerationJob, domain.Asset, domain.Design) ([]ports.DeletedBlobRef, error) {
+	return nil, nil
+}
+func (r *designJobRepo) FinalizeSuccess(context.Context, domain.GenerationJob, domain.Design, domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return nil, nil
+}
+func (r *designJobRepo) CompleteFailure(context.Context, domain.GenerationJob, domain.Design) error {
+	return nil
+}
+func (r *designJobRepo) FailActive(context.Context, string, string, string, string, int64, time.Time) error {
+	return nil
+}
+
+type failKeySignStore struct {
+	*designBlobStore
+	failKey string
+}
+
+func (s *failKeySignStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if key == s.failKey {
+		return "", errors.New("sign failed")
+	}
+	return s.designBlobStore.SignedGetURL(ctx, key, ttl)
+}
+
+type errDesignJobRepo struct {
+	inner *designJobRepo
+	err   error
+}
+
+func (r *errDesignJobRepo) Insert(ctx context.Context, j domain.GenerationJob) error {
+	return r.inner.Insert(ctx, j)
+}
+func (r *errDesignJobRepo) GetByID(ctx context.Context, id string) (domain.GenerationJob, bool, error) {
+	if r.err != nil {
+		return domain.GenerationJob{}, false, r.err
+	}
+	return r.inner.GetByID(ctx, id)
+}
+func (r *errDesignJobRepo) GetByIdempotency(ctx context.Context, designID, key string) (domain.GenerationJob, bool, error) {
+	return r.inner.GetByIdempotency(ctx, designID, key)
+}
+func (r *errDesignJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
+	return r.inner.GetActiveByDesign(ctx, designID)
+}
+func (r *errDesignJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time) error {
+	return r.inner.BeginGenerating(ctx, j, d, at)
+}
+func (r *errDesignJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
+	return r.inner.ClaimForWork(ctx, id, lease)
+}
+func (r *errDesignJobRepo) ClaimLeaseExpired(ctx context.Context, id string, lease time.Duration) (bool, error) {
+	return r.inner.ClaimLeaseExpired(ctx, id, lease)
+}
+func (r *errDesignJobRepo) InvalidateClaim(ctx context.Context, id string) error {
+	return r.inner.InvalidateClaim(ctx, id)
+}
+func (r *errDesignJobRepo) Update(ctx context.Context, j domain.GenerationJob, expected string) error {
+	return r.inner.Update(ctx, j, expected)
+}
+func (r *errDesignJobRepo) PersistArtwork(ctx context.Context, j domain.GenerationJob, artwork domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return r.inner.PersistArtwork(ctx, j, artwork)
+}
+func (r *errDesignJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, mockup domain.Asset, design domain.Design) ([]ports.DeletedBlobRef, error) {
+	return r.inner.CompleteSuccess(ctx, j, mockup, design)
+}
+func (r *errDesignJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design, mockup domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return r.inner.FinalizeSuccess(ctx, j, design, mockup)
+}
+func (r *errDesignJobRepo) CompleteFailure(ctx context.Context, j domain.GenerationJob, design domain.Design) error {
+	return r.inner.CompleteFailure(ctx, j, design)
+}
+func (r *errDesignJobRepo) FailActive(ctx context.Context, id, designID, terminalReason, errorCode string, claimToken int64, at time.Time) error {
+	return r.inner.FailActive(ctx, id, designID, terminalReason, errorCode, claimToken, at)
+}
+
+func TestDesignService_Get_ArtworkAndMockupPreviews(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	artID := "33333333-3333-4333-8333-333333333333"
+	mockID := "44444444-4444-4444-8444-444444444444"
+	jobID := "55555555-5555-4555-8555-555555555555"
+	otherArtID := "66666666-6666-4666-8666-666666666666"
+	sourceAsArtID := "77777777-7777-4777-8777-777777777777"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src-k",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-k",
+			MimeType: "image/png", SizeBytes: 1, Width: 64, Height: 64, Checksum: "sha256:art",
+			DeleteAfter: now.Add(time.Hour),
+		},
+		mockID: {
+			ID: mockID, Type: domain.AssetTypeMockup, StorageKey: "mock-k",
+			MimeType: "image/png", SizeBytes: 1, Width: 80, Height: 100, Checksum: "sha256:mock",
+			DeleteAfter: now.Add(time.Hour),
+		},
+		otherArtID: {
+			ID: otherArtID, Type: domain.AssetTypeArtwork, StorageKey: "other-art-k", OwnerRef: "other-design",
+			MimeType: "image/png", SizeBytes: 1, Width: 64, Height: 64, Checksum: "sha256:other",
+			DeleteAfter: now.Add(time.Hour),
+		},
+		sourceAsArtID: {
+			ID: sourceAsArtID, Type: domain.AssetTypeSource, StorageKey: "src-as-art-k",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 64, Height: 64, Checksum: "sha256:src",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	jobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	store := &designBlobStore{objects: map[string][]byte{
+		"src-k": {1}, "art-k": {2}, "mock-k": {3}, "other-art-k": {4}, "src-as-art-k": {5},
+	}}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: designs, assets: assets},
+		Assets:    assets,
+		Jobs:      jobs,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store,
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.mu.Lock()
+	art := assets.byID[artID]
+	art.OwnerRef = created.ID
+	assets.byID[artID] = art
+	mock := assets.byID[mockID]
+	mock.OwnerRef = created.ID
+	assets.byID[mockID] = mock
+	srcAsArt := assets.byID[sourceAsArtID]
+	srcAsArt.OwnerRef = created.ID
+	assets.byID[sourceAsArtID] = srcAsArt
+	assets.mu.Unlock()
+
+	setPreview := func(status, artRef, mockRef, jobDesignID, jobStatus string) {
+		t.Helper()
+		d, ok, _ := designs.GetByID(context.Background(), created.ID)
+		if !ok {
+			t.Fatal("design missing")
+		}
+		d.Status = status
+		d.LatestJobID = jobID
+		_ = designs.Insert(context.Background(), d)
+		jobs.byID[jobID] = domain.GenerationJob{
+			ID: jobID, DesignID: jobDesignID, Status: jobStatus,
+			ArtworkAssetID: artRef, MockupAssetID: mockRef,
+		}
+	}
+
+	setPreview(domain.DesignPreviewReady, artID, mockID, created.ID, domain.JobSucceeded)
+	got, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL != "https://signed.example/art-k" || got.MockupPreviewURL != "https://signed.example/mock-k" {
+		t.Fatalf("urls artwork=%q mockup=%q", got.ArtworkPreviewURL, got.MockupPreviewURL)
+	}
+
+	setPreview(domain.DesignPreviewReady, otherArtID, mockID, created.ID, domain.JobSucceeded)
+	got, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL != "" || !strings.Contains(got.MockupPreviewURL, "mock-k") {
+		t.Fatalf("foreign artwork must be omitted: %+v", got)
+	}
+
+	setPreview(domain.DesignPreviewReady, sourceAsArtID, mockID, created.ID, domain.JobSucceeded)
+	got, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL != "" {
+		t.Fatalf("source-typed asset must not sign as artwork: %q", got.ArtworkPreviewURL)
+	}
+
+	setPreview(domain.DesignPreviewReady, artID, mockID, "other-design", domain.JobSucceeded)
+	got, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL != "" || got.MockupPreviewURL != "" {
+		t.Fatalf("mismatched job design must omit previews: %+v", got)
+	}
+
+	setPreview(domain.DesignPreviewReady, artID, mockID, created.ID, domain.JobFailed)
+	got, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL != "" || got.MockupPreviewURL != "" {
+		t.Fatalf("failed job must omit previews: %+v", got)
+	}
+
+	setPreview(domain.DesignPreviewReady, artID, mockID, created.ID, domain.JobSucceeded)
+	svc.Store = &failKeySignStore{designBlobStore: store, failKey: "art-k"}
+	got, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL != "" || got.MockupPreviewURL != "https://signed.example/mock-k" {
+		t.Fatalf("signer failure: %+v", got)
+	}
+	svc.Store = store
+
+	// Source GetByID succeeds once; artwork GetByID then fails → 500 path.
+	setPreview(domain.DesignPreviewReady, artID, mockID, created.ID, domain.JobSucceeded)
+	svc.Assets = &countdownAssetRepo{inner: assets, failAfter: 1}
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err == nil {
+		t.Fatal("want artwork lookup error")
+	}
+	svc.Assets = assets
+
+	// Job GetByID I/O error → 500.
+	svc.Jobs = &errDesignJobRepo{inner: jobs, err: errors.New("job db down")}
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err == nil {
+		t.Fatal("want job lookup error")
+	}
+	svc.Jobs = jobs
+
+	setPreview(domain.DesignApproved, artID, mockID, created.ID, domain.JobSucceeded)
+	got, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ArtworkPreviewURL == "" || got.MockupPreviewURL == "" {
+		t.Fatalf("approved must sign: %+v", got)
+	}
+
+	setPreview(domain.DesignDraft, artID, mockID, created.ID, domain.JobSucceeded)
+	draft, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.ArtworkPreviewURL != "" || draft.MockupPreviewURL != "" {
+		t.Fatalf("draft must omit generation previews: %+v", draft)
 	}
 }

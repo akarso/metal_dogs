@@ -171,3 +171,147 @@ func TestInvalidateClaimExec_ActiveUnmatchedErrors(t *testing.T) {
 		t.Fatalf("want unmatched active error, got %v", err)
 	}
 }
+
+func TestGenerationJobRepo_PersistArtworkAndCompleteSuccessMockup(t *testing.T) {
+	db := testutil.OpenIsolated(t, "generation_complete_mockup")
+	assets := postgres.NewAssetRepo(db)
+	designs := postgres.NewDesignRepo(db)
+	jobs := postgres.NewGenerationJobRepo(db)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	designID := "bbbbbbbb-bbbb-4ccc-8ddd-bbbbbbbbbbbb"
+	assetID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaaa"
+	seedDesignForJobs(t, designs, assets, designID, assetID, now)
+	d, _, _ := designs.GetByID(ctx, designID)
+	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	_ = d.RequestGeneration(jobID, 3, now)
+	job := domain.NewQueuedJob(jobID, designID, "idem-mock", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	art1 := domain.Asset{
+		ID: "11111111-1111-4111-8111-111111111111", Type: domain.AssetTypeArtwork,
+		StorageKey: "private/blobs/metaldogs/artwork/2026/11/a1.png",
+		MimeType:   "image/png", SizeBytes: 10, Width: 64, Height: 64,
+		Checksum: application.ChecksumSHA256Prefix + "aa", CreatedAt: now, DeleteAfter: now.Add(time.Hour),
+		OwnerRef: designID,
+	}
+	priorArt, err := jobs.PersistArtwork(ctx, claimed, art1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(priorArt) != 0 {
+		t.Fatalf("first artwork prior=%v", priorArt)
+	}
+	got, _, _ := jobs.GetByID(ctx, jobID)
+	if got.ArtworkAssetID != art1.ID || got.Status != domain.JobRunning {
+		t.Fatalf("after persist: %+v", got)
+	}
+
+	art2 := art1
+	art2.ID = "22222222-2222-4222-8222-222222222222"
+	art2.StorageKey = "private/blobs/metaldogs/artwork/2026/11/a2.png"
+	art2.Checksum = application.ChecksumSHA256Prefix + "bb"
+	priorArt, err = jobs.PersistArtwork(ctx, claimed, art2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(priorArt) != 1 || priorArt[0].AssetID != art1.ID || priorArt[0].StorageKey != art1.StorageKey {
+		t.Fatalf("replaced artwork prior=%+v", priorArt)
+	}
+	if _, ok, _ := assets.GetByID(ctx, art1.ID); ok {
+		t.Fatal("prior artwork must be soft-deleted")
+	}
+	if live, ok, _ := assets.GetByID(ctx, art2.ID); !ok || live.Type != domain.AssetTypeArtwork {
+		t.Fatalf("live artwork missing: ok=%v %+v", ok, live)
+	}
+
+	mock1 := domain.Asset{
+		ID: "33333333-3333-4333-8333-333333333333", Type: domain.AssetTypeMockup,
+		StorageKey: "private/blobs/metaldogs/mockup/2026/11/m1.png",
+		MimeType:   "image/png", SizeBytes: 10, Width: 80, Height: 100,
+		Checksum: application.ChecksumSHA256Prefix + "cc", CreatedAt: now, DeleteAfter: now.Add(time.Hour),
+		OwnerRef: designID,
+	}
+	cost := 0.0
+	claimed.ArtworkAssetID = art2.ID
+	if err := claimed.Succeed(art2.ID, mock1.ID, []byte(`{"status":"pass"}`), 1, &cost, "USD", "fake", "v1", []byte(`{}`), now); err != nil {
+		t.Fatal(err)
+	}
+	d.Status = domain.DesignPreviewReady
+	d.UpdatedAt = now
+	priorMock, err := jobs.CompleteSuccess(ctx, claimed, mock1, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(priorMock) != 0 {
+		t.Fatalf("first mockup prior=%v", priorMock)
+	}
+
+	// Second success path via FinalizeSuccess replaces mockup under unique (owner_ref, type).
+	d2, _, _ := designs.GetByID(ctx, designID)
+	if d2.Status != domain.DesignPreviewReady {
+		t.Fatalf("design status=%s", d2.Status)
+	}
+	job2ID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	_ = d2.RequestGeneration(job2ID, 3, now.Add(time.Second))
+	job2 := domain.NewQueuedJob(job2ID, designID, "idem-mock-2", "fake", 2, now.Add(time.Second), "", d2.SourceAssetID, d2.TemplateVersion, domain.TextsDigestFor(d2.Texts))
+	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention)); err != nil {
+		t.Fatal(err)
+	}
+	claimed2, err := jobs.ClaimForWork(ctx, job2ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	art3 := art2
+	art3.ID = "44444444-4444-4444-8444-444444444444"
+	art3.StorageKey = "private/blobs/metaldogs/artwork/2026/11/a3.png"
+	art3.Checksum = application.ChecksumSHA256Prefix + "dd"
+	if _, err := jobs.PersistArtwork(ctx, claimed2, art3); err != nil {
+		t.Fatal(err)
+	}
+	mock2 := mock1
+	mock2.ID = "55555555-5555-4555-8555-555555555555"
+	mock2.StorageKey = "private/blobs/metaldogs/mockup/2026/11/m2.png"
+	mock2.Checksum = application.ChecksumSHA256Prefix + "ee"
+	claimed2.ArtworkAssetID = art3.ID
+	if err := claimed2.Succeed(art3.ID, mock2.ID, []byte(`{"status":"pass"}`), 1, &cost, "USD", "fake", "v1", []byte(`{}`), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	d2.Status = domain.DesignPreviewReady
+	d2.UpdatedAt = now.Add(time.Second)
+	priorMock, err = jobs.FinalizeSuccess(ctx, claimed2, d2, mock2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(priorMock) != 1 || priorMock[0].AssetID != mock1.ID {
+		t.Fatalf("replaced mockup prior=%+v", priorMock)
+	}
+	if _, ok, _ := assets.GetByID(ctx, mock1.ID); ok {
+		t.Fatal("prior mockup must be soft-deleted")
+	}
+	liveMock, ok, _ := assets.GetByID(ctx, mock2.ID)
+	if !ok || liveMock.Type != domain.AssetTypeMockup || liveMock.OwnerRef != designID {
+		t.Fatalf("live mockup: ok=%v %+v", ok, liveMock)
+	}
+	// Exactly one live artwork and one live mockup for the design.
+	var artCount, mockCount int
+	err = db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE type = 'artwork' AND deleted_at IS NULL),
+			COUNT(*) FILTER (WHERE type = 'mockup' AND deleted_at IS NULL)
+		FROM metaldogs_assets WHERE owner_ref = $1
+	`, designID).Scan(&artCount, &mockCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artCount != 1 || mockCount != 1 {
+		t.Fatalf("live counts artwork=%d mockup=%d", artCount, mockCount)
+	}
+}

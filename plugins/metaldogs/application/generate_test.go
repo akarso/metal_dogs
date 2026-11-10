@@ -1,8 +1,15 @@
 package application_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -182,60 +189,115 @@ func (m *genJobRepo) Update(_ context.Context, j domain.GenerationJob, expectedS
 	return nil
 }
 
-func (m *genJobRepo) CompleteSuccess(_ context.Context, j domain.GenerationJob, artwork domain.Asset, design domain.Design) error {
+func (m *genJobRepo) PersistArtwork(_ context.Context, j domain.GenerationJob, artwork domain.Asset) ([]ports.DeletedBlobRef, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	curJob, ok := m.byID[j.ID]
 	if !ok || !curJob.IsActive() || curJob.ClaimToken != j.ClaimToken {
-		return ports.ErrGenerationJobStale
+		return nil, ports.ErrGenerationJobStale
 	}
+	var prior []ports.DeletedBlobRef
 	if m.assets != nil {
 		m.assets.mu.Lock()
 		for id, a := range m.assets.byID {
-			if a.OwnerRef == artwork.OwnerRef && a.Type == domain.AssetTypeArtwork && a.DeletedAt == nil {
-				now := design.UpdatedAt
+			if a.DeletedAt != nil {
+				continue
+			}
+			if a.OwnerRef == artwork.OwnerRef && a.Type == domain.AssetTypeArtwork {
+				now := artwork.CreatedAt
 				a.DeletedAt = &now
 				m.assets.byID[id] = a
+				prior = append(prior, ports.DeletedBlobRef{AssetID: id, StorageKey: a.StorageKey})
 			}
 		}
 		m.assets.mu.Unlock()
 		_ = m.assets.Insert(context.Background(), artwork)
 	}
-	m.byID[j.ID] = j
-	delete(m.active, j.DesignID)
-	m.designs.mu.Lock()
-	defer m.designs.mu.Unlock()
-	cur, ok := m.designs.byID[design.ID]
-	if !ok || cur.Status != domain.DesignGenerating {
-		return ports.ErrDesignConflict
-	}
-	cur.Status = design.Status
-	cur.UpdatedAt = design.UpdatedAt
-	m.designs.byID[design.ID] = cur
-	return nil
+	curJob.ArtworkAssetID = artwork.ID
+	m.byID[j.ID] = curJob
+	return prior, nil
 }
 
-func (m *genJobRepo) FinalizeSuccess(_ context.Context, j domain.GenerationJob, design domain.Design) error {
+func (m *genJobRepo) CompleteSuccess(_ context.Context, j domain.GenerationJob, mockupAsset domain.Asset, design domain.Design) ([]ports.DeletedBlobRef, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	curJob, ok := m.byID[j.ID]
 	if !ok || !curJob.IsActive() || curJob.ClaimToken != j.ClaimToken {
-		return ports.ErrGenerationJobStale
+		return nil, ports.ErrGenerationJobStale
 	}
-	m.byID[j.ID] = j
-	delete(m.active, j.DesignID)
+	if mockupAsset.ID == "" || mockupAsset.Type != domain.AssetTypeMockup {
+		return nil, fmt.Errorf("mockup required")
+	}
 	m.designs.mu.Lock()
 	defer m.designs.mu.Unlock()
 	cur, ok := m.designs.byID[design.ID]
-	if !ok {
-		return nil
+	if !ok || cur.Status != domain.DesignGenerating {
+		// No asset/job mutations — matches Postgres rollback on ErrDesignConflict.
+		return nil, ports.ErrDesignConflict
 	}
-	if cur.Status == domain.DesignGenerating || cur.Status == domain.DesignPreviewReady {
-		cur.Status = domain.DesignPreviewReady
-		cur.UpdatedAt = design.UpdatedAt
-		m.designs.byID[design.ID] = cur
+
+	var prior []ports.DeletedBlobRef
+	if m.assets != nil {
+		m.assets.mu.Lock()
+		for id, a := range m.assets.byID {
+			if a.DeletedAt != nil {
+				continue
+			}
+			if a.OwnerRef == mockupAsset.OwnerRef && a.Type == domain.AssetTypeMockup {
+				now := design.UpdatedAt
+				a.DeletedAt = &now
+				m.assets.byID[id] = a
+				prior = append(prior, ports.DeletedBlobRef{AssetID: id, StorageKey: a.StorageKey})
+			}
+		}
+		m.assets.mu.Unlock()
+		_ = m.assets.Insert(context.Background(), mockupAsset)
 	}
-	return nil
+	m.byID[j.ID] = j
+	delete(m.active, j.DesignID)
+	cur.Status = design.Status
+	cur.UpdatedAt = design.UpdatedAt
+	m.designs.byID[design.ID] = cur
+	return prior, nil
+}
+
+func (m *genJobRepo) FinalizeSuccess(_ context.Context, j domain.GenerationJob, design domain.Design, mockupAsset domain.Asset) ([]ports.DeletedBlobRef, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	curJob, ok := m.byID[j.ID]
+	if !ok || !curJob.IsActive() || curJob.ClaimToken != j.ClaimToken {
+		return nil, ports.ErrGenerationJobStale
+	}
+	if mockupAsset.ID == "" || mockupAsset.Type != domain.AssetTypeMockup {
+		return nil, fmt.Errorf("mockup required")
+	}
+	m.designs.mu.Lock()
+	defer m.designs.mu.Unlock()
+	cur, ok := m.designs.byID[design.ID]
+	if !ok || (cur.Status != domain.DesignGenerating && cur.Status != domain.DesignPreviewReady) {
+		return nil, ports.ErrDesignConflict
+	}
+
+	var prior []ports.DeletedBlobRef
+	if m.assets != nil {
+		m.assets.mu.Lock()
+		for id, a := range m.assets.byID {
+			if a.OwnerRef == mockupAsset.OwnerRef && a.Type == domain.AssetTypeMockup && a.DeletedAt == nil {
+				now := design.UpdatedAt
+				a.DeletedAt = &now
+				m.assets.byID[id] = a
+				prior = append(prior, ports.DeletedBlobRef{AssetID: id, StorageKey: a.StorageKey})
+			}
+		}
+		m.assets.mu.Unlock()
+		_ = m.assets.Insert(context.Background(), mockupAsset)
+	}
+	m.byID[j.ID] = j
+	delete(m.active, j.DesignID)
+	cur.Status = domain.DesignPreviewReady
+	cur.UpdatedAt = design.UpdatedAt
+	m.designs.byID[design.ID] = cur
+	return prior, nil
 }
 
 func (m *genJobRepo) CompleteFailure(_ context.Context, j domain.GenerationJob, design domain.Design) error {
@@ -410,6 +472,13 @@ func TestGenerateWorker_FakePreviewReady(t *testing.T) {
 	art, ok, _ := assets.GetByID(context.Background(), job.ArtworkAssetID)
 	if !ok || art.Type != domain.AssetTypeArtwork || art.OwnerRef != designID {
 		t.Fatalf("%+v ok=%v", art, ok)
+	}
+	if job.MockupAssetID == "" {
+		t.Fatal("expected mockup asset id")
+	}
+	mock, ok, _ := assets.GetByID(context.Background(), job.MockupAssetID)
+	if !ok || mock.Type != domain.AssetTypeMockup || mock.OwnerRef != designID {
+		t.Fatalf("%+v ok=%v", mock, ok)
 	}
 	if prov.calls != 1 {
 		t.Fatalf("provider calls=%d", prov.calls)
@@ -635,7 +704,7 @@ func TestGenerateWorker_OverlapProcess_WinnerStaysSucceeded(t *testing.T) {
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- worker.Process(context.Background(), view.ID, designID, 1) }()
-	<-gate // first delivery entered provider
+	<-gate                                                              // first delivery entered provider
 	errCh <- worker.Process(context.Background(), view.ID, designID, 1) // peer must lose claim
 	close(release)
 	var errs [2]error
@@ -703,22 +772,24 @@ func TestGenerateWorker_LastAttemptLoadStillBrokenDoesNotAck(t *testing.T) {
 
 func TestGenerateWorker_LastAttemptLoadWithArtworkFinishes(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, assets, _, _, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, assets, store, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "load-art-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	job, _, _ := jobs.GetByID(context.Background(), view.ID)
-	_ = job.ClaimForWork(time.Now().UTC(), 0)
 	job.ArtworkAssetID = "art-already"
 	jobs.mu.Lock()
 	jobs.byID[job.ID] = job
 	jobs.mu.Unlock()
+	artKey := "private/blobs/metaldogs/artwork/x.png"
+	artPNG := tinyWhitePNG(t)
 	_ = assets.Insert(context.Background(), domain.Asset{
-		ID: "art-already", Type: domain.AssetTypeArtwork, StorageKey: "private/blobs/metaldogs/artwork/x.png",
-		MimeType: "image/png", SizeBytes: 1, Width: 1, Height: 1, Checksum: "sha256:ab",
+		ID: "art-already", Type: domain.AssetTypeArtwork, StorageKey: artKey,
+		MimeType: "image/png", SizeBytes: int64(len(artPNG)), Width: 8, Height: 8, Checksum: "sha256:ab",
 		OwnerRef: designID, DeleteAfter: time.Now().UTC().Add(time.Hour),
 	})
+	store.objects[artKey] = artPNG
 
 	broken := &failGetOnceRepo{failGetJobRepo: &failGetJobRepo{inner: jobs, failID: view.ID}}
 	worker.Jobs = broken
@@ -726,8 +797,8 @@ func TestGenerateWorker_LastAttemptLoadWithArtworkFinishes(t *testing.T) {
 		t.Fatalf("last attempt with artwork: %v", err)
 	}
 	job, _, _ = jobs.GetByID(context.Background(), view.ID)
-	if job.Status != domain.JobSucceeded || job.ArtworkAssetID != "art-already" {
-		t.Fatalf("want succeeded with artwork kept, got %+v", job)
+	if job.Status != domain.JobSucceeded || job.ArtworkAssetID != "art-already" || job.MockupAssetID == "" {
+		t.Fatalf("want succeeded with artwork+mockup, got %+v", job)
 	}
 	d, _, _ := designs.GetByID(context.Background(), designID)
 	if d.Status != domain.DesignPreviewReady {
@@ -828,11 +899,14 @@ func (f *failGetJobRepo) InvalidateClaim(ctx context.Context, id string) error {
 func (f *failGetJobRepo) Update(ctx context.Context, j domain.GenerationJob, expectedStatus string) error {
 	return f.inner.Update(ctx, j, expectedStatus)
 }
-func (f *failGetJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, artwork domain.Asset, design domain.Design) error {
-	return f.inner.CompleteSuccess(ctx, j, artwork, design)
+func (f *failGetJobRepo) PersistArtwork(ctx context.Context, j domain.GenerationJob, artwork domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return f.inner.PersistArtwork(ctx, j, artwork)
 }
-func (f *failGetJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design) error {
-	return f.inner.FinalizeSuccess(ctx, j, design)
+func (f *failGetJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, mockupAsset domain.Asset, design domain.Design) ([]ports.DeletedBlobRef, error) {
+	return f.inner.CompleteSuccess(ctx, j, mockupAsset, design)
+}
+func (f *failGetJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design, mockupAsset domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return f.inner.FinalizeSuccess(ctx, j, design, mockupAsset)
 }
 func (f *failGetJobRepo) CompleteFailure(ctx context.Context, j domain.GenerationJob, design domain.Design) error {
 	return f.inner.CompleteFailure(ctx, j, design)
@@ -850,6 +924,133 @@ func TestGenerateService_MissingIdempotencyKey(t *testing.T) {
 	var ge *application.GenerateError
 	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrBadRequest {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func tinyWhitePNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+type failMockupPutStore struct {
+	inner *designBlobStore
+	fail  bool
+}
+
+func (s *failMockupPutStore) Put(ctx context.Context, key string, r io.Reader, contentType string) error {
+	if s.fail && strings.Contains(key, "/"+domain.AssetTypeMockup+"/") {
+		return errors.New("mockup put boom")
+	}
+	return s.inner.Put(ctx, key, r, contentType)
+}
+func (s *failMockupPutStore) Read(ctx context.Context, key string) ([]byte, error) {
+	return s.inner.Read(ctx, key)
+}
+func (s *failMockupPutStore) Head(ctx context.Context, key string) error {
+	return s.inner.Head(ctx, key)
+}
+func (s *failMockupPutStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	return s.inner.SignedGetURL(ctx, key, ttl)
+}
+func (s *failMockupPutStore) Delete(ctx context.Context, key string) error {
+	return s.inner.Delete(ctx, key)
+}
+
+func TestGenerateWorker_MockupPutFails_ResumesWithoutProvider(t *testing.T) {
+	t.Parallel()
+	svc, worker, _, jobs, assets, store, prov, designID, token, _ := genFixture(t)
+	view, err := svc.RequestGenerate(context.Background(), designID, token, "mockup-put-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failStore := &failMockupPutStore{inner: store, fail: true}
+	worker.Store = failStore
+	err = worker.Process(context.Background(), view.ID, designID, 1)
+	if !errors.Is(err, application.ErrTransientGeneration) {
+		t.Fatalf("want transient mockup put, got %v", err)
+	}
+	if prov.calls != 1 {
+		t.Fatalf("provider calls=%d", prov.calls)
+	}
+	job, _, _ := jobs.GetByID(context.Background(), view.ID)
+	if job.ArtworkAssetID == "" || job.Status != domain.JobQueued {
+		t.Fatalf("want queued with artwork persisted: %+v", job)
+	}
+	if _, ok, _ := assets.GetByID(context.Background(), job.ArtworkAssetID); !ok {
+		t.Fatal("artwork asset must remain")
+	}
+	artKey := ""
+	assets.mu.Lock()
+	if a, ok := assets.byID[job.ArtworkAssetID]; ok {
+		artKey = a.StorageKey
+	}
+	assets.mu.Unlock()
+	if artKey == "" || store.objects[artKey] == nil {
+		t.Fatal("artwork blob must remain")
+	}
+
+	failStore.fail = false
+	if err := worker.Process(context.Background(), view.ID, designID, 2); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if prov.calls != 1 {
+		t.Fatalf("resume must not re-call provider, calls=%d", prov.calls)
+	}
+	job, _, _ = jobs.GetByID(context.Background(), view.ID)
+	if job.Status != domain.JobSucceeded || job.MockupAssetID == "" {
+		t.Fatalf("want succeeded with mockup: %+v", job)
+	}
+}
+
+func TestGenJobRepo_CompleteSuccess_DesignConflictLeavesPriorMockup(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	designs := &designMemRepo{byID: map[string]domain.Design{
+		"d1": {ID: "d1", Status: domain.DesignDraft, UpdatedAt: now},
+	}}
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		"mock-old": {
+			ID: "mock-old", Type: domain.AssetTypeMockup, StorageKey: "mock-old-k",
+			OwnerRef: "d1", MimeType: "image/png", SizeBytes: 1, Width: 1, Height: 1,
+			Checksum: "sha256:old", DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	jobs := newGenJobRepo(designs, assets)
+	job := domain.NewQueuedJob("j1", "d1", "k", "fake", 1, now, "", "src", 1, "dig")
+	_ = job.ClaimForWork(now, 0)
+	_ = jobs.Insert(context.Background(), job)
+	cost := 0.0
+	_ = job.Succeed("art-1", "mock-new", nil, 1, &cost, "USD", "m", "v", nil, now)
+	newMock := domain.Asset{
+		ID: "mock-new", Type: domain.AssetTypeMockup, StorageKey: "mock-new-k",
+		OwnerRef: "d1", MimeType: "image/png", SizeBytes: 1, Width: 1, Height: 1,
+		Checksum: "sha256:new", CreatedAt: now, DeleteAfter: now.Add(time.Hour),
+	}
+	_, err := jobs.CompleteSuccess(context.Background(), job, newMock, domain.Design{
+		ID: "d1", Status: domain.DesignPreviewReady, UpdatedAt: now,
+	})
+	if !errors.Is(err, ports.ErrDesignConflict) {
+		t.Fatalf("want design conflict, got %v", err)
+	}
+	got, _, _ := jobs.GetByID(context.Background(), "j1")
+	if got.Status != domain.JobRunning {
+		t.Fatalf("job must stay running: %+v", got)
+	}
+	if _, ok, _ := assets.GetByID(context.Background(), "mock-old"); !ok {
+		t.Fatal("prior mockup must stay live")
+	}
+	if _, ok, _ := assets.GetByID(context.Background(), "mock-new"); ok {
+		t.Fatal("new mockup must be absent")
 	}
 }
 

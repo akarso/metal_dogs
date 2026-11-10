@@ -60,7 +60,7 @@ flowchart LR
 | Prepare input | source bytes, template, texts | `GenerationRequest` (normalized photo, reference, prompt text with version, parameters) | Yes (given bytes) | Unit with fixtures |
 | Provider call | `GenerationRequest`, context with timeout | image bytes + provider metadata (cost, latency, model) or classified error | No | Contract tests with recorded fixtures; fake adapter |
 | Validate output | image bytes, template output config | `ValidationResult` (codes, warnings) | Yes | Unit with fixture images |
-| Compose mockup | artwork bytes, mockup base, print area | preview bytes | Yes | Golden-image tests |
+| Compose mockup | artwork bytes, mockup base, print area | preview PNG | Yes | Unit + worker (`generation/mockup.Compose`; embedded **80×100 placeholder** base + `DefaultPrintArea()`; contain-scale, center, IHDR cap; `MaxPreviewEdge` 1024 when base is larger). Not production art (G5). Template print_area wiring still open. |
 | Persist | assets, job, design | DB rows + storage objects | No | Feature tests on PostgreSQL + local storage |
 
 ## Error classification
