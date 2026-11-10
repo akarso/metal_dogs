@@ -49,11 +49,13 @@ func (m *dAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[id]
-	if !ok || a.DeletedAt != nil {
-		return ports.ErrAssetBindConflict
+	if !ok {
+		return nil
 	}
-	a.DeletedAt = &at
-	m.byID[id] = a
+	if a.DeletedAt == nil {
+		a.DeletedAt = &at
+		m.byID[id] = a
+	}
 	return nil
 }
 func (m *dAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
@@ -108,11 +110,11 @@ func (m *dDesignRepo) GetByID(_ context.Context, id string) (domain.Design, bool
 	cp.OwnerTokenHash = append([]byte(nil), d.OwnerTokenHash...)
 	return cp, true, nil
 }
-func (m *dDesignRepo) UpdateEditable(_ context.Context, d domain.Design, expectedSource string, deleteAfter time.Time) error {
+func (m *dDesignRepo) UpdateEditable(_ context.Context, d domain.Design, expectedSource string, expectedUpdatedAt time.Time, deleteAfter time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.byID[d.ID]
-	if !ok || cur.SourceAssetID != expectedSource || !(domain.Design{Status: cur.Status}).EditableForPatch() {
+	if !ok || cur.SourceAssetID != expectedSource || !cur.UpdatedAt.Equal(expectedUpdatedAt) || !(domain.Design{Status: cur.Status}).EditableForPatch() {
 		return ports.ErrDesignConflict
 	}
 	cur.Texts = d.Texts
@@ -122,7 +124,7 @@ func (m *dDesignRepo) UpdateEditable(_ context.Context, d domain.Design, expecte
 	cur.ExpiresAt = d.ExpiresAt
 	m.byID[d.ID] = cur
 	if m.assets != nil {
-		if a, ok := m.assets.byID[d.SourceAssetID]; ok {
+		if a, ok := m.assets.byID[d.SourceAssetID]; ok && a.DeletedAt == nil {
 			a.DeleteAfter = deleteAfter
 			m.assets.byID[d.SourceAssetID] = a
 		}
@@ -135,35 +137,34 @@ func (m *dDesignRepo) CreateBound(ctx context.Context, d domain.Design, deleteAf
 	}
 	return m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter)
 }
-func (m *dDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, old string, deleteAfter time.Time) error {
+func (m *dDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, old string, expectedUpdatedAt time.Time, deleteAfter time.Time) (string, error) {
+	oldKey := ""
 	if old != "" && old != d.SourceAssetID {
-		if err := m.assets.SoftDelete(ctx, old, d.UpdatedAt); err != nil {
-			return err
+		m.assets.mu.Lock()
+		if a, ok := m.assets.byID[old]; ok {
+			oldKey = a.StorageKey
 		}
+		m.assets.mu.Unlock()
+		_ = m.assets.SoftDelete(ctx, old, d.UpdatedAt)
 	}
 	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter); err != nil {
-		return err
-	}
-	return m.UpdateEditable(ctx, d, old, deleteAfter)
-}
-func (m *dDesignRepo) TouchActivity(_ context.Context, designID string, now, expiresAt time.Time, sourceAssetID string, assetDeleteAfter time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cur, ok := m.byID[designID]
-	if !ok {
-		return ports.ErrDesignConflict
-	}
-	cur.ExpiresAt = expiresAt
-	cur.UpdatedAt = now
-	m.byID[designID] = cur
-	if m.assets != nil {
-		if a, ok := m.assets.byID[sourceAssetID]; ok && a.DeletedAt == nil {
-			a.DeleteAfter = assetDeleteAfter
-			m.assets.byID[sourceAssetID] = a
+		// Roll back soft-delete in the fake to mirror Postgres txn semantics.
+		if oldKey != "" {
+			m.assets.mu.Lock()
+			if a, ok := m.assets.byID[old]; ok {
+				a.DeletedAt = nil
+				m.assets.byID[old] = a
+			}
+			m.assets.mu.Unlock()
 		}
+		return "", err
 	}
-	return nil
+	if err := m.UpdateEditable(ctx, d, old, expectedUpdatedAt, deleteAfter); err != nil {
+		return "", err
+	}
+	return oldKey, nil
 }
+
 
 type dBlob struct{ objects map[string][]byte }
 
@@ -369,19 +370,16 @@ func TestDesigns_AuthMiddlewareAllowsOwnerBearer(t *testing.T) {
 	patch, _ := json.Marshal(map[string]any{"texts": map[string]string{"dog_name": "Azor"}})
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPatch, "/api/customizer/designs/"+created.ID, bytes.NewReader(patch))
-	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	req.Header.Set("Authorization", "bearer "+created.OwnerToken) // case-insensitive scheme
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch %d %s", rec.Code, rec.Body.String())
 	}
-	assertErrAbsent := func() {
-		var body map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &body)
-		if body["error"] != nil {
-			t.Fatalf("shopanda error shape: %+v", body)
-		}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["error"] != nil {
+		t.Fatalf("shopanda error shape: %+v", body)
 	}
-	assertErrAbsent()
 }
 
 func TestDesigns_Create_BadUUIDsAndMalformedJSON(t *testing.T) {

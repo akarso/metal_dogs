@@ -73,6 +73,17 @@ func (m *tplMem) GetPublishedByID(_ context.Context, id string) (ports.Published
 	return ports.PublishedFromDomain(r), true, nil
 }
 
+func (m *tplMem) GetPublicByID(_ context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	if m.err != nil {
+		return ports.PublishedTemplate{}, false, m.err
+	}
+	r, ok := m.rows[id]
+	if !ok {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	return ports.PublishedFromDomain(r), true, nil
+}
+
 func (m *tplMem) GetByID(_ context.Context, id string) (domain.Template, bool, error) {
 	if m.err != nil {
 		return domain.Template{}, false, m.err

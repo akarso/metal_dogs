@@ -46,11 +46,11 @@ func (m *designMemRepo) GetByID(_ context.Context, id string) (domain.Design, bo
 	return cp, true, nil
 }
 
-func (m *designMemRepo) UpdateEditable(_ context.Context, d domain.Design, expectedSource string, _ time.Time) error {
+func (m *designMemRepo) UpdateEditable(_ context.Context, d domain.Design, expectedSource string, expectedUpdatedAt time.Time, _ time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.byID[d.ID]
-	if !ok || cur.SourceAssetID != expectedSource || !(domain.Design{Status: cur.Status}).EditableForPatch() {
+	if !ok || cur.SourceAssetID != expectedSource || !cur.UpdatedAt.Equal(expectedUpdatedAt) || !(domain.Design{Status: cur.Status}).EditableForPatch() {
 		return ports.ErrDesignConflict
 	}
 	cur.Texts = copyTexts(d.Texts)
@@ -66,22 +66,10 @@ func (m *designMemRepo) CreateBound(ctx context.Context, d domain.Design, _ time
 	return m.Insert(ctx, d)
 }
 
-func (m *designMemRepo) ReplaceSource(ctx context.Context, d domain.Design, expectedOld string, deleteAfter time.Time) error {
-	return m.UpdateEditable(ctx, d, expectedOld, deleteAfter)
+func (m *designMemRepo) ReplaceSource(ctx context.Context, d domain.Design, expectedOld string, expectedUpdatedAt time.Time, deleteAfter time.Time) (string, error) {
+	return "", m.UpdateEditable(ctx, d, expectedOld, expectedUpdatedAt, deleteAfter)
 }
 
-func (m *designMemRepo) TouchActivity(_ context.Context, designID string, now, expiresAt time.Time, _ string, _ time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cur, ok := m.byID[designID]
-	if !ok {
-		return ports.ErrDesignConflict
-	}
-	cur.ExpiresAt = expiresAt
-	cur.UpdatedAt = now
-	m.byID[designID] = cur
-	return nil
-}
 
 func copyTexts(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
@@ -118,11 +106,13 @@ func (m *designAssetRepo) SoftDelete(_ context.Context, id string, at time.Time)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[id]
-	if !ok || a.DeletedAt != nil {
-		return ports.ErrAssetBindConflict
+	if !ok {
+		return nil
 	}
-	a.DeletedAt = &at
-	m.byID[id] = a
+	if a.DeletedAt == nil {
+		a.DeletedAt = &at
+		m.byID[id] = a
+	}
 	return nil
 }
 func (m *designAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
@@ -213,6 +203,14 @@ func (m *designTplStore) GetPublishedByID(_ context.Context, id string) (ports.P
 	return ports.PublishedFromDomain(r), true, nil
 }
 
+func (m *designTplStore) GetPublicByID(_ context.Context, id string) (ports.PublishedTemplate, bool, error) {
+	r, ok := m.rows[id]
+	if !ok {
+		return ports.PublishedTemplate{}, false, nil
+	}
+	return ports.PublishedFromDomain(r), true, nil
+}
+
 func (m *designTplStore) GetByID(_ context.Context, id string) (domain.Template, bool, error) {
 	r, ok := m.rows[id]
 	if !ok {
@@ -233,13 +231,13 @@ func (m *bindingDesignRepo) Insert(ctx context.Context, d domain.Design) error {
 func (m *bindingDesignRepo) GetByID(ctx context.Context, id string) (domain.Design, bool, error) {
 	return m.designs.GetByID(ctx, id)
 }
-func (m *bindingDesignRepo) UpdateEditable(ctx context.Context, d domain.Design, expectedSource string, deleteAfter time.Time) error {
-	if err := m.designs.UpdateEditable(ctx, d, expectedSource, deleteAfter); err != nil {
+func (m *bindingDesignRepo) UpdateEditable(ctx context.Context, d domain.Design, expectedSource string, expectedUpdatedAt time.Time, deleteAfter time.Time) error {
+	if err := m.designs.UpdateEditable(ctx, d, expectedSource, expectedUpdatedAt, deleteAfter); err != nil {
 		return err
 	}
 	m.assets.mu.Lock()
 	defer m.assets.mu.Unlock()
-	if a, ok := m.assets.byID[d.SourceAssetID]; ok {
+	if a, ok := m.assets.byID[d.SourceAssetID]; ok && a.DeletedAt == nil {
 		a.DeleteAfter = deleteAfter
 		m.assets.byID[d.SourceAssetID] = a
 	}
@@ -251,29 +249,25 @@ func (m *bindingDesignRepo) CreateBound(ctx context.Context, d domain.Design, de
 	}
 	return m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter)
 }
-func (m *bindingDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, oldAssetID string, deleteAfter time.Time) error {
+func (m *bindingDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, oldAssetID string, expectedUpdatedAt time.Time, deleteAfter time.Time) (string, error) {
+	oldKey := ""
 	if oldAssetID != "" && oldAssetID != d.SourceAssetID {
-		if err := m.assets.SoftDelete(ctx, oldAssetID, d.UpdatedAt); err != nil {
-			return err
+		m.assets.mu.Lock()
+		if a, ok := m.assets.byID[oldAssetID]; ok {
+			oldKey = a.StorageKey
 		}
+		m.assets.mu.Unlock()
+		_ = m.assets.SoftDelete(ctx, oldAssetID, d.UpdatedAt) // idempotent
 	}
 	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter); err != nil {
-		return err
+		return "", err
 	}
-	return m.designs.UpdateEditable(ctx, d, oldAssetID, deleteAfter)
+	if err := m.designs.UpdateEditable(ctx, d, oldAssetID, expectedUpdatedAt, deleteAfter); err != nil {
+		return "", err
+	}
+	return oldKey, nil
 }
-func (m *bindingDesignRepo) TouchActivity(ctx context.Context, designID string, now, expiresAt time.Time, sourceAssetID string, assetDeleteAfter time.Time) error {
-	if err := m.designs.TouchActivity(ctx, designID, now, expiresAt, sourceAssetID, assetDeleteAfter); err != nil {
-		return err
-	}
-	m.assets.mu.Lock()
-	defer m.assets.mu.Unlock()
-	if a, ok := m.assets.byID[sourceAssetID]; ok && a.DeletedAt == nil {
-		a.DeleteAfter = assetDeleteAfter
-		m.assets.byID[sourceAssetID] = a
-	}
-	return nil
-}
+
 
 func publishedTpl(id string) domain.Template {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -451,6 +445,97 @@ func TestDesignService_Patch_PinnedRetiredTemplate(t *testing.T) {
 	})
 	if err != nil || patched.Texts["dog_name"] != "Azor" {
 		t.Fatalf("pinned retired template must still validate texts: %+v err=%v", patched, err)
+	}
+}
+
+func TestDesignService_Get_DoesNotSlideExpiresAt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111112"
+	uploadID := "22222222-2222-4222-8222-222222222223"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "k",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	clock := testutil.NewFakeClock(now)
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: designs, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"k": {1}}},
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     clock,
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantExp := created.ExpiresAt
+	clock.Advance(24 * time.Hour)
+	got, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ExpiresAt.Equal(wantExp) {
+		t.Fatalf("GET must not slide expires_at: got %v want %v", got.ExpiresAt, wantExp)
+	}
+}
+
+func TestDesignService_ReplaceSource_DeletesOldBlob(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111113"
+	uploadID := "22222222-2222-4222-8222-222222222224"
+	upload2 := "22222222-2222-4222-8222-222222222225"
+	key1 := "private/blobs/metaldogs/source/2026/11/old.jpg"
+	key2 := "private/blobs/metaldogs/source/2026/11/new.jpg"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key1,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+		upload2: {
+			ID: upload2, Type: domain.AssetTypeSource, StorageKey: key2,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:cd",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	store := &designBlobStore{objects: map[string][]byte{key1: {1}, key2: {2}}}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store,
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched, err := svc.Patch(context.Background(), created.ID, created.OwnerToken, application.PatchInput{
+		UploadID: &upload2,
+	})
+	if err != nil || patched.UploadID != upload2 {
+		t.Fatalf("%+v err=%v", patched, err)
+	}
+	if _, ok := store.objects[key1]; ok {
+		t.Fatal("old blob must be deleted after replace")
+	}
+	if _, ok := store.objects[key2]; !ok {
+		t.Fatal("new blob must remain")
+	}
+	if _, ok, _ := assets.GetByID(context.Background(), uploadID); ok {
+		t.Fatal("old asset must be soft-deleted")
 	}
 }
 

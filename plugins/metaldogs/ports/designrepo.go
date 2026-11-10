@@ -18,15 +18,14 @@ var ErrDesignConflict = errors.New("design conflict")
 type DesignRepository interface {
 	Insert(ctx context.Context, d domain.Design) error
 	GetByID(ctx context.Context, id string) (domain.Design, bool, error)
-	// UpdateEditable updates texts/status/expires under editable-status + expected source predicates
-	// and moves the attached source delete_after.
-	UpdateEditable(ctx context.Context, d domain.Design, expectedSourceAssetID string, assetDeleteAfter time.Time) error
+	// UpdateEditable updates texts/status/expires under editable-status + expected source +
+	// expectedUpdatedAt predicates, and best-effort moves attached source delete_after.
+	UpdateEditable(ctx context.Context, d domain.Design, expectedSourceAssetID string, expectedUpdatedAt time.Time, assetDeleteAfter time.Time) error
 	// CreateBound inserts the design and binds source_asset_id → owner_ref=design.id in one txn
 	// (also sets the asset delete_after to attached retention).
 	CreateBound(ctx context.Context, d domain.Design, assetDeleteAfter time.Time) error
-	// ReplaceSource locks the design, soft-deletes expectedOldAssetID, binds the new source,
-	// and updates the design when still editable with the expected prior source_asset_id.
-	ReplaceSource(ctx context.Context, d domain.Design, expectedOldAssetID string, newAssetDeleteAfter time.Time) error
-	// TouchActivity extends design expires_at and attached source delete_after.
-	TouchActivity(ctx context.Context, designID string, now, expiresAt time.Time, sourceAssetID string, assetDeleteAfter time.Time) error
+	// ReplaceSource locks the design (status/source/updated_at predicates), soft-deletes the
+	// prior source when still active, binds the new source, and updates the design.
+	// Returns the prior asset storage_key for post-commit blob delete (empty if none).
+	ReplaceSource(ctx context.Context, d domain.Design, expectedOldAssetID string, expectedUpdatedAt time.Time, newAssetDeleteAfter time.Time) (oldStorageKey string, err error)
 }

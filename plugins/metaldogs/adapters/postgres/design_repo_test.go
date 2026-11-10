@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"crypto/sha256"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,7 @@ func TestDesignRepo_ReplaceSource_ConcurrentExclusive(t *testing.T) {
 
 	type result struct {
 		which string
+		key   string
 		err   error
 	}
 	ch := make(chan result, 2)
@@ -118,15 +120,18 @@ func TestDesignRepo_ReplaceSource_ConcurrentExclusive(t *testing.T) {
 		nd.SourceAssetID = newID
 		nd.UpdatedAt = now.Add(time.Minute)
 		nd.ExpiresAt = now.Add(domain.DesignRetentionUnordered)
-		ch <- result{which: which, err: designs.ReplaceSource(ctx, nd, oldID, now.Add(domain.SourceAttachedRetention))}
+		key, err := designs.ReplaceSource(ctx, nd, oldID, now, now.Add(domain.SourceAttachedRetention))
+		ch <- result{which: which, key: key, err: err}
 	}
 	go run("A", newA)
 	go run("B", newB)
 	r1, r2 := <-ch, <-ch
 	okCount := 0
+	var winnerKey string
 	for _, r := range []result{r1, r2} {
 		if r.err == nil {
 			okCount++
+			winnerKey = r.key
 			continue
 		}
 		if r.err != ports.ErrDesignConflict && r.err != ports.ErrAssetBindConflict {
@@ -136,12 +141,19 @@ func TestDesignRepo_ReplaceSource_ConcurrentExclusive(t *testing.T) {
 	if okCount != 1 {
 		t.Fatalf("want exactly one winner, got ok=%d r1=%v r2=%v", okCount, r1.err, r2.err)
 	}
+	if winnerKey == "" || !strings.Contains(winnerKey, oldID) {
+		t.Fatalf("winner must return old storage key, got %q", winnerKey)
+	}
 	got, ok, err := designs.GetByID(ctx, designID)
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
 	if got.SourceAssetID != newA && got.SourceAssetID != newB {
 		t.Fatalf("source=%q", got.SourceAssetID)
+	}
+	winnerAsset, ok, err := assets.GetByID(ctx, got.SourceAssetID)
+	if err != nil || !ok || winnerAsset.OwnerRef != designID {
+		t.Fatalf("winner owner_ref=%q ok=%v err=%v", winnerAsset.OwnerRef, ok, err)
 	}
 	old, ok, err := assets.GetByID(ctx, oldID)
 	if err != nil {

@@ -59,6 +59,8 @@ type DesignService struct {
 	Store     ports.AssetStore
 	IDs       ports.IDGenerator
 	Clock     ports.Clock
+	// OnCleanupError is optional; op is "delete"; never pass URLs or tokens.
+	OnCleanupError func(op, assetID, storageKey string, err error)
 }
 
 // CreateInput is the public create payload.
@@ -77,6 +79,13 @@ type PatchInput struct {
 func (s *DesignService) depsReady() bool {
 	return s != nil && s.Designs != nil && s.Assets != nil && s.Templates != nil &&
 		s.Store != nil && s.IDs != nil && s.Clock != nil
+}
+
+func (s *DesignService) cleanupErr(op, assetID, storageKey string, err error) {
+	if err == nil || s.OnCleanupError == nil {
+		return
+	}
+	s.OnCleanupError(op, assetID, storageKey, err)
 }
 
 // Create builds a draft design, binds the upload, and returns the owner token once.
@@ -146,12 +155,13 @@ func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView,
 }
 
 // Get returns a design when the bearer token matches and the design has not expired.
+// GET is read-only: design expires_at is not slid by reads (retention table: 30d from create /
+// last mutating activity).
 func (s *DesignService) Get(ctx context.Context, id, bearerToken string) (DesignView, error) {
 	d, now, err := s.loadAuthorized(ctx, id, bearerToken)
 	if err != nil {
 		return DesignView{}, err
 	}
-	d = s.bumpActivity(ctx, d, now)
 	return s.toView(ctx, d, now), nil
 }
 
@@ -161,9 +171,11 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 	if err != nil {
 		return DesignView{}, err
 	}
+	expectedUpdatedAt := d.UpdatedAt
 	oldAsset := d.SourceAssetID
 	changedPhoto := false
 	assetDeleteAfter := now.Add(domain.SourceAttachedRetention)
+	// Mutating activity slides design retention (not GET).
 	d.ExpiresAt = now.Add(domain.DesignRetentionUnordered)
 
 	if in.Texts != nil {
@@ -215,7 +227,8 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 	}
 
 	if changedPhoto {
-		if err := s.Designs.ReplaceSource(ctx, d, oldAsset, assetDeleteAfter); err != nil {
+		oldKey, err := s.Designs.ReplaceSource(ctx, d, oldAsset, expectedUpdatedAt, assetDeleteAfter)
+		if err != nil {
 			if errors.Is(err, ports.ErrAssetBindConflict) {
 				return DesignView{}, &DesignError{Code: DesignErrUploadAlreadyAttached, Message: "upload already attached"}
 			}
@@ -224,8 +237,13 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 			}
 			return DesignView{}, fmt.Errorf("design: replace source: %w", err)
 		}
+		if oldKey != "" {
+			if delErr := s.Store.Delete(ctx, oldKey); delErr != nil {
+				s.cleanupErr("delete", oldAsset, oldKey, delErr)
+			}
+		}
 	} else {
-		if err := s.Designs.UpdateEditable(ctx, d, oldAsset, assetDeleteAfter); err != nil {
+		if err := s.Designs.UpdateEditable(ctx, d, oldAsset, expectedUpdatedAt, assetDeleteAfter); err != nil {
 			if errors.Is(err, ports.ErrDesignConflict) {
 				return DesignView{}, &DesignError{Code: DesignErrInvalidTransition, Message: "design conflict"}
 			}
@@ -256,17 +274,6 @@ func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken stri
 		return domain.Design{}, now, &DesignError{Code: DesignErrNotFound, Message: "not found"}
 	}
 	return d, now, nil
-}
-
-func (s *DesignService) bumpActivity(ctx context.Context, d domain.Design, now time.Time) domain.Design {
-	expires := now.Add(domain.DesignRetentionUnordered)
-	assetAfter := now.Add(domain.SourceAttachedRetention)
-	if err := s.Designs.TouchActivity(ctx, d.ID, now, expires, d.SourceAssetID, assetAfter); err != nil {
-		return d
-	}
-	d.ExpiresAt = expires
-	d.UpdatedAt = now
-	return d
 }
 
 // toView never fails the caller after persistence: signing soft-fails to empty preview.

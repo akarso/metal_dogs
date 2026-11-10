@@ -149,20 +149,14 @@ func softDeleteAsset(ctx context.Context, db execContexter, id string, at time.T
 	if id == "" {
 		return fmt.Errorf("metaldogs assets: id required")
 	}
-	res, err := db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		UPDATE metaldogs_assets SET deleted_at = $2
 		WHERE id = $1 AND deleted_at IS NULL
 	`, id, at.UTC())
 	if err != nil {
 		return fmt.Errorf("metaldogs assets soft delete: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ports.ErrAssetBindConflict
-	}
+	// Idempotent: already soft-deleted (or missing) is fine for replace after retention.
 	return nil
 }
 
@@ -170,20 +164,14 @@ func touchAssetDeleteAfter(ctx context.Context, db execContexter, id string, del
 	if id == "" || deleteAfter.IsZero() {
 		return fmt.Errorf("metaldogs assets: id and delete_after required")
 	}
-	res, err := db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		UPDATE metaldogs_assets SET delete_after = $2
 		WHERE id = $1 AND deleted_at IS NULL
 	`, id, deleteAfter.UTC())
 	if err != nil {
 		return fmt.Errorf("metaldogs assets touch delete_after: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ports.ErrAssetBindConflict
-	}
+	// Zero rows: source already soft-deleted — caller may still update design texts.
 	return nil
 }
 

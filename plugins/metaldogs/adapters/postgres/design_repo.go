@@ -48,19 +48,18 @@ func (r *DesignRepo) GetByID(ctx context.Context, id string) (domain.Design, boo
 	return scanDesign(row)
 }
 
-// UpdateEditable updates texts/status/expires when still editable with the expected source.
-func (r *DesignRepo) UpdateEditable(ctx context.Context, d domain.Design, expectedSourceAssetID string, assetDeleteAfter time.Time) error {
+// UpdateEditable updates texts/status/expires when still editable with expected source + updated_at.
+func (r *DesignRepo) UpdateEditable(ctx context.Context, d domain.Design, expectedSourceAssetID string, expectedUpdatedAt time.Time, assetDeleteAfter time.Time) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("metaldogs designs begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := updateEditable(ctx, tx, d, expectedSourceAssetID); err != nil {
+	if err := updateEditable(ctx, tx, d, expectedSourceAssetID, expectedUpdatedAt); err != nil {
 		return err
 	}
-	if err := touchAssetDeleteAfter(ctx, tx, d.SourceAssetID, assetDeleteAfter); err != nil {
-		return err
-	}
+	// Best-effort: source may already be soft-deleted by retention; text edits still commit.
+	_ = touchAssetDeleteAfter(ctx, tx, d.SourceAssetID, assetDeleteAfter)
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("metaldogs designs update commit: %w", err)
 	}
@@ -87,78 +86,63 @@ func (r *DesignRepo) CreateBound(ctx context.Context, d domain.Design, assetDele
 }
 
 // ReplaceSource locks the design, soft-deletes the prior source, binds the new one, updates the row.
-func (r *DesignRepo) ReplaceSource(ctx context.Context, d domain.Design, expectedOldAssetID string, newAssetDeleteAfter time.Time) error {
+func (r *DesignRepo) ReplaceSource(ctx context.Context, d domain.Design, expectedOldAssetID string, expectedUpdatedAt time.Time, newAssetDeleteAfter time.Time) (string, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("metaldogs designs begin: %w", err)
+		return "", fmt.Errorf("metaldogs designs begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	var curStatus, curSource string
+	var curUpdated time.Time
 	err = tx.QueryRowContext(ctx, `
-		SELECT status, source_asset_id FROM metaldogs_designs WHERE id = $1 FOR UPDATE
-	`, d.ID).Scan(&curStatus, &curSource)
+		SELECT status, source_asset_id, updated_at FROM metaldogs_designs WHERE id = $1 FOR UPDATE
+	`, d.ID).Scan(&curStatus, &curSource, &curUpdated)
 	if err == sql.ErrNoRows {
-		return ports.ErrDesignConflict
+		return "", ports.ErrDesignConflict
 	}
 	if err != nil {
-		return fmt.Errorf("metaldogs designs lock: %w", err)
+		return "", fmt.Errorf("metaldogs designs lock: %w", err)
 	}
 	if !(domain.Design{Status: curStatus}).EditableForPatch() {
-		return ports.ErrDesignConflict
+		return "", ports.ErrDesignConflict
 	}
 	if curSource != expectedOldAssetID {
-		return ports.ErrDesignConflict
+		return "", ports.ErrDesignConflict
 	}
+	if !curUpdated.UTC().Equal(expectedUpdatedAt.UTC()) {
+		return "", ports.ErrDesignConflict
+	}
+
+	oldKey := ""
 	if expectedOldAssetID != "" && expectedOldAssetID != d.SourceAssetID {
+		key, err := assetStorageKey(ctx, tx, expectedOldAssetID)
+		if err != nil {
+			return "", err
+		}
+		oldKey = key
 		if err := softDeleteAsset(ctx, tx, expectedOldAssetID, d.UpdatedAt); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if err := bindOwnerRef(ctx, tx, d.SourceAssetID, d.ID, newAssetDeleteAfter); err != nil {
-		return err
+		return "", err
 	}
-	if err := updateEditable(ctx, tx, d, expectedOldAssetID); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("metaldogs designs commit: %w", err)
-	}
-	return nil
-}
-
-// TouchActivity extends design expires_at and attached source delete_after.
-func (r *DesignRepo) TouchActivity(ctx context.Context, designID string, now, expiresAt time.Time, sourceAssetID string, assetDeleteAfter time.Time) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("metaldogs designs begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE metaldogs_designs SET expires_at = $2, updated_at = $3
-		WHERE id = $1
-	`, designID, expiresAt.UTC(), now.UTC())
-	if err != nil {
-		return fmt.Errorf("metaldogs designs touch: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ports.ErrDesignConflict
-	}
-	if err := touchAssetDeleteAfter(ctx, tx, sourceAssetID, assetDeleteAfter); err != nil {
-		return err
+	if err := updateEditable(ctx, tx, d, expectedOldAssetID, expectedUpdatedAt); err != nil {
+		return "", err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("metaldogs designs touch commit: %w", err)
+		return "", fmt.Errorf("metaldogs designs commit: %w", err)
 	}
-	return nil
+	return oldKey, nil
 }
 
 type designExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+type designQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 func insertDesign(ctx context.Context, db designExecer, d domain.Design) error {
@@ -200,7 +184,7 @@ func insertDesign(ctx context.Context, db designExecer, d domain.Design) error {
 	return nil
 }
 
-func updateEditable(ctx context.Context, db designExecer, d domain.Design, expectedSourceAssetID string) error {
+func updateEditable(ctx context.Context, db designExecer, d domain.Design, expectedSourceAssetID string, expectedUpdatedAt time.Time) error {
 	texts, err := json.Marshal(d.Texts)
 	if err != nil {
 		return err
@@ -211,7 +195,9 @@ func updateEditable(ctx context.Context, db designExecer, d domain.Design, expec
 		WHERE id = $1
 		  AND status IN `+editableStatusesSQL+`
 		  AND source_asset_id = $7
-	`, d.ID, texts, d.SourceAssetID, d.Status, d.UpdatedAt.UTC(), d.ExpiresAt.UTC(), expectedSourceAssetID)
+		  AND updated_at = $8
+	`, d.ID, texts, d.SourceAssetID, d.Status, d.UpdatedAt.UTC(), d.ExpiresAt.UTC(),
+		expectedSourceAssetID, expectedUpdatedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("metaldogs designs update: %w", err)
 	}
@@ -223,6 +209,20 @@ func updateEditable(ctx context.Context, db designExecer, d domain.Design, expec
 		return ports.ErrDesignConflict
 	}
 	return nil
+}
+
+func assetStorageKey(ctx context.Context, db designQuerier, id string) (string, error) {
+	var key string
+	err := db.QueryRowContext(ctx, `
+		SELECT storage_key FROM metaldogs_assets WHERE id = $1
+	`, id).Scan(&key)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("metaldogs assets storage_key: %w", err)
+	}
+	return key, nil
 }
 
 type designScanner interface {

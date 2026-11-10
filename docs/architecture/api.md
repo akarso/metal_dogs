@@ -125,7 +125,7 @@ Do **not** treat `delete_after` as preview validity — use `preview_url_expires
 | `GET` | `/api/customizer/designs/{id}` | `Authorization: Bearer <owner_token>` | `200` design DTO |
 | `PATCH` | `/api/customizer/designs/{id}` | Bearer | `200` design DTO |
 
-Platform `AuthMiddleware` does **not** JWT-parse `Authorization` on `/api/customizer/*` (owner tokens are opaque base64url, not Shopanda JWTs). Token in query string is rejected (`400`). Wrong/missing Bearer, unknown id, or past `expires_at` → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
+Platform `AuthMiddleware` does **not** JWT-parse `Authorization` on `/api/customizer` and `/api/customizer/*` (owner tokens are opaque base64url, not Shopanda JWTs; scheme match is case-insensitive). Token in query string is rejected (`400`). Wrong/missing Bearer, unknown id, or past `expires_at` → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
 
 ### Create body
 
@@ -159,7 +159,7 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 }
 ```
 
-`owner_token` appears only on create. `expires_at` is design retention (30d from last activity). Attached source retention is 7d from last activity. Source preview TTL is 60s when signing succeeds.
+`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row and deletes its storage object (cleanup failure is logged). Source preview TTL is 60s when signing succeeds.
 
 ### Errors
 

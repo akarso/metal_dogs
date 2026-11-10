@@ -78,7 +78,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
 		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
-		p.designs = newDesignService(store, app.Bootstrap.DB, templates)
+		p.designs = newDesignService(store, app.Bootstrap.DB, templates, app.Logger)
 	}
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
@@ -136,11 +136,11 @@ func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *ap
 	return svc
 }
 
-func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog) *application.DesignService {
+func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, log logger.Logger) *application.DesignService {
 	if store == nil || db == nil || templates == nil {
 		return nil
 	}
-	return &application.DesignService{
+	svc := &application.DesignService{
 		Designs:   postgres.NewDesignRepo(db),
 		Assets:    postgres.NewAssetRepo(db),
 		Templates: templates,
@@ -148,4 +148,14 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 		IDs:       ports.UUIDGenerator{},
 		Clock:     ports.SystemClock{},
 	}
+	if log != nil {
+		svc.OnCleanupError = func(op, assetID, storageKey string, err error) {
+			log.Error("metaldogs.design.cleanup_failed", err, map[string]interface{}{
+				"op":          op,
+				"asset_id":    assetID,
+				"storage_key": storageKey,
+			})
+		}
+	}
+	return svc
 }
