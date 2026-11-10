@@ -1,7 +1,8 @@
 # ADR-0007: Guest designs are protected by per-design capability tokens
 
-- **Status:** Proposed (to be Accepted at close of `C3`)
+- **Status:** Accepted (C3 / CR-13)
 - **Date:** 2026-10-15
+- **Accepted:** 2026-11-10
 - **Related slices:** `C3`, `C4`, `C5`, `C6`, `E2`, `S2`, `S3`
 - **Related ADRs:** [ADR-0002](0002-storefront-customizer-and-shopanda-checkout.md), [ADR-0004](0004-private-object-storage-signed-urls.md)
 

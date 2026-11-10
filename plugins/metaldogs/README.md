@@ -47,6 +47,9 @@ plugins/metaldogs/
 | `GET` | `/api/customizer/templates` | public | Published catalog (`?genre=`); DTO without prompts/model; `thumbnail_url` null until asset ingest |
 | `GET` | `/api/customizer/templates/{id}` | public | Published UUID only; draft/unknown → `404` |
 | `POST` | `/api/customizer/uploads` | public | Multipart `file` → oriented JPEG/PNG source + signed preview; media+DB; concurrency-capped |
+| `POST` | `/api/customizer/designs` | public | Create draft + `owner_token` once; binds upload |
+| `GET` | `/api/customizer/designs/{id}` | Bearer | Design DTO; wrong token → `404` |
+| `PATCH` | `/api/customizer/designs/{id}` | Bearer | Texts / replace photo (editable statuses only) |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).

@@ -105,7 +105,7 @@ erDiagram
         int width
         int height
         string checksum "sha256:<hex>"
-        string owner_ref "nullable; C3 capability/session bind"
+        string owner_ref "nullable; design UUID when attached (C3)"
         timestamptz created_at
         timestamptz delete_after "retention"
         timestamptz deleted_at

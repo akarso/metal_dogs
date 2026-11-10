@@ -117,6 +117,62 @@ Do **not** treat `delete_after` as preview validity — use `preview_url_expires
 | `503` | `{"error":"unavailable"}` | No DB or AssetStore wired |
 | `500` | `{"error":"internal_error"}` | Put/insert/sign failure (after compensating cleanup) |
 
+## Designs (C3)
+
+| Method | Path | Auth | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/customizer/designs` | public | `201` design DTO + `owner_token` once |
+| `GET` | `/api/customizer/designs/{id}` | `Authorization: Bearer <owner_token>` | `200` design DTO |
+| `PATCH` | `/api/customizer/designs/{id}` | Bearer | `200` design DTO |
+
+Token in query string is rejected (`400`). Wrong/missing Bearer or unknown id → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
+
+### Create body
+
+```json
+{ "template_id": "uuid", "upload_id": "uuid", "texts": { "dog_name": "Burek" } }
+```
+
+All three fields required. Template must be published. Upload must be an active unbound `source` asset. Editable texts validated (charset/max length); unknown keys rejected; fixed template texts merged server-side. Asset `owner_ref` set to design id.
+
+### PATCH body
+
+Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `generation_failed`, or `preview_ready` (else `409` `invalid_transition`). Replace-photo clears previous asset `owner_ref` and binds the new upload.
+
+### Success DTO
+
+```json
+{
+  "id": "uuid",
+  "status": "draft",
+  "template_id": "uuid",
+  "template_version": 1,
+  "texts": { "dog_name": "Burek", "tagline": "METAL" },
+  "upload_id": "uuid",
+  "created_at": "2026-11-10T12:00:00Z",
+  "expires_at": "2026-12-10T12:00:00Z",
+  "source_preview_url": "https://…signed…",
+  "source_preview_url_expires_at": "2026-11-10T12:01:00Z",
+  "owner_token": "base64url…"
+}
+```
+
+`owner_token` appears only on create. `expires_at` is design retention (30d unordered). Source preview TTL is 60s.
+
+### Errors
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `400` | `bad_request` | Malformed JSON / token in query / empty patch |
+| `404` | `not_found` | Unknown id / missing or wrong Bearer |
+| `409` | `invalid_transition` | PATCH in non-editable status |
+| `422` | `template_unavailable` | Template not published |
+| `422` | `upload_unavailable` | Missing/deleted/non-source upload |
+| `422` | `upload_already_attached` | Upload `owner_ref` already set |
+| `422` | `invalid_texts` | Charset / length / unknown or missing keys |
+| `503` | `unavailable` | No DB / AssetStore / catalog |
+| `500` | `internal_error` | Persistence or sign failure |
+
 ## Safe delivery
 
-No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads require media + DB. Flag default off.
+No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads and designs require media + DB. Flag default off.

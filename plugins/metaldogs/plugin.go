@@ -21,6 +21,7 @@ const PluginName = "metaldogs"
 type Plugin struct {
 	assets  ports.AssetStore
 	uploads *application.UploadService
+	designs *application.DesignService
 }
 
 // New returns the Metal Dogs plugin.
@@ -36,6 +37,10 @@ func (p *Plugin) AssetStore() ports.AssetStore { return p.assets }
 // UploadService returns the upload use case wired during Init (nil before Init,
 // without media, or without Bootstrap.DB).
 func (p *Plugin) UploadService() *application.UploadService { return p.uploads }
+
+// DesignService returns the design use case wired during Init (nil before Init,
+// without media, or without Bootstrap.DB).
+func (p *Plugin) DesignService() *application.DesignService { return p.designs }
 
 // Init registers CLI always when enabled. HTTP routes, obs.ping, and AssetStore
 // require media SignedURLStorage (F4 fail-closed). Without media, Init still
@@ -65,13 +70,15 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	p.assets = store
 
-	// Wire catalog/uploads once at Init when Bootstrap.DB is present. Nil deps →
+	// Wire catalog/uploads/designs once at Init when Bootstrap.DB is present. Nil deps →
 	// handlers return 503 (unit tests register routes without DB).
 	var templates *application.TemplateCatalog
 	p.uploads = nil
+	p.designs = nil
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
 		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
+		p.designs = newDesignService(store, app.Bootstrap.DB, templates)
 	}
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
@@ -88,6 +95,15 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if err := app.RegisterPublicRoute("POST /api/customizer/uploads", httpapi.CreateUpload(p.uploads)); err != nil {
 		return fmt.Errorf("metaldogs plugin: uploads route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/designs", httpapi.CreateDesign(p.designs)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs create route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("GET /api/customizer/designs/{id}", httpapi.GetDesign(p.designs)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs get route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("PATCH /api/customizer/designs/{id}", httpapi.PatchDesign(p.designs)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs patch route: %w", err)
 	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
@@ -118,4 +134,18 @@ func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *ap
 		}
 	}
 	return svc
+}
+
+func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog) *application.DesignService {
+	if store == nil || db == nil || templates == nil {
+		return nil
+	}
+	return &application.DesignService{
+		Designs:   postgres.NewDesignRepo(db),
+		Assets:    postgres.NewAssetRepo(db),
+		Templates: templates,
+		Store:     store,
+		IDs:       ports.UUIDGenerator{},
+		Clock:     ports.SystemClock{},
+	}
 }

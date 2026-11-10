@@ -334,7 +334,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; no published templates exist yet.
 - **Docs:** API contract in `architecture/api.md` (created here); CR-11.
 
-#### C2 · Uploads — size M — **DONE pending merge** (CR-12 / PR #24)
+#### C2 · Uploads — size M — **DONE** (CR-12 / PR #24)
 
 - **Goal:** `POST /api/customizer/uploads` (multipart) → `SourceAsset` in private storage; server-side checks: size limit, real MIME by sniffing, decode to verify format and dimensions, min/max dimensions, EXIF stripped, re-encoded; returns `upload_id` and a short-lived signed preview URL; uploads expire if not attached to a design (O2).
 - **Scope:** Migration `003` `metaldogs_assets` (`owner_ref` nullable, `UNIQUE(storage_key)`); `DecodeConfig` OOM gate + Orientation normalize + EXIF strip; SoftDelete-first compensating cleanup; in-process concurrency cap (`replicas × 4`, not IP — O4); retention stub only (sweep + orphan-blob reconcile = O2).
@@ -342,13 +342,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; storage private; unauthenticated until C3 (`owner_ref` reserved); no sweep yet — ops must treat unattached uploads as sticky until O2.
 - **Docs:** Limits + split TTL fields in `architecture/api.md`; ADR-0004 Put call site; CR-12.
 
-#### C3 · Designs and ownership token — size M
+#### C3 · Designs and ownership token — size M — **DONE pending merge** (CR-13)
 
 - **Goal:** `POST /api/customizer/designs` with `template_id`, texts, `upload_id` → `Design` in `draft` with a capability token (ADR-0007) returned once; `GET /api/customizer/designs/{id}` requires the token; `PATCH` texts/upload allowed only in `draft`/`generation_failed`/`preview_ready`.
-- **Scope:** Domain `Design` aggregate with status machine (see `architecture/domain-model.md`), text validation per template field rules, template version pinned at creation.
-- **Tests:** Unit: status transitions (valid and invalid), text validation table-driven; feature: unauthorized access → `404` (not `403`, to avoid enumeration), token rotation not supported, template draft → `422`.
+- **Scope:** Migration `004` `metaldogs_designs`; domain Design + text charset validation; Bearer token (hash only stored); bind upload `owner_ref` to design id; signed source preview on DTO.
+- **Tests:** Unit: status transitions, texts, token hash; feature: create+token, Bearer GET/PATCH, 404 auth, unpublished template 422; DSN CreateBound + bind exclusivity.
 - **Safe delivery:** Flagged.
-- **Docs:** ADR-0006, ADR-0007 → Accepted; state diagram updated.
+- **Docs:** ADR-0006, ADR-0007 → Accepted; api.md designs; CR-13.
 
 #### C4 · Generate job and status polling — size L
 
