@@ -1,14 +1,17 @@
 package metaldogs
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -19,9 +22,11 @@ const PluginName = "metaldogs"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets  ports.AssetStore
-	uploads *application.UploadService
-	designs *application.DesignService
+	assets   ports.AssetStore
+	uploads  *application.UploadService
+	designs  *application.DesignService
+	generate *application.GenerateService
+	worker   *application.GenerateWorker
 }
 
 // New returns the Metal Dogs plugin.
@@ -42,6 +47,9 @@ func (p *Plugin) UploadService() *application.UploadService { return p.uploads }
 // without media, or without Bootstrap.DB).
 func (p *Plugin) DesignService() *application.DesignService { return p.designs }
 
+// GenerateService returns the generate use case wired during Init.
+func (p *Plugin) GenerateService() *application.GenerateService { return p.generate }
+
 // Init registers CLI always when enabled. HTTP routes, obs.ping, and AssetStore
 // require media SignedURLStorage (F4 fail-closed). Without media, Init still
 // succeeds so offline metaldogs:eval works, but no customizer HTTP is mounted.
@@ -54,6 +62,23 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if !app.Config.Plugins.MetalDogs.Enabled {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
+	}
+
+	genCfg := app.Config.Plugins.MetalDogs.Generation
+	providerName := strings.TrimSpace(genCfg.Provider)
+	if providerName == "" {
+		providerName = "fake"
+	}
+	if providerName != "fake" {
+		return fmt.Errorf("metaldogs plugin: generation.provider %q not supported in C4 (use fake)", providerName)
+	}
+	maxRetries := genCfg.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	maxAttempts := genCfg.MaxAttemptsPerDesign
+	if maxAttempts <= 0 {
+		maxAttempts = 3
 	}
 
 	registerCLICommands(app)
@@ -70,15 +95,21 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	p.assets = store
 
-	// Wire catalog/uploads/designs once at Init when Bootstrap.DB is present. Nil deps →
-	// handlers return 503 (unit tests register routes without DB).
+	// Wire catalog/uploads/designs/generate once at Init when Bootstrap.DB is present.
 	var templates *application.TemplateCatalog
 	p.uploads = nil
 	p.designs = nil
+	p.generate = nil
+	p.worker = nil
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
 		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
 		p.designs = newDesignService(store, app.Bootstrap.DB, templates, app.Logger)
+		var genErr error
+		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts)
+		if genErr != nil {
+			return fmt.Errorf("metaldogs plugin: generate services: %w", genErr)
+		}
 	}
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
@@ -105,11 +136,24 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := app.RegisterPublicRoute("PATCH /api/customizer/designs/{id}", httpapi.PatchDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs patch route: %w", err)
 	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(p.generate)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs generate route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
+		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
+	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}
 	if err := registerObsPing(app); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
+	}
+	// Register generate even when worker is nil (no DB) so SyncJobs list is complete;
+	// handler no-ops safely only when worker non-nil — require worker for registration.
+	if p.worker != nil {
+		if err := registerGenerate(app, p.worker, maxRetries); err != nil {
+			return fmt.Errorf("metaldogs plugin: generate: %w", err)
+		}
 	}
 	return nil
 }
@@ -158,4 +202,49 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 		}
 	}
 	return svc
+}
+
+func newGenerateServices(
+	app *plugin.App,
+	store ports.AssetStore,
+	db *sql.DB,
+	providerName string,
+	maxRetries, maxAttempts int,
+) (*application.GenerateService, *application.GenerateWorker, error) {
+	if store == nil || db == nil || app == nil {
+		return nil, nil, nil
+	}
+	prov, err := generation.Lookup(providerName)
+	if err != nil {
+		return nil, nil, err
+	}
+	jobs := postgres.NewGenerationJobRepo(db)
+	designs := postgres.NewDesignRepo(db)
+	assets := postgres.NewAssetRepo(db)
+	tplStore := postgres.NewTemplateStore(db)
+	worker := &application.GenerateWorker{
+		Designs:          designs,
+		Jobs:             jobs,
+		Assets:           assets,
+		Templates:        tplStore,
+		Store:            store,
+		Provider:         prov,
+		IDs:              ports.UUIDGenerator{},
+		Clock:            ports.SystemClock{},
+		MaxQueueAttempts: maxRetries,
+	}
+	enqueue := func(ctx context.Context, generationJobID, designID string) error {
+		return enqueueGenerateIdempotent(app, ctx, generationJobID, designID)
+	}
+	svc := &application.GenerateService{
+		Designs:     designs,
+		Jobs:        jobs,
+		Assets:      assets,
+		IDs:         ports.UUIDGenerator{},
+		Clock:       ports.SystemClock{},
+		Enqueue:     enqueue,
+		Provider:    prov.Name(),
+		MaxAttempts: maxAttempts,
+	}
+	return svc, worker, nil
 }

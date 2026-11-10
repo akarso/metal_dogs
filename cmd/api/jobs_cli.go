@@ -16,6 +16,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/logger"
+	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
 // jobsListDefaultLimit/jobsListMaxLimit mirror jobsApp.Service's own
@@ -76,6 +77,12 @@ func newJobsService(cfg *config.Config) (svc *jobsApp.Service, conn *sql.DB, err
 	if err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("job queue: %w", err)
+	}
+	if cfg.Plugins.MetalDogs.Enabled {
+		if err := metaldogs.InstallGenerateJobFence(jobQueue); err != nil {
+			conn.Close()
+			return nil, nil, fmt.Errorf("metaldogs generate job fence: %w", err)
+		}
 	}
 	svc, err = jobsApp.NewService(jobQueue, jobQueue)
 	if err != nil {

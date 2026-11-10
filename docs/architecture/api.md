@@ -176,6 +176,66 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 | `503` | `unavailable` | No DB / AssetStore / catalog |
 | `500` | `internal_error` | Persistence failure |
 
+## Generate (C4)
+
+| Method | Path | Auth | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/customizer/designs/{id}/generate` | Bearer owner token | `202` job accepted |
+| `GET` | `/api/customizer/generation-jobs/{id}` | Bearer (owns parent design) | `200` job status |
+
+### Headers
+
+- `Idempotency-Key` — **required** on generate (1–255 chars). Same key + same design returns the same job (`202`).
+- `Authorization: Bearer <owner_token>` — capability token from design create. Missing/wrong → **`404`** `not_found` (not 403). Tokens must not appear in query strings (`400` `bad_request`).
+
+### POST generate
+
+Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, the source asset is still live, and `generation_attempts < max_attempts_per_design` (default 3). Creates `GenerationJob` (`queued`) scoped to `source_asset_id` + `template_version` + `texts_digest`, sets design → `generating`, slides source `delete_after`, then enqueues `integration.sync.metaldogs.generate` with platform job id = product `generation_job_id` on a detached request context (preserves `request_id`). Duplicate PK → `Requeue` when the platform row is `failed`/`done`/`cancelled` or stale `processing` (Postgres queue; young `processing`/`pending` left alone). Product `claim_token` is invalidated in the same transaction as the pending update (before `Dequeue` can see it); Conflict does not bump the token a second time. Platform `Complete`/`Fail` are fenced by dequeue `attempts`; a delivery that lost the platform row returns `ErrSkipOutcome` so the worker does not ack a newer attempt. Claim/lease use database `NOW()` only. Same-key retry re-reads product status and re-enqueues when `queued` or `running` past that DB lease (`503` includes `job_id` on enqueue failure). At most one active job per design (DB partial unique). Reusing a key after replace-photo / template / texts change → `409` `conflict` with the prior `job_id`.
+
+```json
+{
+  "job_id": "uuid",
+  "design_id": "uuid",
+  "status": "queued",
+  "retry_after": 2
+}
+```
+
+### GET generation-jobs
+
+```json
+{
+  "id": "uuid",
+  "design_id": "uuid",
+  "status": "queued",
+  "attempt": 1,
+  "error_code": "",
+  "terminal_reason": "",
+  "retry_after": 2
+}
+```
+
+`retry_after` is seconds while status is `queued` / `running` / `validating`; `0` when terminal. Active responses also set `Retry-After`. Worker (fake by default): claim → provider → G3 validate → store artwork (`owner_ref` = design id) → design `preview_ready` or `generation_failed`. Last queue attempt always terminals the product job (frees the active unique index). Mockup compose is C5.
+
+### Errors
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `400` | `bad_request` | Missing/overlong Idempotency-Key; token in query |
+| `404` | `not_found` | Unknown id / missing or wrong Bearer / expired design |
+| `409` | `invalid_transition` (+ `job_id` when generating) | Design not eligible; includes active job id when present |
+| `409` | `conflict` (+ `job_id`) | Active job / idempotency key reused with different inputs |
+| `422` | `upload_unavailable` | Source missing/soft-deleted before a job is created |
+| `429` | `limit_reached` (+ `Retry-After`) | `generation_attempts` at configured max |
+| `503` | `unavailable` | No DB / enqueue failure (body may include `job_id`; retry same Idempotency-Key → re-Enqueue) |
+| `500` | `internal_error` | Persistence failure |
+
+### Config
+
+- `plugins.metaldogs.generation.provider` — C4 accepts only `fake` (default)
+- `plugins.metaldogs.generation.max_retries` — queue retries (default 3)
+- `plugins.metaldogs.generation.max_attempts_per_design` — customer regenerations (default 3)
+
 ## Safe delivery
 
-No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads and designs require media + DB. Flag default off.
+No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads, designs, and generate require media + DB. Flag default off. Generate uses the fake provider unless a later slice wires a live provider.

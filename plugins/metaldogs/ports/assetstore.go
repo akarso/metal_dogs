@@ -25,6 +25,8 @@ const DefaultSignedGetTTL = 60 * time.Second
 // Keys must be under AssetKeyPrefix (enforced by the mediastore adapter).
 type AssetStore interface {
 	Put(ctx context.Context, key string, r io.Reader, contentType string) error
+	// Read returns object bytes (C4 worker input). Requires a ReadableStorage backend.
+	Read(ctx context.Context, key string) ([]byte, error)
 	Head(ctx context.Context, key string) error
 	SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error)
 	Delete(ctx context.Context, key string) error

@@ -24,17 +24,18 @@ plugins/metaldogs/
 ├── cli.go                 # metaldogs:eval (G0)
 ├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
+├── sync_generate.go       # generate RegisterManual (C4)
 ├── migrations.go          # plugin.Migrator + MigrationFS
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
 ├── generation/            # ImageProvider port + fake (ADR-0008 / G0)
 │   └── eval/              # offline runner + report.json
-├── httpapi/               # enabled + health + templates + uploads
+├── httpapi/               # enabled + health + templates + uploads + designs + generate
 ├── observability/         # correlation_id alias helpers
-├── domain/                # Template, Asset, …
-├── application/           # TemplateCatalog, UploadService, imageprep
-├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore, AssetRepository
-├── adapters/postgres/     # TemplateStore, AssetRepo, MetaStore
-├── adapters/mediastore/   # wrap media.SignedURLStorage
+├── domain/                # Template, Asset, Design, GenerationJob, …
+├── application/           # TemplateCatalog, UploadService, DesignService, Generate*
+├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore, repos
+├── adapters/postgres/     # TemplateStore, AssetRepo, DesignRepo, GenerationJobRepo
+├── adapters/mediastore/   # wrap media.SignedURLStorage (+ ReadableStorage Read)
 └── testutil/              # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
 ```
 
@@ -50,16 +51,20 @@ plugins/metaldogs/
 | `POST` | `/api/customizer/designs` | public | Create draft + `owner_token` once; binds upload |
 | `GET` | `/api/customizer/designs/{id}` | Bearer | Design DTO; wrong token → `404` |
 | `PATCH` | `/api/customizer/designs/{id}` | Bearer | Texts / replace photo (editable statuses only) |
+| `POST` | `/api/customizer/designs/{id}/generate` | Bearer + `Idempotency-Key` | `202` GenerationJob; enqueues sync generate |
+| `GET` | `/api/customizer/generation-jobs/{id}` | Bearer | Job status + `retry_after` |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).
 
-Sync job (F3 sample): `integration.sync.metaldogs.obs.ping` — platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
+Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4). Platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
+
+Generation config (C4): `plugins.metaldogs.generation.provider` (fake only), `max_retries`, `max_attempts_per_design`.
 
 ## Private assets (F4 / C2 / ADR-0004)
 
-- Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). First writer: `UploadService` (C2).
-- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` = design UUID when attached; unattached `delete_after=+2h`, attached `+7d` from activity; sweep = O2).
+- Port: `ports.AssetStore` (`Put` / `Read` / `Head` / `SignedGetURL` / `Delete`). Writers: `UploadService` (C2), generate worker artwork (C4). `Read` requires `media.ReadableStorage` (local FS).
+- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` = design UUID; unique per `(owner_ref, type)` so source + artwork can share a design; unattached `delete_after=+2h`, attached source `+7d` from activity incl. generate; sweep = O2).
 - Designs: `POST/GET/PATCH /api/customizer/designs` with ADR-0007 Bearer owner tokens (platform JWT parse skipped on `/api/customizer/*`).
 - Keys: `private/blobs/metaldogs/...` via `ports.ObjectKey`; mediastore **rejects** any other key.
 - Delivery: wrap core `media.SignedURLStorage` (inline signed GET; TTL capped ≤15m). No product shim.

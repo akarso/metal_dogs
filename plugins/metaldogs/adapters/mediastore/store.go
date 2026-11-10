@@ -20,6 +20,11 @@ type contentTypedSaver interface {
 	SaveWithContentType(path string, file io.Reader, contentType string) error
 }
 
+// contextReadable is optional on backends that honor ctx during Read.
+type contextReadable interface {
+	ReadContext(ctx context.Context, path string) ([]byte, error)
+}
+
 // previewMIMEByExt is the allowlist for inline customizer delivery.
 // Anything else is stored/served as octet-stream with attachment disposition.
 var previewMIMEByExt = map[string]string{
@@ -77,22 +82,85 @@ func resolveContentType(key, claimed string) (ctype string, inlineOK bool) {
 	return safe, true
 }
 
+// ctxReader stops reads when ctx is done so Save can unwind without a
+// background goroutine.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := c.r.Read(p)
+	if cerr := c.ctx.Err(); cerr != nil {
+		return n, cerr
+	}
+	return n, err
+}
+
 // Put writes via media.Storage.Save (or SaveWithContentType when available).
-func (s *Store) Put(_ context.Context, key string, r io.Reader, contentType string) error {
+// The call is synchronous; ctx cancellation stops the reader so Save returns
+// without leaving an abandoned write goroutine.
+func (s *Store) Put(ctx context.Context, key string, r io.Reader, contentType string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := rejectKey(key); err != nil {
 		return err
 	}
 	ctype, _ := resolveContentType(key, contentType)
+	src := io.Reader(ctxReader{ctx: ctx, r: r})
+	var err error
 	if saver, ok := s.inner.(contentTypedSaver); ok {
-		if err := saver.SaveWithContentType(key, r, ctype); err != nil {
-			return fmt.Errorf("mediastore: put: %w", err)
-		}
-		return nil
+		err = saver.SaveWithContentType(key, src, ctype)
+	} else {
+		err = s.inner.Save(key, src)
 	}
-	if err := s.inner.Save(key, r); err != nil {
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return fmt.Errorf("mediastore: put: %w", err)
 	}
 	return nil
+}
+
+// Read returns object bytes via media.ReadableStorage when the backend supports it.
+// Prefers ReadContext when available so cancellation reaches the backend.
+func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := rejectKey(key); err != nil {
+		return nil, err
+	}
+	if cr, ok := s.inner.(contextReadable); ok {
+		b, err := cr.ReadContext(ctx, key)
+		if err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return nil, cerr
+			}
+			return nil, fmt.Errorf("mediastore: read: %w", err)
+		}
+		return b, nil
+	}
+	readable, ok := s.inner.(media.ReadableStorage)
+	if !ok {
+		return nil, fmt.Errorf("mediastore: read: backend does not support ReadableStorage")
+	}
+	b, err := readable.Read(key)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		return nil, fmt.Errorf("mediastore: read: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // Head delegates to SignedURLStorage.Head.

@@ -342,7 +342,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; storage private; unauthenticated until C3 (`owner_ref` reserved); no sweep yet — ops must treat unattached uploads as sticky until O2.
 - **Docs:** Limits + split TTL fields in `architecture/api.md`; ADR-0004 Put call site; CR-12.
 
-#### C3 · Designs and ownership token — size M — **DONE pending merge** (CR-13 / PR #28)
+#### C3 · Designs and ownership token — size M — **DONE** (CR-13 / PR #28)
 
 - **Goal:** `POST /api/customizer/designs` with `template_id`, texts, `upload_id` → `Design` in `draft` with a capability token (ADR-0007) returned once; `GET /api/customizer/designs/{id}` requires the token; `PATCH` texts/upload allowed only in `draft`/`generation_failed`/`preview_ready`.
 - **Scope:** Migration `004` `metaldogs_designs`; domain Design + text charset validation; Bearer token (hash only stored); bind upload `owner_ref` to design id; signed source preview on DTO.
@@ -350,13 +350,13 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged.
 - **Docs:** ADR-0006, ADR-0007 → Accepted; api.md designs; CR-13.
 
-#### C4 · Generate job and status polling — size L
+#### C4 · Generate job and status polling — size L — **DONE** (CR-14)
 
 - **Goal:** `POST /api/customizer/designs/{id}/generate` (with `Idempotency-Key`) creates a `GenerationJob`, enqueues `integration.sync.metaldogs.generate`, moves design to `generating`; `GET /api/customizer/generation-jobs/{id}` returns status, attempt, user-facing error code, `retry_after`. Worker: prepare input → provider call (fake by default) → validation (G3) → store artwork asset → `preview_ready` or `generation_failed`.
 - **Scope:** Retry policy (transient only, bounded, backoff); per-design mutex so two jobs cannot run concurrently; provider/model/prompt version recorded on the job; cost and latency recorded.
 - **Tests:** Unit: job state machine, retry classification; feature: HTTP → job row → worker run with fake provider → preview_ready; duplicate request with same key returns same job; concurrent requests create one job; permanent failure terminal; worker crash mid-job (simulated) is recovered by queue lease expiry.
-- **Safe delivery:** Flagged; provider `fake` unless `plugins.metaldogs.provider` set.
-- **Docs:** `architecture/flows/generation-pipeline.md`; runbook `generation-job-stuck-or-failed.md` → real content.
+- **Safe delivery:** Flagged; provider `fake` unless `plugins.metaldogs.generation.provider` set (C4 accepts only `fake`).
+- **Docs:** `architecture/flows/generation-pipeline.md`; runbook `generation-job-stuck-or-failed.md` → real content; ADR-0003 Accepted.
 
 #### C5 · Preview assets — size S
 

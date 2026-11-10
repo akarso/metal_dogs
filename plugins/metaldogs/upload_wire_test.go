@@ -16,6 +16,7 @@ import (
 type stubAssetStore struct{}
 
 func (stubAssetStore) Put(context.Context, string, io.Reader, string) error { return nil }
+func (stubAssetStore) Read(context.Context, string) ([]byte, error)         { return nil, nil }
 func (stubAssetStore) Head(context.Context, string) error                   { return nil }
 func (stubAssetStore) SignedGetURL(context.Context, string, time.Duration) (string, error) {
 	return "", nil

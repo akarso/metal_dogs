@@ -246,7 +246,8 @@ func (q *JobQueue) removeInflight(id string) {
 }
 
 // Complete marks a job as done.
-func (q *JobQueue) Complete(ctx context.Context, id string) error {
+func (q *JobQueue) Complete(ctx context.Context, id string, attempts int) error {
+	_ = attempts
 	entry, err := q.inflightEntry(id)
 	if err != nil {
 		return err
@@ -259,7 +260,8 @@ func (q *JobQueue) Complete(ctx context.Context, id string) error {
 }
 
 // Fail re-queues a job for retry or marks it as permanently failed.
-func (q *JobQueue) Fail(ctx context.Context, id string, jobErr error) error {
+func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
+	_ = attempts
 	entry, err := q.inflightEntry(id)
 	if err != nil {
 		return err

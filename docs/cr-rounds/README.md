@@ -64,4 +64,5 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-10 | G3 output validation (`generation/validate` + eval wire) | M2 → G3 done | [`CR-10-g3-output-validation.md`](CR-10-g3-output-validation.md) |
 | CR-11 | C1 templates read API (list + get published DTOs) | M2 → C1 done | [`CR-11-c1-templates-read-api.md`](CR-11-c1-templates-read-api.md) |
 | CR-12 | C2 uploads (`POST /uploads` + `metaldogs_assets`) | M2 → C2 done | [`CR-12-c2-uploads.md`](CR-12-c2-uploads.md) |
-| CR-13 | C3 designs + ownership tokens | M2 → C3 (pending merge) | [`CR-13-c3-designs.md`](CR-13-c3-designs.md) |
+| CR-13 | C3 designs + ownership tokens | M2 → C3 done | [`CR-13-c3-designs.md`](CR-13-c3-designs.md) |
+| CR-14 | C4 generate job + status polling | M2 → C4 | [`CR-14-c4-generate.md`](CR-14-c4-generate.md) |

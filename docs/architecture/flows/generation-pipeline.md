@@ -93,7 +93,7 @@ Eval maps hard validation failure to sample `error_class=validation_failed` (ali
 
 - `POST /generate` with the same `Idempotency-Key` for the same design returns the existing job.
 - A partial unique index on `metaldogs_generation_jobs (design_id) WHERE status IN ('queued','running','validating')` guarantees at most one active job per design even under concurrent requests.
-- Job handlers are idempotent: re-execution after a crash checks for already-stored assets by `(job_id, type)` before calling the provider again. A provider call that may have succeeded but whose result was lost is **not** repeated automatically if cost was already recorded; the job fails with `provider_result_lost` and alerts, to avoid double spend.
+- Job handlers are idempotent: re-execution after a crash skips the provider when `artwork_asset_id` is already set; otherwise a single-winner claim from `queued`/`validating` (or an expired `running` lease) may re-call the provider. Platform enqueue uses the product `generation_job_id` as the queue row id so replay does not insert a second delivery.
 - Status writes to the design happen in the same transaction as the job's terminal state.
 
 ## Observability

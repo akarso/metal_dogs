@@ -43,7 +43,7 @@ func (m *mockQueue) Dequeue(_ context.Context) (*jobs.Job, error) {
 	return j, nil
 }
 
-func (m *mockQueue) Complete(ctx context.Context, id string) error {
+func (m *mockQueue) Complete(ctx context.Context, id string, attempts int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completeCtxErrs = append(m.completeCtxErrs, ctx.Err())
@@ -56,7 +56,7 @@ func (m *mockQueue) Complete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *mockQueue) Fail(ctx context.Context, id string, jobErr error) error {
+func (m *mockQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failCtxErrs = append(m.failCtxErrs, ctx.Err())

@@ -121,6 +121,59 @@ func (d *Design) ApplyPhoto(assetID string, at time.Time) error {
 	return nil
 }
 
+// CanRequestGeneration reports whether RequestGeneration is allowed from this status.
+func (d Design) CanRequestGeneration() bool {
+	switch d.Status {
+	case DesignDraft, DesignGenerationFailed, DesignPreviewReady:
+		return true
+	default:
+		return false
+	}
+}
+
+// RequestGeneration moves draft/failed/preview → generating, bumps attempts, sets latest job.
+// maxAttempts is the inclusive ceiling on GenerationAttempts after this request (default 3).
+func (d *Design) RequestGeneration(jobID string, maxAttempts int, at time.Time) error {
+	if !d.CanRequestGeneration() {
+		return &ErrInvalidTransition{From: d.Status, Command: "RequestGeneration"}
+	}
+	if strings.TrimSpace(jobID) == "" {
+		return fmt.Errorf("job id required")
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if d.GenerationAttempts >= maxAttempts {
+		return &ErrLimitReached{Attempts: d.GenerationAttempts, Max: maxAttempts}
+	}
+	d.GenerationAttempts++
+	d.LatestJobID = jobID
+	d.Status = DesignGenerating
+	d.UpdatedAt = at.UTC()
+	d.ExpiresAt = at.UTC().Add(DesignRetentionUnordered)
+	return nil
+}
+
+// MarkPreviewReady transitions generating → preview_ready after a successful job.
+func (d *Design) MarkPreviewReady(at time.Time) error {
+	if d.Status != DesignGenerating {
+		return &ErrInvalidTransition{From: d.Status, Command: "MarkPreviewReady"}
+	}
+	d.Status = DesignPreviewReady
+	d.UpdatedAt = at.UTC()
+	return nil
+}
+
+// MarkGenerationFailed transitions generating → generation_failed after a terminal job failure.
+func (d *Design) MarkGenerationFailed(at time.Time) error {
+	if d.Status != DesignGenerating {
+		return &ErrInvalidTransition{From: d.Status, Command: "MarkGenerationFailed"}
+	}
+	d.Status = DesignGenerationFailed
+	d.UpdatedAt = at.UTC()
+	return nil
+}
+
 // TextFieldSpec describes one editable template field for runtime validation.
 type TextFieldSpec struct {
 	Key            string

@@ -121,7 +121,7 @@ func TestJobQueue_Complete(t *testing.T) {
 		t.Fatal("expected a dequeued job")
 	}
 
-	if err := q.Complete(ctx, got.ID); err != nil {
+	if err := q.Complete(ctx, got.ID, got.Attempts); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestJobQueue_Fail_Retry(t *testing.T) {
 	now := time.Now()
 
 	// Fail the job — should be re-queued since attempts(1) < maxRetries(3).
-	if err := q.Fail(ctx, got.ID, nil); err != nil {
+	if err := q.Fail(ctx, got.ID, got.Attempts, nil); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestJobQueue_Fail_Permanent(t *testing.T) {
 
 	got, _ := q.Dequeue(ctx) // attempts becomes 1
 
-	if err := q.Fail(ctx, got.ID, nil); err != nil {
+	if err := q.Fail(ctx, got.ID, got.Attempts, nil); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestJobQueue_Complete_NotFound(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	err = q.Complete(ctx, id.New())
+	err = q.Complete(ctx, id.New(), 0)
 	if err == nil {
 		t.Fatal("expected error for non-existent job")
 	}
@@ -254,7 +254,7 @@ func TestJobQueue_Fail_RecordsLastError(t *testing.T) {
 	_ = q.Enqueue(ctx, job)
 	got, _ := q.Dequeue(ctx)
 
-	if err := q.Fail(ctx, got.ID, errors.New("boom: upstream timed out")); err != nil {
+	if err := q.Fail(ctx, got.ID, got.Attempts, errors.New("boom: upstream timed out")); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 
@@ -291,7 +291,7 @@ func TestJobQueue_Fail_NilErrorLeavesLastErrorUnchanged(t *testing.T) {
 	_ = q.Enqueue(ctx, job)
 	got, _ := q.Dequeue(ctx)
 
-	if err := q.Fail(ctx, got.ID, nil); err != nil {
+	if err := q.Fail(ctx, got.ID, got.Attempts, nil); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 
@@ -550,7 +550,7 @@ func TestJobQueue_Retry_ResetsFailedJobToPending(t *testing.T) {
 	job.MaxRetries = 1
 	_ = q.Enqueue(ctx, job)
 	got, _ := q.Dequeue(ctx) // attempts becomes 1
-	if err := q.Fail(ctx, got.ID, errors.New("boom")); err != nil {
+	if err := q.Fail(ctx, got.ID, got.Attempts, errors.New("boom")); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 
@@ -610,6 +610,231 @@ func TestJobQueue_Retry_ConflictOnNonFailedJob(t *testing.T) {
 	var appErr *apperror.Error
 	if !errors.As(err, &appErr) || appErr.Code != apperror.CodeConflict {
 		t.Fatalf("err = %v, want *apperror.Error{Code: conflict}", err)
+	}
+}
+
+func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
+	db := testDB(t)
+	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DELETE FROM jobs") })
+
+	q, err := postgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatalf("NewJobQueue: %v", err)
+	}
+	ctx := context.Background()
+	clear := func() { _, _ = db.Exec("DELETE FROM jobs") }
+
+	clear()
+	pending, _ := jobs.NewJob(id.New(), "test", nil)
+	_ = q.Enqueue(ctx, pending)
+	if _, err := q.Requeue(ctx, pending.ID, time.Minute); err != nil {
+		t.Fatalf("requeue pending: %v", err)
+	}
+
+	clear()
+	young, _ := jobs.NewJob(id.New(), "test", nil)
+	_ = q.Enqueue(ctx, young)
+	got, _ := q.Dequeue(ctx)
+	if got == nil || got.ID != young.ID {
+		t.Fatalf("dequeue young: %+v", got)
+	}
+	if _, err := q.Requeue(ctx, young.ID, time.Hour); err != nil {
+		t.Fatalf("requeue young processing: %v", err)
+	}
+	var status string
+	_ = db.QueryRow("SELECT status FROM jobs WHERE id = $1", young.ID).Scan(&status)
+	if status != "processing" {
+		t.Fatalf("young processing status=%q", status)
+	}
+
+	clear()
+	stale, _ := jobs.NewJob(id.New(), "test", nil)
+	_ = q.Enqueue(ctx, stale)
+	got, _ = q.Dequeue(ctx)
+	if _, err := db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID); err != nil {
+		t.Fatal(err)
+	}
+	attemptsBefore := got.Attempts
+	if _, err := q.Requeue(ctx, got.ID, time.Minute); err != nil {
+		t.Fatalf("requeue stale: %v", err)
+	}
+	var attempts int
+	_ = db.QueryRow("SELECT status, attempts FROM jobs WHERE id = $1", got.ID).Scan(&status, &attempts)
+	if status != "pending" || attempts != attemptsBefore {
+		t.Fatalf("stale after requeue status=%s attempts=%d want pending/%d", status, attempts, attemptsBefore)
+	}
+
+	clear()
+	done, _ := jobs.NewJob(id.New(), "test", nil)
+	_ = q.Enqueue(ctx, done)
+	got, _ = q.Dequeue(ctx)
+	_ = q.Complete(ctx, got.ID, got.Attempts)
+	if _, err := q.Requeue(ctx, got.ID, time.Minute); err != nil {
+		t.Fatalf("requeue done: %v", err)
+	}
+	_ = db.QueryRow("SELECT status FROM jobs WHERE id = $1", got.ID).Scan(&status)
+	if status != "pending" {
+		t.Fatalf("done requeue status=%q", status)
+	}
+
+	// Conflict-style path: Enqueue same id then Requeue after stale processing.
+	clear()
+	genID := id.New()
+	job, _ := jobs.NewJob(genID, postgres.MetalDogsGenerateJobType, map[string]interface{}{
+		"generation_job_id": genID, "design_id": id.New(),
+	})
+	_ = q.Enqueue(ctx, job)
+	got, _ = q.Dequeue(ctx)
+	_, _ = db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID)
+	dup, _ := jobs.NewJob(genID, postgres.MetalDogsGenerateJobType, map[string]interface{}{"generation_job_id": genID})
+	err = q.Enqueue(ctx, dup)
+	if !apperror.Is(err, apperror.CodeConflict) {
+		t.Fatalf("want conflict, got %v", err)
+	}
+	// Generate type requires OnRequeued (product fence); no-op is enough here.
+	q.SetOnRequeued(func(context.Context, postgres.RequeueExec, string, string) error { return nil })
+	if _, err := q.Requeue(ctx, genID, 2*time.Minute); err != nil {
+		t.Fatalf("requeue after conflict: %v", err)
+	}
+	next, err := q.Dequeue(ctx)
+	if err != nil || next == nil || next.ID != genID {
+		t.Fatalf("worker must run after requeue: %+v err=%v", next, err)
+	}
+}
+
+func TestJobQueue_Requeue_GenerateTypeRequiresHook(t *testing.T) {
+	db := testDB(t)
+	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DELETE FROM jobs") })
+
+	q, err := postgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatalf("NewJobQueue: %v", err)
+	}
+	ctx := context.Background()
+	job, _ := jobs.NewJob(id.New(), postgres.MetalDogsGenerateJobType, nil)
+	_ = q.Enqueue(ctx, job)
+	got, _ := q.Dequeue(ctx)
+	_, _ = db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID)
+
+	requeued, err := q.Requeue(ctx, got.ID, time.Minute)
+	if err == nil || requeued {
+		t.Fatalf("want missing-hook error, got requeued=%v err=%v", requeued, err)
+	}
+	if !strings.Contains(err.Error(), "on requeued hook required") {
+		t.Fatalf("err=%v", err)
+	}
+	var status string
+	_ = db.QueryRow(`SELECT status FROM jobs WHERE id = $1`, got.ID).Scan(&status)
+	if status != "processing" {
+		t.Fatalf("status=%q, want processing (re-pend aborted)", status)
+	}
+}
+
+func TestJobQueue_Requeue_OnRequeuedRunsBeforePendingVisible(t *testing.T) {
+	db := testDB(t)
+	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DELETE FROM jobs") })
+
+	q, err := postgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatalf("NewJobQueue: %v", err)
+	}
+	ctx := context.Background()
+	job, _ := jobs.NewJob(id.New(), "integration.sync.metaldogs.generate", nil)
+	_ = q.Enqueue(ctx, job)
+	got, _ := q.Dequeue(ctx)
+	_, _ = db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID)
+
+	var outsideStatusDuringHook string
+	q.SetOnRequeued(func(ctx context.Context, exec postgres.RequeueExec, jobID, jobType string) error {
+		if jobType != "integration.sync.metaldogs.generate" {
+			t.Fatalf("jobType=%q", jobType)
+		}
+		// Separate connection must still see processing — fence before commit.
+		_ = db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&outsideStatusDuringHook)
+		_, err := exec.ExecContext(ctx, `SELECT 1`)
+		return err
+	})
+	requeued, err := q.Requeue(ctx, got.ID, time.Minute)
+	if err != nil || !requeued {
+		t.Fatalf("requeue: requeued=%v err=%v", requeued, err)
+	}
+	if outsideStatusDuringHook != "processing" {
+		t.Fatalf("during OnRequeued outside status=%q, want processing (pending not committed yet)", outsideStatusDuringHook)
+	}
+	var after string
+	_ = db.QueryRow(`SELECT status FROM jobs WHERE id = $1`, got.ID).Scan(&after)
+	if after != "pending" {
+		t.Fatalf("after requeue status=%q", after)
+	}
+}
+
+func TestJobQueue_Requeue_OnRequeuedErrorRollsBack(t *testing.T) {
+	db := testDB(t)
+	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DELETE FROM jobs") })
+
+	q, err := postgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatalf("NewJobQueue: %v", err)
+	}
+	ctx := context.Background()
+	job, _ := jobs.NewJob(id.New(), "test", nil)
+	_ = q.Enqueue(ctx, job)
+	got, _ := q.Dequeue(ctx)
+	_, _ = db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID)
+
+	q.SetOnRequeued(func(context.Context, postgres.RequeueExec, string, string) error {
+		return errors.New("fence failed")
+	})
+	requeued, err := q.Requeue(ctx, got.ID, time.Minute)
+	if err == nil || requeued {
+		t.Fatalf("want fence error and requeued=false, got requeued=%v err=%v", requeued, err)
+	}
+	if !strings.Contains(err.Error(), "fence failed") {
+		t.Fatalf("err=%v", err)
+	}
+	var status string
+	_ = db.QueryRow(`SELECT status FROM jobs WHERE id = $1`, got.ID).Scan(&status)
+	if status != "processing" {
+		t.Fatalf("hook failure must roll back pending, status=%q", status)
+	}
+}
+
+func TestJobQueue_Retry_StaleProcessing(t *testing.T) {
+	db := testDB(t)
+	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DELETE FROM jobs") })
+
+	q, err := postgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatalf("NewJobQueue: %v", err)
+	}
+	ctx := context.Background()
+	job, _ := jobs.NewJob(id.New(), "test", nil)
+	_ = q.Enqueue(ctx, job)
+	got, _ := q.Dequeue(ctx)
+	_, _ = db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID)
+	if err := q.Retry(ctx, got.ID); err != nil {
+		t.Fatalf("Retry stale processing: %v", err)
+	}
+	var status string
+	var attempts int
+	_ = db.QueryRow("SELECT status, attempts FROM jobs WHERE id = $1", got.ID).Scan(&status, &attempts)
+	if status != "pending" || attempts != got.Attempts {
+		t.Fatalf("status=%s attempts=%d", status, attempts)
 	}
 }
 
@@ -727,7 +952,7 @@ func TestJobQueue_Cancel_ConflictOnFailedJob(t *testing.T) {
 	job.MaxRetries = 1
 	_ = q.Enqueue(ctx, job)
 	got, _ := q.Dequeue(ctx)
-	if err := q.Fail(ctx, got.ID, errors.New("boom")); err != nil {
+	if err := q.Fail(ctx, got.ID, got.Attempts, errors.New("boom")); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 

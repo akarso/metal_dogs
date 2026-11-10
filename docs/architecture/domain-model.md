@@ -105,7 +105,7 @@ erDiagram
         int width
         int height
         string checksum "sha256:<hex>"
-        string owner_ref "nullable; design UUID when attached (C3); UNIQUE among active rows"
+        string owner_ref "nullable; design UUID when attached; UNIQUE (owner_ref, type) among active rows (C4)"
         timestamptz created_at
         timestamptz delete_after "retention"
         timestamptz deleted_at

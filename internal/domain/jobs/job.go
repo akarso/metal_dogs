@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// ErrSkipOutcome means the handler abandoned this delivery (e.g. lost a claim
+// fence). The worker must not Complete or Fail the platform row — another
+// delivery may already own it.
+var ErrSkipOutcome = errors.New("job: skip outcome")
+
 // Status represents the lifecycle state of a job.
 type Status string
 
@@ -24,6 +29,10 @@ const (
 
 // DefaultMaxRetries is the default number of retry attempts for a job.
 const DefaultMaxRetries = 3
+
+// DefaultStaleProcessingLease is how long a job may stay processing before
+// Retry / Requeue may reclaim it (worker crash or hung handler).
+const DefaultStaleProcessingLease = 2 * time.Minute
 
 // Job represents a unit of background work.
 type Job struct {
@@ -56,13 +65,15 @@ type Queue interface {
 	// Returns nil, nil when no jobs are available.
 	Dequeue(ctx context.Context) (*Job, error)
 
-	// Complete marks a job as done.
-	Complete(ctx context.Context, id string) error
+	// Complete marks a job as done when it is still processing with the
+	// same attempts value observed at Dequeue (delivery fence).
+	Complete(ctx context.Context, id string, attempts int) error
 
-	// Fail marks a job as failed or re-queues it for retry.
+	// Fail marks a job as failed or re-queues it for retry when it is still
+	// processing with the same attempts value observed at Dequeue.
 	// If attempts < maxRetries, the job is re-queued with a delay.
 	// Otherwise, the job is marked as permanently failed.
-	Fail(ctx context.Context, id string, jobErr error) error
+	Fail(ctx context.Context, id string, attempts int, jobErr error) error
 }
 
 // NewJob creates a Job with sensible defaults.

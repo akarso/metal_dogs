@@ -55,8 +55,16 @@ func (f *fakeSigned) SignedURL(_ context.Context, path string, _ media.SignURLOp
 	}
 	return "https://signed.example/" + path, nil
 }
+func (f *fakeSigned) Read(path string) ([]byte, error) {
+	b, ok := f.objects[path]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), b...), nil
+}
 
 var _ media.SignedURLStorage = (*fakeSigned)(nil)
+var _ media.ReadableStorage = (*fakeSigned)(nil)
 
 func testApp(t *testing.T, enabled bool) *plugin.App {
 	t.Helper()
@@ -175,8 +183,10 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
 		!patterns["POST /api/customizer/uploads"] ||
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
-		!patterns["PATCH /api/customizer/designs/{id}"] {
-		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads + designs", routes)
+		!patterns["PATCH /api/customizer/designs/{id}"] ||
+		!patterns["POST /api/customizer/designs/{id}/generate"] ||
+		!patterns["GET /api/customizer/generation-jobs/{id}"] {
+		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads + designs + generate", routes)
 	}
 	if patterns["GET /api/customizer/dev-assets/{token}"] {
 		t.Fatal("dev-assets shim must not be registered after platform SignedURL absorb")
