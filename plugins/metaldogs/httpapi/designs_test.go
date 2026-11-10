@@ -375,10 +375,10 @@ func TestDesigns_AuthMiddlewareAllowsOwnerBearer(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch %d %s", rec.Code, rec.Body.String())
 	}
-	var body map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if body["error"] != nil {
-		t.Fatalf("shopanda error shape: %+v", body)
+	var patchResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &patchResp)
+	if patchResp["error"] != nil {
+		t.Fatalf("shopanda error shape: %+v", patchResp)
 	}
 }
 
