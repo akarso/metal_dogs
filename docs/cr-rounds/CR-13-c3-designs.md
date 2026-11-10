@@ -1,6 +1,6 @@
 # CR-13: C3 designs + ownership tokens
 
-- Status: **open** — PR pending (not closed until merge + green CI)
+- Status: **open** — PR [#28](https://github.com/akarso/metal_dogs/pull/28) (not closed until merge + green CI)
 - Slices: `C3`
 - Milestone progress: M2 → C3 (pending merge)
 

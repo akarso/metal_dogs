@@ -342,7 +342,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; storage private; unauthenticated until C3 (`owner_ref` reserved); no sweep yet — ops must treat unattached uploads as sticky until O2.
 - **Docs:** Limits + split TTL fields in `architecture/api.md`; ADR-0004 Put call site; CR-12.
 
-#### C3 · Designs and ownership token — size M — **DONE pending merge** (CR-13)
+#### C3 · Designs and ownership token — size M — **DONE pending merge** (CR-13 / PR #28)
 
 - **Goal:** `POST /api/customizer/designs` with `template_id`, texts, `upload_id` → `Design` in `draft` with a capability token (ADR-0007) returned once; `GET /api/customizer/designs/{id}` requires the token; `PATCH` texts/upload allowed only in `draft`/`generation_failed`/`preview_ready`.
 - **Scope:** Migration `004` `metaldogs_designs`; domain Design + text charset validation; Bearer token (hash only stored); bind upload `owner_ref` to design id; signed source preview on DTO.
