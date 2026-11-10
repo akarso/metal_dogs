@@ -143,8 +143,8 @@ func (m *designAssetRepo) ClearStorageKey(_ context.Context, assetID string) err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[assetID]
-	if !ok {
-		return nil
+	if !ok || a.DeletedAt == nil {
+		return fmt.Errorf("clear storage_key: not soft-deleted or missing")
 	}
 	a.StorageKey = ""
 	m.byID[assetID] = a
@@ -430,6 +430,9 @@ func TestDesignService_Create_SignFailureStillReturnsOwnerToken(t *testing.T) {
 	if created.SourcePreviewURL != "" || !created.SourcePreviewURLExpiresAt.IsZero() {
 		t.Fatalf("preview must soft-fail empty: %+v", created)
 	}
+	if created.UploadID != uploadID {
+		t.Fatalf("sign failure must keep upload_id, got %q", created.UploadID)
+	}
 	bound, ok, _ := assets.GetByID(context.Background(), uploadID)
 	if !ok || bound.OwnerRef == "" {
 		t.Fatal("upload must stay bound")
@@ -438,6 +441,139 @@ func TestDesignService_Create_SignFailureStillReturnsOwnerToken(t *testing.T) {
 	got, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
 	if err != nil || got.SourcePreviewURL == "" {
 		t.Fatalf("GET should sign again: %+v err=%v", got, err)
+	}
+}
+
+func TestDesignService_Get_SignFailureKeepsUploadID(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111115"
+	uploadID := "22222222-2222-4222-8222-222222222228"
+	key := "private/blobs/metaldogs/source/2026/11/live.jpg"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	store := &signFailBlobStore{designBlobStore: designBlobStore{objects: map[string][]byte{key: {1}}}, fail: false}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store,
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.fail = true
+	got, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UploadID != uploadID {
+		t.Fatalf("live source + sign failure must keep upload_id, got %q", got.UploadID)
+	}
+	if got.SourcePreviewURL != "" {
+		t.Fatalf("preview must be empty on sign failure: %q", got.SourcePreviewURL)
+	}
+}
+
+func TestDesignService_Get_SweptSourceOmitsUploadID(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111116"
+	uploadID := "22222222-2222-4222-8222-222222222229"
+	key := "private/blobs/metaldogs/source/2026/11/gone.jpg"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{key: {1}}},
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assets.SoftDelete(context.Background(), uploadID, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UploadID != "" {
+		t.Fatalf("swept source must omit upload_id, got %q", got.UploadID)
+	}
+	if got.SourcePreviewURL != "" {
+		t.Fatalf("swept source preview must be empty: %q", got.SourcePreviewURL)
+	}
+}
+
+type errAssetRepo struct {
+	designAssetRepo
+	getErr error
+}
+
+func (m *errAssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
+	if m.getErr != nil {
+		return domain.Asset{}, false, m.getErr
+	}
+	return m.designAssetRepo.GetByID(ctx, id)
+}
+
+func TestDesignService_Get_AssetLookupError(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111117"
+	uploadID := "22222222-2222-4222-8222-22222222222a"
+	key := "private/blobs/metaldogs/source/2026/11/err.jpg"
+	inner := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: inner},
+		Assets:    inner,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{key: {1}}},
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Assets = &errAssetRepo{designAssetRepo: *inner, getErr: errors.New("db down")}
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err == nil {
+		t.Fatal("want asset lookup error")
+	}
+	var de *application.DesignError
+	if errors.As(err, &de) {
+		t.Fatalf("lookup I/O must not be a DesignError, got %v", de)
 	}
 }
 

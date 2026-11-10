@@ -159,7 +159,7 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 }
 ```
 
-`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` (missing object is success; other cleanup failures are logged). Source preview TTL is 60s when signing succeeds. If the active source row was swept, `upload_id` is omitted (empty preview alone means sign failure with the upload still present).
+`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` only on that soft-deleted row (missing object is success; other cleanup failures are logged). Source preview TTL is 60s when signing succeeds. If the active source row is missing/soft-deleted, `upload_id` is omitted; a live source with a signer failure keeps `upload_id` and an empty preview. Asset metadata I/O errors are `500`.
 
 ### Errors
 

@@ -151,7 +151,10 @@ func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView,
 		}
 		return DesignView{}, fmt.Errorf("design: create: %w", err)
 	}
-	view := s.toView(ctx, d, now)
+	view, err := s.toView(ctx, d, now)
+	if err != nil {
+		return DesignView{}, err
+	}
 	view.OwnerToken = token
 	return view, nil
 }
@@ -164,7 +167,7 @@ func (s *DesignService) Get(ctx context.Context, id, bearerToken string) (Design
 	if err != nil {
 		return DesignView{}, err
 	}
-	return s.toView(ctx, d, now), nil
+	return s.toView(ctx, d, now)
 }
 
 // Patch updates texts and/or photo when authorized and editable.
@@ -248,7 +251,7 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 			return DesignView{}, fmt.Errorf("design: update: %w", err)
 		}
 	}
-	return s.toView(ctx, d, now), nil
+	return s.toView(ctx, d, now)
 }
 
 func (s *DesignService) removeReplacedBlob(ctx context.Context, assetID, storageKey string) {
@@ -288,10 +291,10 @@ func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken stri
 	return d, now, nil
 }
 
-// toView never fails the caller after persistence: signing soft-fails to empty preview.
-// When the active source row is gone (swept), UploadID is cleared so clients can tell
-// that apart from a signer failure (which keeps upload_id and an empty preview URL).
-func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) DesignView {
+// toView soft-fails signing to an empty preview. A missing/soft-deleted source omits
+// UploadID; a live source with a signer failure keeps UploadID. Asset lookup I/O errors
+// are returned to the caller (HTTP 500), not treated as swept.
+func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
 	view := DesignView{
 		ID:              d.ID,
 		Status:          d.Status,
@@ -303,24 +306,23 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 		ExpiresAt:       d.ExpiresAt,
 	}
 	if s.Assets == nil || s.Store == nil {
-		return view
+		return view, nil
 	}
 	asset, ok, err := s.Assets.GetByID(ctx, d.SourceAssetID)
-	if err != nil || !ok {
-		view.UploadID = ""
-		return view
+	if err != nil {
+		return DesignView{}, fmt.Errorf("design: source asset: %w", err)
 	}
-	if asset.StorageKey == "" {
+	if !ok || asset.StorageKey == "" {
 		view.UploadID = ""
-		return view
+		return view, nil
 	}
 	url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL)
 	if err != nil {
-		return view
+		return view, nil
 	}
 	view.SourcePreviewURL = url
 	view.SourcePreviewURLExpiresAt = now.Add(ports.DefaultSignedGetTTL)
-	return view
+	return view, nil
 }
 
 func validateTextsFromPublished(tpl ports.PublishedTemplate, input map[string]string) (map[string]string, error) {

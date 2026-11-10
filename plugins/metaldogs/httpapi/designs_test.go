@@ -85,8 +85,8 @@ func (m *dAssetRepo) ClearStorageKey(_ context.Context, assetID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[assetID]
-	if !ok {
-		return nil
+	if !ok || a.DeletedAt == nil {
+		return fmt.Errorf("clear storage_key: not soft-deleted or missing")
 	}
 	a.StorageKey = ""
 	m.byID[assetID] = a

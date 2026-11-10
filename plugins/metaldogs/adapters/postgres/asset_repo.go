@@ -94,16 +94,25 @@ func (s *AssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string)
 	return clearOwnerRef(ctx, s.db, assetID, ownerRef)
 }
 
-// ClearStorageKey nulls storage_key after the blob was removed (or already absent).
+// ClearStorageKey nulls storage_key on a soft-deleted row after the blob was removed
+// (or already absent). Refuses to clear a live (deleted_at IS NULL) row.
 func (s *AssetRepo) ClearStorageKey(ctx context.Context, assetID string) error {
 	if assetID == "" {
 		return fmt.Errorf("metaldogs assets: id required")
 	}
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE metaldogs_assets SET storage_key = NULL WHERE id = $1
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET storage_key = NULL
+		WHERE id = $1 AND deleted_at IS NOT NULL
 	`, assetID)
 	if err != nil {
 		return fmt.Errorf("metaldogs assets clear storage_key: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear storage_key rows: %w", err)
+	}
+	if n != 1 {
+		return fmt.Errorf("metaldogs assets clear storage_key: not soft-deleted or missing")
 	}
 	return nil
 }
