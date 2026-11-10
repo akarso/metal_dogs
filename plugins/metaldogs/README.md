@@ -28,12 +28,12 @@ plugins/metaldogs/
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
 ├── generation/            # ImageProvider port + fake (ADR-0008 / G0)
 │   └── eval/              # offline runner + report.json
-├── httpapi/               # enabled + health
+├── httpapi/               # enabled + health + templates + uploads
 ├── observability/         # correlation_id alias helpers
-├── domain/                # domain model (empty until C*)
-├── application/           # use cases (empty until C*)
-├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore
-├── adapters/postgres/     # MetaStore adapter (F2 harness exercise)
+├── domain/                # Template, Asset, …
+├── application/           # TemplateCatalog, UploadService, imageprep
+├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore, AssetRepository
+├── adapters/postgres/     # TemplateStore, AssetRepo, MetaStore
 ├── adapters/mediastore/   # wrap media.SignedURLStorage
 └── testutil/              # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
 ```
@@ -46,15 +46,17 @@ plugins/metaldogs/
 | `GET` | `/api/customizer/health` | public | BoundQueue/Reader readiness only; generic `degraded` reason; HTTP 503 when degraded |
 | `GET` | `/api/customizer/templates` | public | Published catalog (`?genre=`); DTO without prompts/model; `thumbnail_url` null until asset ingest |
 | `GET` | `/api/customizer/templates/{id}` | public | Published UUID only; draft/unknown → `404` |
+| `POST` | `/api/customizer/uploads` | public | Multipart `file` → oriented JPEG/PNG source + signed preview; media+DB; concurrency-capped |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).
 
 Sync job (F3 sample): `integration.sync.metaldogs.obs.ping` — platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
 
-## Private assets (F4 / ADR-0004)
+## Private assets (F4 / C2 / ADR-0004)
 
-- Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). **No writers yet.**
+- Port: `ports.AssetStore` (`Put` / `Head` / `SignedGetURL` / `Delete`). First writer: `UploadService` (C2).
+- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` for C3; retention stub `delete_after=+2h`; sweep = O2).
 - Keys: `private/blobs/metaldogs/...` via `ports.ObjectKey`; mediastore **rejects** any other key.
 - Delivery: wrap core `media.SignedURLStorage` (inline signed GET; TTL capped ≤15m). No product shim.
 - Local: `SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media` (never FileServer); `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) outside DEV.

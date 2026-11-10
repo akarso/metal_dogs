@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/imagemime"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 )
 
@@ -302,7 +303,7 @@ func buildEditMultipart(photo []byte, photoName, prompt, model, size string) (*b
 }
 
 func imagePartMeta(photo []byte, photoName string) (filename, mime string, err error) {
-	mime = sniffImageMIME(photo)
+	mime = imagemime.Sniff(photo)
 	if mime == "" {
 		return "", "", &generation.ProviderError{
 			Class:   generation.ErrorRejectedInput,
@@ -336,21 +337,6 @@ func sanitizeFilename(name string) string {
 		return ""
 	}
 	return base
-}
-
-// sniffImageMIME accepts only magic bytes. Extension is never used for accept/reject
-// (mislabeled garbage must not become image/png).
-func sniffImageMIME(photo []byte) string {
-	if len(photo) >= 8 && bytes.Equal(photo[:8], []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}) {
-		return "image/png"
-	}
-	if len(photo) >= 3 && photo[0] == 0xff && photo[1] == 0xd8 && photo[2] == 0xff {
-		return "image/jpeg"
-	}
-	if len(photo) >= 12 && string(photo[0:4]) == "RIFF" && string(photo[8:12]) == "WEBP" {
-		return "image/webp"
-	}
-	return ""
 }
 
 type imagesResponse struct {

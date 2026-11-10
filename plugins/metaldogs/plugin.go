@@ -1,9 +1,11 @@
 package metaldogs
 
 import (
+	"database/sql"
 	"fmt"
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
+	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
@@ -17,7 +19,8 @@ const PluginName = "metaldogs"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets ports.AssetStore
+	assets  ports.AssetStore
+	uploads *application.UploadService
 }
 
 // New returns the Metal Dogs plugin.
@@ -29,6 +32,10 @@ func (p *Plugin) Name() string { return PluginName }
 // AssetStore returns the private object store wired during Init (nil before Init
 // or when Init ran in eval-only mode without media).
 func (p *Plugin) AssetStore() ports.AssetStore { return p.assets }
+
+// UploadService returns the upload use case wired during Init (nil before Init,
+// without media, or without Bootstrap.DB).
+func (p *Plugin) UploadService() *application.UploadService { return p.uploads }
 
 // Init registers CLI always when enabled. HTTP routes, obs.ping, and AssetStore
 // require media SignedURLStorage (F4 fail-closed). Without media, Init still
@@ -58,11 +65,13 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	p.assets = store
 
-	// Wire catalog once at Init when Bootstrap.DB is present. Nil catalog →
-	// template handlers return 503 (unit tests register routes without DB).
+	// Wire catalog/uploads once at Init when Bootstrap.DB is present. Nil deps →
+	// handlers return 503 (unit tests register routes without DB).
 	var templates *application.TemplateCatalog
+	p.uploads = nil
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
+		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
 	}
 
 	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
@@ -77,6 +86,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := app.RegisterPublicRoute("GET /api/customizer/templates/{id}", httpapi.GetTemplate(templates)); err != nil {
 		return fmt.Errorf("metaldogs plugin: templates get route: %w", err)
 	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/uploads", httpapi.CreateUpload(p.uploads)); err != nil {
+		return fmt.Errorf("metaldogs plugin: uploads route: %w", err)
+	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}
@@ -84,4 +96,26 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
 	}
 	return nil
+}
+
+func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *application.UploadService {
+	if store == nil || db == nil {
+		return nil
+	}
+	svc := &application.UploadService{
+		Assets: postgres.NewAssetRepo(db),
+		Store:  store,
+		IDs:    ports.UUIDGenerator{},
+		Clock:  ports.SystemClock{},
+	}
+	if log != nil {
+		svc.OnCleanupError = func(op, assetID, storageKey string, err error) {
+			log.Error("metaldogs.upload.cleanup_failed", err, map[string]interface{}{
+				"op":          op,
+				"asset_id":    assetID,
+				"storage_key": storageKey,
+			})
+		}
+	}
+	return svc
 }
