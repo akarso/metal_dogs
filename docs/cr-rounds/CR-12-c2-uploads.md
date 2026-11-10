@@ -9,7 +9,7 @@
 - Migration `003_create_assets.sql` (`metaldogs_assets`, `UNIQUE(storage_key)`, mime check, nullable `owner_ref`)
 - `domain.Asset`, `ports.AssetRepository` (Insert/GetByID/SoftDelete), postgres `AssetRepo`, shared `generation/imagemime.Sniff`
 - `application/imageprep`: sniff → `DecodeConfig` bounds/pixel gate → Orientation normalize → EXIF-strip re-encode
-- `UploadService`: Put + insert + signed GET; SoftDelete-first then Delete on sign failure (errors logged via `OnCleanupError`); in-process concurrency cap (`replicas × 4` until O4)
+- `UploadService`: Put + insert + signed GET; SoftDelete-first then Delete on sign failure; `OnCleanupError` wired in plugin Init to structured error logs (`op`, `asset_id`, `storage_key`); in-process concurrency cap (`replicas × 4` until O4)
 - Public `POST /api/customizer/uploads` streams multipart `file`; response splits `preview_url_expires_at` vs `delete_after`
 - WebP rejected `415`; retention stub `delete_after=+2h` (sweep = O2)
 

@@ -175,7 +175,8 @@ func checkUprightBounds(w, h int) error {
 }
 
 // applyOrientation maps EXIF orientation 1–8 into an upright pixel buffer.
-// Materializes to RGBA once so jpeg.YCbCr does not pay At() conversion per pixel.
+// Materializes source to RGBA once (avoids YCbCr At() tax), then writes a second
+// upright RGBA. Peak ~2×RGBA under MaxDimension² is intentional vs planar orient.
 func applyOrientation(src image.Image, orient int) image.Image {
 	if orient < 2 || orient > 8 {
 		return src

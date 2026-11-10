@@ -70,11 +70,12 @@ func (m *memAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) er
 }
 
 type memBlobStore struct {
-	mu       sync.Mutex
-	objects  map[string][]byte
-	signErr  error
-	deletes  int
-	putCalls int
+	mu        sync.Mutex
+	objects   map[string][]byte
+	signErr   error
+	deleteErr error
+	deletes   int
+	putCalls  int
 }
 
 func (m *memBlobStore) Put(_ context.Context, key string, r io.Reader, _ string) error {
@@ -117,6 +118,9 @@ func (m *memBlobStore) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deletes++
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	delete(m.objects, key)
 	return nil
 }
@@ -234,6 +238,32 @@ func TestUploadService_InsertFailure_DeletesBlob(t *testing.T) {
 	}
 }
 
+func TestUploadService_InsertFailure_DeleteFails(t *testing.T) {
+	t.Parallel()
+	store := &memBlobStore{deleteErr: fmt.Errorf("delete boom")}
+	repo := &memAssetRepo{insertErr: fmt.Errorf("db down")}
+	var cleanupOps []string
+	svc := &application.UploadService{
+		Assets: repo,
+		Store:  store,
+		IDs:    testutil.NewSeqGenerator("up"),
+		Clock:  testutil.NewFakeClock(time.Now().UTC()),
+		OnCleanupError: func(op, assetID, storageKey string, err error) {
+			cleanupOps = append(cleanupOps, op)
+		},
+	}
+	_, err := svc.Create(context.Background(), jpegN(t, 300))
+	if err == nil || !strings.Contains(err.Error(), "blob delete failed") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(store.objects) != 1 {
+		t.Fatalf("orphan blob expected when Delete fails after Insert fail, objects=%d", len(store.objects))
+	}
+	if len(cleanupOps) != 1 || cleanupOps[0] != "delete" {
+		t.Fatalf("cleanupOps=%v", cleanupOps)
+	}
+}
+
 func TestUploadService_SignFailure_CleansUp(t *testing.T) {
 	t.Parallel()
 	store := &memBlobStore{signErr: fmt.Errorf("sign boom")}
@@ -254,6 +284,42 @@ func TestUploadService_SignFailure_CleansUp(t *testing.T) {
 	_, ok, _ := repo.GetByID(context.Background(), "up-0001")
 	if ok {
 		t.Fatal("row must be soft-deleted after sign failure")
+	}
+}
+
+func TestUploadService_SignFailure_DeleteFails_AfterSoftDelete(t *testing.T) {
+	t.Parallel()
+	store := &memBlobStore{signErr: fmt.Errorf("sign boom"), deleteErr: fmt.Errorf("delete boom")}
+	repo := &memAssetRepo{}
+	var cleanupOps []string
+	svc := &application.UploadService{
+		Assets: repo,
+		Store:  store,
+		IDs:    testutil.NewSeqGenerator("up"),
+		Clock:  testutil.NewFakeClock(time.Now().UTC()),
+		OnCleanupError: func(op, assetID, storageKey string, err error) {
+			cleanupOps = append(cleanupOps, op)
+			if assetID == "" || storageKey == "" || err == nil {
+				t.Fatalf("cleanup callback incomplete: op=%s id=%s key=%s err=%v", op, assetID, storageKey, err)
+			}
+		},
+	}
+	_, err := svc.Create(context.Background(), jpegN(t, 300))
+	if err == nil || !strings.Contains(err.Error(), "blob delete failed") {
+		t.Fatalf("err=%v", err)
+	}
+	if store.deletes != 1 {
+		t.Fatalf("Delete must be attempted after SoftDelete, deletes=%d", store.deletes)
+	}
+	if len(store.objects) != 1 {
+		t.Fatalf("blob must remain when Delete fails, objects=%d", len(store.objects))
+	}
+	_, ok, _ := repo.GetByID(context.Background(), "up-0001")
+	if ok {
+		t.Fatal("row must be soft-deleted (hidden) even when blob Delete fails")
+	}
+	if len(cleanupOps) != 1 || cleanupOps[0] != "delete" {
+		t.Fatalf("cleanupOps=%v", cleanupOps)
 	}
 }
 

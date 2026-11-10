@@ -163,6 +163,9 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	if p.AssetStore() == nil {
 		t.Fatal("AssetStore after Init must be set")
 	}
+	if p.UploadService() != nil {
+		t.Fatal("UploadService must stay nil without Bootstrap.DB")
+	}
 	routes := app.PublicRoutes()
 	patterns := map[string]bool{}
 	for _, r := range routes {
@@ -189,6 +192,39 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	if !foundAdmin {
 		t.Fatalf("AdminRoutes = %+v, want admin customizer health", admins)
 	}
+	var enabled plugin.PublicRoute
+	for _, r := range routes {
+		if r.Pattern == "GET /api/customizer/enabled" {
+			enabled = r
+		}
+	}
+	rec := httptest.NewRecorder()
+	enabled.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enabled status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json: %v body=%s", err, rec.Body.String())
+	}
+	if body["status"] != "ok" || body["plugin"] != "metaldogs" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestPlugin_Init_Enabled_RegistersObsPing(t *testing.T) {
+	t.Parallel()
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
+	p := metaldogs.New()
+	reg.Register(p)
+	app := testApp(t, true)
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v", summary)
+	}
 	foundPing := false
 	for _, sj := range app.SyncJobs() {
 		if sj.JobType == "integration.sync.metaldogs.obs.ping" {
@@ -210,27 +246,6 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	}
 	if !foundEval {
 		t.Fatalf("CLIRegistry missing %s: %+v", metaldogs.CommandEval, cmds)
-	}
-	var enabled plugin.PublicRoute
-	for _, r := range routes {
-		if r.Pattern == "GET /api/customizer/enabled" {
-			enabled = r
-		}
-	}
-	rec := httptest.NewRecorder()
-	enabled.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("enabled status = %d", rec.Code)
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Fatalf("Content-Type = %q", ct)
-	}
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("json: %v body=%s", err, rec.Body.String())
-	}
-	if body["status"] != "ok" || body["plugin"] != "metaldogs" {
-		t.Fatalf("body = %#v", body)
 	}
 }
 

@@ -230,6 +230,16 @@ func TestPrepare_Orientation6_BigEndianEXIF(t *testing.T) {
 	if got.Width != 280 || got.Height != 320 {
 		t.Fatalf("upright dims = %dx%d, want 280x320", got.Width, got.Height)
 	}
+	out, err := jpeg.Decode(bytes.NewReader(got.Bytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if avgRed(out, 250, 0, 279, 20) < 180 {
+		t.Fatalf("MM Orientation=6: expected red block at upright top-right")
+	}
+	if avgRed(out, 0, 0, 20, 20) > 80 {
+		t.Fatalf("MM Orientation=6: top-left should not stay red")
+	}
 }
 
 func injectExifOrientationEndian(jpegBytes []byte, orient int, little bool) []byte {
