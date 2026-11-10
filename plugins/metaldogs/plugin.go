@@ -106,7 +106,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
 		p.designs = newDesignService(store, app.Bootstrap.DB, templates, app.Logger)
 		var genErr error
-		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts)
+		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts, app.Logger)
 		if genErr != nil {
 			return fmt.Errorf("metaldogs plugin: generate services: %w", genErr)
 		}
@@ -187,6 +187,7 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 	svc := &application.DesignService{
 		Designs:   postgres.NewDesignRepo(db),
 		Assets:    postgres.NewAssetRepo(db),
+		Jobs:      postgres.NewGenerationJobRepo(db),
 		Templates: templates,
 		Store:     store,
 		IDs:       ports.UUIDGenerator{},
@@ -210,6 +211,7 @@ func newGenerateServices(
 	db *sql.DB,
 	providerName string,
 	maxRetries, maxAttempts int,
+	log logger.Logger,
 ) (*application.GenerateService, *application.GenerateWorker, error) {
 	if store == nil || db == nil || app == nil {
 		return nil, nil, nil
@@ -232,6 +234,15 @@ func newGenerateServices(
 		IDs:              ports.UUIDGenerator{},
 		Clock:            ports.SystemClock{},
 		MaxQueueAttempts: maxRetries,
+	}
+	if log != nil {
+		worker.OnCleanupError = func(op, assetID, storageKey string, err error) {
+			log.Error("metaldogs.generate.cleanup_failed", err, map[string]interface{}{
+				"op":          op,
+				"asset_id":    assetID,
+				"storage_key": storageKey,
+			})
+		}
 	}
 	enqueue := func(ctx context.Context, generationJobID, designID string) error {
 		return enqueueGenerateIdempotent(app, ctx, generationJobID, designID)

@@ -11,12 +11,14 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
+	"github.com/akarso/shopanda/plugins/metaldogs/generation/mockup"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/validate"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -41,6 +43,8 @@ type GenerateWorker struct {
 	Clock     ports.Clock
 	// MaxQueueAttempts bounds platform retries (dequeue Attempts vs MaxRetries).
 	MaxQueueAttempts int
+	// OnCleanupError is optional; op is "delete" or "clear_storage_key"; never pass URLs.
+	OnCleanupError func(op, assetID, storageKey string, err error)
 }
 
 // Process runs one sync-job delivery for generation_job_id.
@@ -73,7 +77,7 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 		return nil
 	}
 	if job.ArtworkAssetID != "" {
-		return w.finishAlreadyStored(ctx, job)
+		return w.finishAlreadyStored(ctx, job, queueAttempts, maxAttempts)
 	}
 
 	claimed, err := w.Jobs.ClaimForWork(ctx, job.ID, generateStageTimeout)
@@ -164,8 +168,7 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 		return w.failPermanent(ctx, job, domain.TerminalValidationFailed, validate.CodeDecodeFailed)
 	}
 
-	// Persist PNG before committing validating/succeeded so a crash can re-call provider
-	// (no artwork_asset_id yet) without orphaning a "validating" row that cannot MarkValidating.
+	// Persist artwork before mockup so a crash / compose failure never re-calls the provider.
 	assetID := w.IDs.New()
 	key, err := ports.ObjectKey(domain.AssetTypeArtwork, assetID, "png", now)
 	if err != nil {
@@ -195,22 +198,49 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 	if err := w.Store.Put(stageCtx, key, bytes.NewReader(result.ImagePNG), "image/png"); err != nil {
 		return w.transientOrFail(ctx, job, domain.TerminalStorageError, "storage_put", err, queueAttempts, maxAttempts)
 	}
+	priorArt, err := w.Jobs.PersistArtwork(ctx, job, artwork)
+	if err != nil {
+		_ = w.Store.Delete(stageCtx, key)
+		if errors.Is(err, ports.ErrGenerationJobStale) {
+			return jobs.ErrSkipOutcome
+		}
+		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "persist_artwork", err)
+	}
+	job.ArtworkAssetID = artwork.ID
+	w.deleteBlobRefs(ctx, priorArt)
 
-	latencyMS := int(result.Latency.Milliseconds())
-	if err := job.Succeed(assetID, vrJSON, latencyMS, &cost, "USD", job.Model, job.PromptVersion, job.ParametersJSON, now); err != nil {
-		_ = w.Store.Delete(stageCtx, key)
-		return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "invalid_transition")
+	mockupAsset, mockupKey, err := w.buildMockupAsset(stageCtx, design, result.ImagePNG, now)
+	if err != nil {
+		if errors.Is(err, errMockupStorage) {
+			// Artwork stays; next delivery resumes via finishAlreadyStored.
+			return w.transientOrFail(ctx, job, domain.TerminalStorageError, "mockup_put", err, queueAttempts, maxAttempts)
+		}
+		// Compose / object-key / decode-config are deterministic for these bytes.
+		return w.failPermanent(ctx, job, domain.TerminalValidationFailed, "mockup_compose")
 	}
-	if err := design.MarkPreviewReady(now); err != nil {
-		_ = w.Store.Delete(stageCtx, key)
-		return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "design_transition")
+	cleanupMockup := func() {
+		// Parent WithoutCancel: stageCtx may already be timed out when ensureClaimHeld fails.
+		w.deleteUncommittedObject(ctx, mockupKey)
 	}
+
+	// Claim fence while still running so stage timeout / re-read can requeue with artwork kept.
 	if err := w.ensureClaimHeld(ctx, stageCtx, job, queueAttempts, maxAttempts); err != nil {
-		_ = w.Store.Delete(stageCtx, key)
+		cleanupMockup()
 		return err
 	}
-	if err := w.Jobs.CompleteSuccess(ctx, job, artwork, design); err != nil {
-		_ = w.Store.Delete(stageCtx, key)
+	if err := design.MarkPreviewReady(now); err != nil {
+		cleanupMockup()
+		return w.failPermanent(ctx, job, domain.TerminalCancelled, "design_transition")
+	}
+	latencyMS := int(result.Latency.Milliseconds())
+	if err := job.Succeed(assetID, mockupAsset.ID, vrJSON, latencyMS, &cost, "USD", job.Model, job.PromptVersion, job.ParametersJSON, now); err != nil {
+		cleanupMockup()
+		return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "invalid_transition")
+	}
+	priorMock, err := w.Jobs.CompleteSuccess(ctx, job, mockupAsset, design)
+	if err != nil {
+		cleanupMockup()
+		w.rollbackInMemorySucceed(&job)
 		if errors.Is(err, ports.ErrGenerationJobStale) {
 			return jobs.ErrSkipOutcome
 		}
@@ -219,7 +249,85 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 		}
 		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "complete_success", err)
 	}
+	w.deleteBlobRefs(ctx, priorMock)
 	return nil
+}
+
+// rollbackInMemorySucceed undoes a Succeed that never committed so requeue/fail see an active job.
+// Keeps ArtworkAssetID (already persisted); clears MockupAssetID (blob deleted, never inserted).
+func (w *GenerateWorker) rollbackInMemorySucceed(job *domain.GenerationJob) {
+	if job == nil {
+		return
+	}
+	job.Status = domain.JobRunning
+	job.FinishedAt = nil
+	job.MockupAssetID = ""
+	job.ErrorCode = ""
+	job.TerminalReason = ""
+}
+
+// errMockupStorage marks a transient object-store failure while composing a mockup.
+var errMockupStorage = errors.New("mockup storage")
+
+func (w *GenerateWorker) buildMockupAsset(ctx context.Context, design domain.Design, artworkPNG []byte, now time.Time) (domain.Asset, string, error) {
+	composed, err := mockup.Compose(artworkPNG, mockup.DefaultBasePNG(), mockup.DefaultPrintArea())
+	if err != nil {
+		return domain.Asset{}, "", err
+	}
+	id := w.IDs.New()
+	key, err := ports.ObjectKey(domain.AssetTypeMockup, id, "png", now)
+	if err != nil {
+		return domain.Asset{}, "", err
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(composed))
+	if err != nil {
+		return domain.Asset{}, "", err
+	}
+	if err := w.Store.Put(ctx, key, bytes.NewReader(composed), "image/png"); err != nil {
+		return domain.Asset{}, "", fmt.Errorf("%w: %v", errMockupStorage, err)
+	}
+	sum := sha256.Sum256(composed)
+	a := domain.Asset{
+		ID: id, Type: domain.AssetTypeMockup, StorageKey: key,
+		MimeType: "image/png", SizeBytes: int64(len(composed)),
+		Width: cfg.Width, Height: cfg.Height,
+		Checksum:  ChecksumSHA256Prefix + hex.EncodeToString(sum[:]),
+		CreatedAt: now, DeleteAfter: design.ExpiresAt, OwnerRef: design.ID,
+	}
+	if a.DeleteAfter.IsZero() || a.DeleteAfter.Before(now) {
+		a.DeleteAfter = now.Add(ArtworkRetention)
+	}
+	return a, key, nil
+}
+
+// deleteUncommittedObject removes a blob that never got an asset row. Uses WithoutCancel so an
+// expired stage/parent deadline cannot skip the delete and leave an unreachable private object.
+func (w *GenerateWorker) deleteUncommittedObject(parentCtx context.Context, key string) {
+	if key == "" {
+		return
+	}
+	_ = w.Store.Delete(context.WithoutCancel(parentCtx), key)
+}
+
+func (w *GenerateWorker) deleteBlobRefs(ctx context.Context, refs []ports.DeletedBlobRef) {
+	for _, ref := range refs {
+		if ref.StorageKey == "" {
+			continue
+		}
+		delErr := w.Store.Delete(ctx, ref.StorageKey)
+		if delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
+			if w.OnCleanupError != nil {
+				w.OnCleanupError("delete", ref.AssetID, ref.StorageKey, delErr)
+			}
+			continue
+		}
+		if ref.AssetID == "" {
+			continue
+		}
+		if clearErr := w.Assets.ClearStorageKey(ctx, ref.AssetID); clearErr != nil && w.OnCleanupError != nil {
+			w.OnCleanupError("clear_storage_key", ref.AssetID, ref.StorageKey, clearErr)
+		}
+	}
 }
 
 // ensureClaimHeld re-reads the product job before paid work or durable writes.
@@ -251,38 +359,96 @@ func (w *GenerateWorker) ensureClaimHeld(parentCtx, stageCtx context.Context, jo
 	return nil
 }
 
-func (w *GenerateWorker) finishAlreadyStored(ctx context.Context, job domain.GenerationJob) error {
-	if job.Status == domain.JobSucceeded {
+func (w *GenerateWorker) finishAlreadyStored(ctx context.Context, job domain.GenerationJob, queueAttempts, maxAttempts int) error {
+	if job.Status == domain.JobSucceeded && job.MockupAssetID != "" {
 		return nil
 	}
+	claimed, err := w.Jobs.ClaimForWork(ctx, job.ID, generateStageTimeout)
+	if err != nil {
+		if errors.Is(err, ports.ErrGenerationJobStale) {
+			return jobs.ErrSkipOutcome
+		}
+		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "claim_running", err)
+	}
+	job = claimed
 	now := w.Clock.Now().UTC()
+	if job.StartedAt != nil {
+		now = job.StartedAt.UTC()
+	}
+
 	design, ok, err := w.Designs.GetByID(ctx, job.DesignID)
 	if err != nil {
+		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "load_design", err)
+	}
+	if !ok {
+		return w.failPermanent(ctx, job, domain.TerminalCancelled, domain.TerminalCancelled)
+	}
+
+	if job.MockupAssetID != "" {
+		// Active row with mockup id should not occur; fail closed rather than double-insert.
+		return w.failPermanent(ctx, job, domain.TerminalCancelled, "unexpected_mockup")
+	}
+	art, aok, aerr := w.Assets.GetByID(ctx, job.ArtworkAssetID)
+	if aerr != nil {
+		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "load_artwork", aerr)
+	}
+	if !aok || art.StorageKey == "" || art.OwnerRef != job.DesignID || art.Type != domain.AssetTypeArtwork {
+		return w.failPermanent(ctx, job, domain.TerminalStorageError, "artwork_missing")
+	}
+	artBytes, rerr := w.Store.Read(ctx, art.StorageKey)
+	if rerr != nil {
+		return w.transientOrFail(ctx, job, domain.TerminalStorageError, "mockup_source_read", rerr, queueAttempts, maxAttempts)
+	}
+	mockupAsset, mockupKey, err := w.buildMockupAsset(ctx, design, artBytes, now)
+	if err != nil {
+		if errors.Is(err, errMockupStorage) {
+			return w.transientOrFail(ctx, job, domain.TerminalStorageError, "mockup_put", err, queueAttempts, maxAttempts)
+		}
+		return w.failPermanent(ctx, job, domain.TerminalValidationFailed, "mockup_compose")
+	}
+	cleanupMockup := func() {
+		w.deleteUncommittedObject(ctx, mockupKey)
+	}
+
+	stageCtx, cancel := context.WithTimeout(ctx, generateStageTimeout)
+	defer cancel()
+	if err := w.ensureClaimHeld(ctx, stageCtx, job, queueAttempts, maxAttempts); err != nil {
+		cleanupMockup()
 		return err
+	}
+	if design.Status == domain.DesignGenerating {
+		if err := design.MarkPreviewReady(now); err != nil {
+			cleanupMockup()
+			return w.failPermanent(ctx, job, domain.TerminalCancelled, "design_transition")
+		}
+	} else if design.Status != domain.DesignPreviewReady {
+		cleanupMockup()
+		return w.failPermanent(ctx, job, domain.TerminalCancelled, "design_conflict")
+	} else {
+		design.UpdatedAt = now
 	}
 	latency := 0
 	if job.LatencyMS != nil {
 		latency = *job.LatencyMS
 	}
-	if err := job.Succeed(job.ArtworkAssetID, job.ValidationJSON, latency, job.Cost, job.CostCurrency, job.Model, job.PromptVersion, job.ParametersJSON, now); err != nil {
-		job.Status = domain.JobSucceeded
-		job.FinishedAt = &now
+	if err := job.Succeed(job.ArtworkAssetID, mockupAsset.ID, job.ValidationJSON, latency, job.Cost, job.CostCurrency, job.Model, job.PromptVersion, job.ParametersJSON, now); err != nil {
+		cleanupMockup()
+		return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "invalid_transition")
 	}
-	if !ok {
-		err := w.Jobs.FinalizeSuccess(ctx, job, domain.Design{ID: job.DesignID, Status: domain.DesignPreviewReady, UpdatedAt: now})
+	prior, err := w.Jobs.FinalizeSuccess(ctx, job, design, mockupAsset)
+	if err != nil {
+		cleanupMockup()
+		w.rollbackInMemorySucceed(&job)
 		if errors.Is(err, ports.ErrGenerationJobStale) {
 			return jobs.ErrSkipOutcome
 		}
-		return err
+		if errors.Is(err, ports.ErrDesignConflict) {
+			return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "design_conflict")
+		}
+		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "finalize_success", err)
 	}
-	if design.Status == domain.DesignGenerating {
-		_ = design.MarkPreviewReady(now)
-	}
-	err = w.Jobs.FinalizeSuccess(ctx, job, design)
-	if errors.Is(err, ports.ErrGenerationJobStale) {
-		return jobs.ErrSkipOutcome
-	}
-	return err
+	w.deleteBlobRefs(ctx, prior)
+	return nil
 }
 
 func (w *GenerateWorker) mapProviderError(ctx context.Context, job domain.GenerationJob, err error, queueAttempts, maxAttempts int) error {
@@ -340,7 +506,7 @@ func (w *GenerateWorker) maybeLastAttemptLoadJob(ctx context.Context, generation
 		return nil
 	}
 	if job.ArtworkAssetID != "" {
-		return w.finishAlreadyStored(ctx, job)
+		return w.finishAlreadyStored(ctx, job, queueAttempts, maxAttempts)
 	}
 	if designIDHint != "" && job.DesignID == "" {
 		job.DesignID = designIDHint

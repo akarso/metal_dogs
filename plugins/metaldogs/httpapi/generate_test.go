@@ -61,11 +61,14 @@ func (g *gJobRepo) Update(_ context.Context, j domain.GenerationJob, _ string) e
 	g.job = j
 	return nil
 }
-func (g *gJobRepo) CompleteSuccess(context.Context, domain.GenerationJob, domain.Asset, domain.Design) error {
-	return nil
+func (g *gJobRepo) PersistArtwork(context.Context, domain.GenerationJob, domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return nil, nil
 }
-func (g *gJobRepo) FinalizeSuccess(context.Context, domain.GenerationJob, domain.Design) error {
-	return nil
+func (g *gJobRepo) CompleteSuccess(context.Context, domain.GenerationJob, domain.Asset, domain.Design) ([]ports.DeletedBlobRef, error) {
+	return nil, nil
+}
+func (g *gJobRepo) FinalizeSuccess(context.Context, domain.GenerationJob, domain.Design, domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return nil, nil
 }
 func (g *gJobRepo) CompleteFailure(context.Context, domain.GenerationJob, domain.Design) error {
 	return nil
@@ -101,12 +104,12 @@ func TestGenerateDesign_HTTP(t *testing.T) {
 			uploadID: {
 				ID: uploadID, Type: domain.AssetTypeSource,
 				StorageKey: "private/blobs/metaldogs/source/2026/11/" + uploadID + ".jpg",
-				MimeType: "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
+				MimeType:   "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
 				DeleteAfter: now.Add(time.Hour), OwnerRef: designID,
 			},
 		}},
 		IDs: ids, Clock: testutil.NewFakeClock(now),
-		Enqueue: func(context.Context, string, string) error { return nil },
+		Enqueue:  func(context.Context, string, string) error { return nil },
 		Provider: "fake", MaxAttempts: 3,
 	}
 	mux := http.NewServeMux()
@@ -191,12 +194,12 @@ func TestGenerateDesign_EnqueueUnavailableIncludesJobID(t *testing.T) {
 			uploadID: {
 				ID: uploadID, Type: domain.AssetTypeSource,
 				StorageKey: "private/blobs/metaldogs/source/2026/11/" + uploadID + ".jpg",
-				MimeType: "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
+				MimeType:   "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
 				DeleteAfter: now.Add(time.Hour), OwnerRef: designID,
 			},
 		}},
 		IDs: &testutil.FixedGenerator{ID: jobID}, Clock: testutil.NewFakeClock(now),
-		Enqueue: func(context.Context, string, string) error { return context.DeadlineExceeded },
+		Enqueue:  func(context.Context, string, string) error { return context.DeadlineExceeded },
 		Provider: "fake", MaxAttempts: 3,
 	}
 	mux := http.NewServeMux()

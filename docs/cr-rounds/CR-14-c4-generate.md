@@ -44,7 +44,7 @@
 
 ## Follow-ups
 
-- C5: mockup compose + signed artwork/mockup URLs
+- C5: mockup compose + signed artwork/mockup URLs → CR-15
 - C7: remaining-attempts UI + cooldown
 - OpenAI live provider path (ADR-0008)
 - `metaldogs:design-reconcile` / attach lost provider result

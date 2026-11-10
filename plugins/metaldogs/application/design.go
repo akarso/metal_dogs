@@ -40,23 +40,28 @@ const (
 
 // DesignView is the customer-facing design projection (no token hash).
 type DesignView struct {
-	ID                        string
-	Status                    string
-	TemplateID                string
-	TemplateVersion           int
-	Texts                     map[string]string
-	UploadID                  string
-	CreatedAt                 time.Time
-	ExpiresAt                 time.Time
-	SourcePreviewURL          string
-	SourcePreviewURLExpiresAt time.Time // zero when preview unavailable
-	OwnerToken                string    // set only on Create
+	ID                         string
+	Status                     string
+	TemplateID                 string
+	TemplateVersion            int
+	Texts                      map[string]string
+	UploadID                   string
+	CreatedAt                  time.Time
+	ExpiresAt                  time.Time
+	SourcePreviewURL           string
+	SourcePreviewURLExpiresAt  time.Time // zero when preview unavailable
+	ArtworkPreviewURL          string
+	ArtworkPreviewURLExpiresAt time.Time
+	MockupPreviewURL           string
+	MockupPreviewURLExpiresAt  time.Time
+	OwnerToken                 string // set only on Create
 }
 
 // DesignService coordinates design create/get/patch with ownership tokens.
 type DesignService struct {
 	Designs   ports.DesignRepository
 	Assets    ports.AssetRepository
+	Jobs      ports.GenerationJobRepository // optional; used for artwork/mockup previews (C5)
 	Templates *TemplateCatalog
 	Store     ports.AssetStore
 	IDs       ports.IDGenerator
@@ -327,18 +332,61 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 	}
 	if !ok {
 		view.UploadID = ""
-		return view, nil
+	} else if asset.StorageKey != "" {
+		if url, signErr := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL); signErr == nil {
+			view.SourcePreviewURL = url
+			view.SourcePreviewURLExpiresAt = now.Add(ports.DefaultSignedGetTTL)
+		}
 	}
-	if asset.StorageKey == "" {
-		return view, nil
+	if err := s.attachGenerationPreviews(ctx, &view, d, now); err != nil {
+		return DesignView{}, err
 	}
-	url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL)
-	if err != nil {
-		return view, nil
-	}
-	view.SourcePreviewURL = url
-	view.SourcePreviewURLExpiresAt = now.Add(ports.DefaultSignedGetTTL)
 	return view, nil
+}
+
+func (s *DesignService) attachGenerationPreviews(ctx context.Context, view *DesignView, d domain.Design, now time.Time) error {
+	if s.Jobs == nil || s.Assets == nil || s.Store == nil || d.LatestJobID == "" {
+		return nil
+	}
+	switch d.Status {
+	case domain.DesignPreviewReady, domain.DesignApproved, domain.DesignOrdered:
+		// ok
+	default:
+		return nil
+	}
+	job, ok, err := s.Jobs.GetByID(ctx, d.LatestJobID)
+	if err != nil {
+		return fmt.Errorf("design: generation job: %w", err)
+	}
+	if !ok || job.Status != domain.JobSucceeded || job.DesignID != d.ID {
+		return nil
+	}
+	expires := now.Add(ports.DefaultSignedGetTTL)
+	if job.ArtworkAssetID != "" {
+		a, aok, aerr := s.Assets.GetByID(ctx, job.ArtworkAssetID)
+		if aerr != nil {
+			return fmt.Errorf("design: artwork asset: %w", aerr)
+		}
+		if aok && a.Type == domain.AssetTypeArtwork && a.OwnerRef == d.ID && a.StorageKey != "" {
+			if u, signErr := s.Store.SignedGetURL(ctx, a.StorageKey, ports.DefaultSignedGetTTL); signErr == nil {
+				view.ArtworkPreviewURL = u
+				view.ArtworkPreviewURLExpiresAt = expires
+			}
+		}
+	}
+	if job.MockupAssetID != "" {
+		a, aok, aerr := s.Assets.GetByID(ctx, job.MockupAssetID)
+		if aerr != nil {
+			return fmt.Errorf("design: mockup asset: %w", aerr)
+		}
+		if aok && a.Type == domain.AssetTypeMockup && a.OwnerRef == d.ID && a.StorageKey != "" {
+			if u, signErr := s.Store.SignedGetURL(ctx, a.StorageKey, ports.DefaultSignedGetTTL); signErr == nil {
+				view.MockupPreviewURL = u
+				view.MockupPreviewURLExpiresAt = expires
+			}
+		}
+	}
+	return nil
 }
 
 func validateTextsFromPublished(tpl ports.PublishedTemplate, input map[string]string) (map[string]string, error) {

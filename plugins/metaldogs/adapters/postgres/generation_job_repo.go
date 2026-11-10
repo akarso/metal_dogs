@@ -234,28 +234,65 @@ func (r *GenerationJobRepo) Update(ctx context.Context, j domain.GenerationJob, 
 	return updateGenerationJob(ctx, r.db, j, expectedStatus)
 }
 
-func (r *GenerationJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, artwork domain.Asset, design domain.Design) error {
+func (r *GenerationJobRepo) PersistArtwork(ctx context.Context, j domain.GenerationJob, artwork domain.Asset) ([]ports.DeletedBlobRef, error) {
+	if artwork.ID == "" || artwork.Type != domain.AssetTypeArtwork {
+		return nil, fmt.Errorf("metaldogs persist artwork: artwork asset required")
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("metaldogs generation complete begin: %w", err)
+		return nil, fmt.Errorf("metaldogs persist artwork begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Soft-delete prior live artwork for this design (unique owner_ref+type).
-	if artwork.OwnerRef != "" {
-		_, err := tx.ExecContext(ctx, `
-			UPDATE metaldogs_assets SET deleted_at = $2
-			WHERE owner_ref = $1 AND type = 'artwork' AND deleted_at IS NULL
-		`, artwork.OwnerRef, design.UpdatedAt.UTC())
-		if err != nil {
-			return fmt.Errorf("metaldogs soft-delete prior artwork: %w", err)
-		}
+	prior, err := softDeleteLiveAssetType(ctx, tx, artwork.OwnerRef, domain.AssetTypeArtwork, artwork.CreatedAt)
+	if err != nil {
+		return nil, err
 	}
 	if err := insertAssetTx(ctx, tx, artwork); err != nil {
-		return err
+		return nil, err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE metaldogs_generation_jobs
+		SET artwork_asset_id = $2
+		WHERE id = $1
+		  AND status IN ('queued', 'running', 'validating')
+		  AND claim_token = $3
+		  AND (artwork_asset_id IS NULL OR artwork_asset_id = $2)
+	`, j.ID, artwork.ID, j.ClaimToken)
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs persist artwork job: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n != 1 {
+		return nil, ports.ErrGenerationJobStale
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("metaldogs persist artwork commit: %w", err)
+	}
+	return prior, nil
+}
+
+func (r *GenerationJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, mockup domain.Asset, design domain.Design) ([]ports.DeletedBlobRef, error) {
+	if mockup.ID == "" || mockup.Type != domain.AssetTypeMockup {
+		return nil, fmt.Errorf("metaldogs generation complete: mockup asset required")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs generation complete begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	prior, err := softDeleteLiveAssetType(ctx, tx, mockup.OwnerRef, domain.AssetTypeMockup, design.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := insertAssetTx(ctx, tx, mockup); err != nil {
+		return nil, err
 	}
 	// Active-only: never overwrite a committed terminal job.
 	if err := updateGenerationJobActiveOnly(ctx, tx, j); err != nil {
-		return err
+		return nil, err
 	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_designs
@@ -263,29 +300,39 @@ func (r *GenerationJobRepo) CompleteSuccess(ctx context.Context, j domain.Genera
 		WHERE id = $1 AND status = 'generating'
 	`, design.ID, design.Status, design.UpdatedAt.UTC())
 	if err != nil {
-		return fmt.Errorf("metaldogs designs preview_ready: %w", err)
+		return nil, fmt.Errorf("metaldogs designs preview_ready: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if n != 1 {
-		return ports.ErrDesignConflict
+		return nil, ports.ErrDesignConflict
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("metaldogs generation complete commit: %w", err)
+		return nil, fmt.Errorf("metaldogs generation complete commit: %w", err)
 	}
-	return nil
+	return prior, nil
 }
 
-func (r *GenerationJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design) error {
+func (r *GenerationJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design, mockup domain.Asset) ([]ports.DeletedBlobRef, error) {
+	if mockup.ID == "" || mockup.Type != domain.AssetTypeMockup {
+		return nil, fmt.Errorf("metaldogs generation finalize: mockup asset required")
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("metaldogs generation finalize begin: %w", err)
+		return nil, fmt.Errorf("metaldogs generation finalize begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	prior, err := softDeleteLiveAssetType(ctx, tx, mockup.OwnerRef, domain.AssetTypeMockup, design.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := insertAssetTx(ctx, tx, mockup); err != nil {
+		return nil, err
+	}
 	if err := updateGenerationJobActiveOnly(ctx, tx, j); err != nil {
-		return err
+		return nil, err
 	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_designs
@@ -293,19 +340,46 @@ func (r *GenerationJobRepo) FinalizeSuccess(ctx context.Context, j domain.Genera
 		WHERE id = $1 AND status IN ('generating', 'preview_ready')
 	`, design.ID, domain.DesignPreviewReady, design.UpdatedAt.UTC())
 	if err != nil {
-		return fmt.Errorf("metaldogs designs preview_ready: %w", err)
+		return nil, fmt.Errorf("metaldogs designs preview_ready: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if n != 1 {
-		return ports.ErrDesignConflict
+		return nil, ports.ErrDesignConflict
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("metaldogs generation finalize commit: %w", err)
+		return nil, fmt.Errorf("metaldogs generation finalize commit: %w", err)
 	}
-	return nil
+	return prior, nil
+}
+
+func softDeleteLiveAssetType(ctx context.Context, tx *sql.Tx, ownerRef, assetType string, at time.Time) ([]ports.DeletedBlobRef, error) {
+	if ownerRef == "" || assetType == "" {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		UPDATE metaldogs_assets SET deleted_at = $3
+		WHERE owner_ref = $1 AND type = $2 AND deleted_at IS NULL
+		RETURNING id, COALESCE(storage_key, '')
+	`, ownerRef, assetType, at.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs soft-delete prior %s: %w", assetType, err)
+	}
+	defer rows.Close()
+	var out []ports.DeletedBlobRef
+	for rows.Next() {
+		var ref ports.DeletedBlobRef
+		if err := rows.Scan(&ref.AssetID, &ref.StorageKey); err != nil {
+			return nil, fmt.Errorf("metaldogs soft-delete prior %s scan: %w", assetType, err)
+		}
+		out = append(out, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("metaldogs soft-delete prior %s rows: %w", assetType, err)
+	}
+	return out, nil
 }
 
 func (r *GenerationJobRepo) CompleteFailure(ctx context.Context, j domain.GenerationJob, design domain.Design) error {

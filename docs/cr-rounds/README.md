@@ -66,3 +66,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-12 | C2 uploads (`POST /uploads` + `metaldogs_assets`) | M2 → C2 done | [`CR-12-c2-uploads.md`](CR-12-c2-uploads.md) |
 | CR-13 | C3 designs + ownership tokens | M2 → C3 done | [`CR-13-c3-designs.md`](CR-13-c3-designs.md) |
 | CR-14 | C4 generate job + status polling | M2 → C4 | [`CR-14-c4-generate.md`](CR-14-c4-generate.md) |
+| CR-15 | G4 mockup compose + C5 preview assets | M2 → C5 | [`CR-15-c5-preview-assets.md`](CR-15-c5-preview-assets.md) |

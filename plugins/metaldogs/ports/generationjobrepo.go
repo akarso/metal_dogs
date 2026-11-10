@@ -17,6 +17,12 @@ var ErrGenerationJobStale = errors.New("generation job stale")
 // ErrGenerationJobHasArtwork means FailActive refused to fail a row that already has artwork.
 var ErrGenerationJobHasArtwork = errors.New("generation job has artwork")
 
+// DeletedBlobRef is a soft-deleted asset whose object the caller should remove.
+type DeletedBlobRef struct {
+	AssetID    string
+	StorageKey string
+}
+
 // GenerationJobRepository persists GenerationJob aggregates.
 type GenerationJobRepository interface {
 	Insert(ctx context.Context, j domain.GenerationJob) error
@@ -36,10 +42,16 @@ type GenerationJobRepository interface {
 	InvalidateClaim(ctx context.Context, id string) error
 	// Update writes job fields when status still equals expectedStatus and claim_token matches.
 	Update(ctx context.Context, j domain.GenerationJob, expectedStatus string) error
-	// CompleteSuccess soft-deletes prior artwork for the design, inserts artwork, succeeds job + design.
-	CompleteSuccess(ctx context.Context, j domain.GenerationJob, artwork domain.Asset, design domain.Design) error
-	// FinalizeSuccess updates job succeeded + design preview_ready without inserting an asset.
-	FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design) error
+	// PersistArtwork soft-deletes prior live artwork for the design, inserts artwork, and sets
+	// job.artwork_asset_id while the job stays active (claim-token fenced). Returns soft-deleted
+	// prior artwork refs for caller blob cleanup. Enables resume without another provider call.
+	PersistArtwork(ctx context.Context, j domain.GenerationJob, artwork domain.Asset) ([]DeletedBlobRef, error)
+	// CompleteSuccess soft-deletes prior mockup, inserts mockup (required), succeeds job + design.
+	// Artwork must already be on the job via PersistArtwork. Returns soft-deleted mockup refs.
+	CompleteSuccess(ctx context.Context, j domain.GenerationJob, mockup domain.Asset, design domain.Design) ([]DeletedBlobRef, error)
+	// FinalizeSuccess updates an active job to succeeded + design preview_ready.
+	// When mockup is non-zero it soft-deletes prior mockup and inserts the new row.
+	FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design, mockup domain.Asset) ([]DeletedBlobRef, error)
 	// CompleteFailure marks an active job failed + design generation_failed (token-fenced).
 	CompleteFailure(ctx context.Context, j domain.GenerationJob, design domain.Design) error
 	// FailActive marks an active job failed without wiping provider/model/artwork fields.

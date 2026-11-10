@@ -185,17 +185,21 @@ func (j *GenerationJob) RequeueForRetry() error {
 	}
 }
 
-// Succeed marks the job succeeded with artwork (mockup optional / C5).
-func (j *GenerationJob) Succeed(artworkAssetID string, validationJSON []byte, latencyMS int, cost *float64, currency, model, promptVersion string, parametersJSON []byte, at time.Time) error {
+// Succeed marks the job succeeded with artwork and mockup preview assets.
+func (j *GenerationJob) Succeed(artworkAssetID, mockupAssetID string, validationJSON []byte, latencyMS int, cost *float64, currency, model, promptVersion string, parametersJSON []byte, at time.Time) error {
 	if j.Status != JobValidating && j.Status != JobRunning {
 		return &ErrInvalidTransition{From: j.Status, Command: "Succeed"}
 	}
 	if strings.TrimSpace(artworkAssetID) == "" {
 		return fmt.Errorf("artwork asset id required")
 	}
+	if strings.TrimSpace(mockupAssetID) == "" {
+		return fmt.Errorf("mockup asset id required")
+	}
 	now := at.UTC()
 	j.Status = JobSucceeded
 	j.ArtworkAssetID = artworkAssetID
+	j.MockupAssetID = strings.TrimSpace(mockupAssetID)
 	j.ValidationJSON = validationJSON
 	j.LatencyMS = &latencyMS
 	j.Cost = cost
@@ -228,13 +232,15 @@ func (j *GenerationJob) Fail(terminalReason, errorCode string, at time.Time) err
 }
 
 // ForceFail sets failed regardless of current status (compensating path after a rolled-back Succeed).
+// Clears MockupAssetID when the mockup object was deleted and never inserted. Keeps ArtworkAssetID
+// so a previously PersistArtwork'd row is not wiped by CompleteFailure.
 func (j *GenerationJob) ForceFail(terminalReason, errorCode string, at time.Time) {
 	now := at.UTC()
 	j.Status = JobFailed
 	j.TerminalReason = strings.TrimSpace(terminalReason)
 	j.ErrorCode = strings.TrimSpace(errorCode)
 	j.FinishedAt = &now
-	j.ArtworkAssetID = ""
+	j.MockupAssetID = ""
 }
 
 // IsActive reports queued/running/validating.

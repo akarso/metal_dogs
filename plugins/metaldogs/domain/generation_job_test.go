@@ -44,7 +44,7 @@ func TestGenerationJob_ClaimValidateSucceed(t *testing.T) {
 		t.Fatalf("reclaim expired running: %v %+v", err, j)
 	}
 	cost := 0.0
-	if err := j.Succeed("art-1", []byte(`{"status":"pass"}`), 12, &cost, "USD", "fake-g0-v1", "v1", []byte(`{}`), now); err != nil {
+	if err := j.Succeed("art-1", "mock-1", []byte(`{"status":"pass"}`), 12, &cost, "USD", "fake-g0-v1", "v1", []byte(`{}`), now); err != nil {
 		t.Fatal(err)
 	}
 	if j.Status != domain.JobSucceeded || !j.IsTerminal() || j.ArtworkAssetID != "art-1" {
@@ -71,9 +71,22 @@ func TestGenerationJob_FailAndRequeue(t *testing.T) {
 	if err := j.ClaimForWork(now, 0); !errors.As(err, &it) {
 		t.Fatalf("want invalid transition, got %v", err)
 	}
+	j.ArtworkAssetID = "art-leftover"
+	j.MockupAssetID = "mock-leftover"
 	j.ForceFail(domain.TerminalCancelled, "design_conflict", now)
-	if j.Status != domain.JobFailed || j.ArtworkAssetID != "" {
-		t.Fatalf("%+v", j)
+	if j.Status != domain.JobFailed || j.ArtworkAssetID != "art-leftover" || j.MockupAssetID != "" {
+		t.Fatalf("ForceFail must keep persisted artwork and clear mockup: %+v", j)
+	}
+}
+
+func TestGenerationJob_SucceedRequiresMockup(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	j := domain.NewQueuedJob("j1", "d1", "k", "fake", 1, now, "", "s", 1, "")
+	_ = j.ClaimForWork(now, 0)
+	cost := 0.0
+	if err := j.Succeed("art-1", "", nil, 1, &cost, "USD", "m", "v", nil, now); err == nil {
+		t.Fatal("empty mockup must fail")
 	}
 }
 

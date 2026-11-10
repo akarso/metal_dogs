@@ -155,11 +155,15 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
   "expires_at": "2026-12-10T12:00:00Z",
   "source_preview_url": "https://…signed…",
   "source_preview_url_expires_at": "2026-11-10T12:01:00Z",
+  "artwork_preview_url": "https://…signed…",
+  "artwork_preview_url_expires_at": "2026-11-10T12:01:00Z",
+  "mockup_preview_url": "https://…signed…",
+  "mockup_preview_url_expires_at": "2026-11-10T12:01:00Z",
   "owner_token": "base64url…"
 }
 ```
 
-`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` only on that soft-deleted row (missing object is success; other cleanup failures are logged). Source preview TTL is 60s when signing succeeds. If the active source row is missing/soft-deleted, `upload_id` is omitted; a live source with a signer failure keeps `upload_id` and an empty preview. Asset metadata I/O errors are `500`.
+`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` only on that soft-deleted row (missing object is success; other cleanup failures are logged). Source / artwork / mockup preview TTL is 60s when signing succeeds. Artwork and mockup preview fields are omitted until the design is `preview_ready` (also `approved` / `ordered`) and the latest succeeded job has live assets; signing failures soft-fail to empty like source. If the active source row is missing/soft-deleted, `upload_id` is omitted; a live source with a signer failure keeps `upload_id` and an empty preview. Asset metadata I/O errors on the source lookup are `500`.
 
 ### Errors
 
@@ -215,7 +219,7 @@ Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, 
 }
 ```
 
-`retry_after` is seconds while status is `queued` / `running` / `validating`; `0` when terminal. Active responses also set `Retry-After`. Worker (fake by default): claim → provider → G3 validate → store artwork (`owner_ref` = design id) → design `preview_ready` or `generation_failed`. Last queue attempt always terminals the product job (frees the active unique index). Mockup compose is C5.
+`retry_after` is seconds while status is `queued` / `running` / `validating`; `0` when terminal. Active responses also set `Retry-After`. Worker (fake by default): claim → provider → G3 validate → store + persist artwork (`owner_ref` = design id) → G4 compose mockup (compose failures permanent; mockup Put transient) → store mockup → design `preview_ready` or `generation_failed`. Crash after artwork persist resumes without another provider call. Last queue attempt always terminals the product job (frees the active unique index). Design GET then signs `artwork_preview_url` / `mockup_preview_url` only when the succeeded job belongs to the design and assets match owner/type (C5; mockup base still a placeholder until G4 closes).
 
 ### Errors
 
