@@ -47,8 +47,8 @@ type DesignView struct {
 	CreatedAt                 time.Time
 	ExpiresAt                 time.Time
 	SourcePreviewURL          string
-	SourcePreviewURLExpiresAt time.Time
-	OwnerToken                string // set only on Create
+	SourcePreviewURLExpiresAt time.Time // zero when preview unavailable
+	OwnerToken                string    // set only on Create
 }
 
 // DesignService coordinates design create/get/patch with ownership tokens.
@@ -74,9 +74,15 @@ type PatchInput struct {
 	UploadID *string           // nil = leave photo; non-nil replaces
 }
 
+func (s *DesignService) depsReady() bool {
+	return s != nil && s.Designs != nil && s.Assets != nil && s.Templates != nil &&
+		s.Store != nil && s.IDs != nil && s.Clock != nil
+}
+
 // Create builds a draft design, binds the upload, and returns the owner token once.
+// Preview signing soft-fails: the token is always returned after CreateBound commits.
 func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView, error) {
-	if s == nil || s.Designs == nil || s.Assets == nil || s.Templates == nil || s.Store == nil || s.IDs == nil || s.Clock == nil {
+	if !s.depsReady() {
 		return DesignView{}, &DesignError{Code: DesignErrUnavailable, Message: "design deps missing"}
 	}
 	templateID := strings.TrimSpace(in.TemplateID)
@@ -115,6 +121,7 @@ func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView,
 	}
 	now := s.Clock.Now().UTC()
 	id := s.IDs.New()
+	assetDeleteAfter := now.Add(domain.SourceAttachedRetention)
 	d := domain.Design{
 		ID:              id,
 		TemplateID:      tpl.ID,
@@ -127,47 +134,45 @@ func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView,
 		UpdatedAt:       now,
 		ExpiresAt:       now.Add(domain.DesignRetentionUnordered),
 	}
-	if err := s.Designs.CreateBound(ctx, d); err != nil {
+	if err := s.Designs.CreateBound(ctx, d, assetDeleteAfter); err != nil {
 		if errors.Is(err, ports.ErrAssetBindConflict) {
 			return DesignView{}, &DesignError{Code: DesignErrUploadAlreadyAttached, Message: "upload already attached"}
 		}
 		return DesignView{}, fmt.Errorf("design: create: %w", err)
 	}
-	view, err := s.toView(ctx, d, now)
-	if err != nil {
-		return DesignView{}, err
-	}
+	view := s.toView(ctx, d, now)
 	view.OwnerToken = token
 	return view, nil
 }
 
-// Get returns a design when the bearer token matches.
+// Get returns a design when the bearer token matches and the design has not expired.
 func (s *DesignService) Get(ctx context.Context, id, bearerToken string) (DesignView, error) {
-	d, err := s.loadAuthorized(ctx, id, bearerToken)
+	d, now, err := s.loadAuthorized(ctx, id, bearerToken)
 	if err != nil {
 		return DesignView{}, err
 	}
-	return s.toView(ctx, d, s.Clock.Now().UTC())
+	d = s.bumpActivity(ctx, d, now)
+	return s.toView(ctx, d, now), nil
 }
 
 // Patch updates texts and/or photo when authorized and editable.
 func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in PatchInput) (DesignView, error) {
-	d, err := s.loadAuthorized(ctx, id, bearerToken)
+	d, now, err := s.loadAuthorized(ctx, id, bearerToken)
 	if err != nil {
 		return DesignView{}, err
 	}
-	now := s.Clock.Now().UTC()
 	oldAsset := d.SourceAssetID
 	changedPhoto := false
+	assetDeleteAfter := now.Add(domain.SourceAttachedRetention)
+	d.ExpiresAt = now.Add(domain.DesignRetentionUnordered)
 
 	if in.Texts != nil {
-		tpl, ok, err := s.Templates.GetPublishedByID(ctx, d.TemplateID)
+		tpl, ok, err := s.Templates.GetPinnedByID(ctx, d.TemplateID)
 		if err != nil {
 			return DesignView{}, fmt.Errorf("design: template: %w", err)
 		}
 		if !ok {
-			// Pinned template may have been retired; still validate against last known fields if missing.
-			return DesignView{}, &DesignError{Code: DesignErrTemplateUnavailable, Message: "template not published"}
+			return DesignView{}, &DesignError{Code: DesignErrTemplateUnavailable, Message: "pinned template missing"}
 		}
 		texts, err := validateTextsFromPublished(tpl, in.Texts)
 		if err != nil {
@@ -202,7 +207,6 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 	if in.Texts == nil && in.UploadID == nil {
 		return DesignView{}, &DesignError{Code: DesignErrBadRequest, Message: "texts or upload_id required"}
 	}
-	// If only texts changed (or same photo), AssertEditable already applied.
 	if in.Texts == nil && in.UploadID != nil && !changedPhoto {
 		if err := d.AssertEditable("ReplacePhoto"); err != nil {
 			return DesignView{}, mapTransition(err)
@@ -211,66 +215,86 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 	}
 
 	if changedPhoto {
-		if err := s.Designs.ReplaceSource(ctx, d, oldAsset); err != nil {
+		if err := s.Designs.ReplaceSource(ctx, d, oldAsset, assetDeleteAfter); err != nil {
 			if errors.Is(err, ports.ErrAssetBindConflict) {
 				return DesignView{}, &DesignError{Code: DesignErrUploadAlreadyAttached, Message: "upload already attached"}
+			}
+			if errors.Is(err, ports.ErrDesignConflict) {
+				return DesignView{}, &DesignError{Code: DesignErrInvalidTransition, Message: "design conflict"}
 			}
 			return DesignView{}, fmt.Errorf("design: replace source: %w", err)
 		}
 	} else {
-		if err := s.Designs.UpdateEditable(ctx, d); err != nil {
+		if err := s.Designs.UpdateEditable(ctx, d, oldAsset, assetDeleteAfter); err != nil {
+			if errors.Is(err, ports.ErrDesignConflict) {
+				return DesignView{}, &DesignError{Code: DesignErrInvalidTransition, Message: "design conflict"}
+			}
 			return DesignView{}, fmt.Errorf("design: update: %w", err)
 		}
 	}
-	return s.toView(ctx, d, now)
+	return s.toView(ctx, d, now), nil
 }
 
-func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken string) (domain.Design, error) {
-	if s == nil || s.Designs == nil || s.Clock == nil {
-		return domain.Design{}, &DesignError{Code: DesignErrUnavailable, Message: "design deps missing"}
+func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken string) (domain.Design, time.Time, error) {
+	if !s.depsReady() {
+		return domain.Design{}, time.Time{}, &DesignError{Code: DesignErrUnavailable, Message: "design deps missing"}
 	}
 	id = strings.TrimSpace(id)
 	bearerToken = strings.TrimSpace(bearerToken)
+	now := s.Clock.Now().UTC()
 	if id == "" || bearerToken == "" {
-		return domain.Design{}, &DesignError{Code: DesignErrNotFound, Message: "not found"}
+		return domain.Design{}, now, &DesignError{Code: DesignErrNotFound, Message: "not found"}
 	}
 	d, ok, err := s.Designs.GetByID(ctx, id)
 	if err != nil {
-		return domain.Design{}, fmt.Errorf("design: get: %w", err)
+		return domain.Design{}, now, fmt.Errorf("design: get: %w", err)
 	}
 	if !ok || !OwnerTokenMatches(bearerToken, d.OwnerTokenHash) {
-		return domain.Design{}, &DesignError{Code: DesignErrNotFound, Message: "not found"}
+		return domain.Design{}, now, &DesignError{Code: DesignErrNotFound, Message: "not found"}
 	}
-	return d, nil
+	if !d.ExpiresAt.After(now) || d.Status == domain.DesignExpired {
+		return domain.Design{}, now, &DesignError{Code: DesignErrNotFound, Message: "not found"}
+	}
+	return d, now, nil
 }
 
-func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
+func (s *DesignService) bumpActivity(ctx context.Context, d domain.Design, now time.Time) domain.Design {
+	expires := now.Add(domain.DesignRetentionUnordered)
+	assetAfter := now.Add(domain.SourceAttachedRetention)
+	if err := s.Designs.TouchActivity(ctx, d.ID, now, expires, d.SourceAssetID, assetAfter); err != nil {
+		return d
+	}
+	d.ExpiresAt = expires
+	d.UpdatedAt = now
+	return d
+}
+
+// toView never fails the caller after persistence: signing soft-fails to empty preview.
+func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) DesignView {
+	view := DesignView{
+		ID:              d.ID,
+		Status:          d.Status,
+		TemplateID:      d.TemplateID,
+		TemplateVersion: d.TemplateVersion,
+		Texts:           d.Texts,
+		UploadID:        d.SourceAssetID,
+		CreatedAt:       d.CreatedAt,
+		ExpiresAt:       d.ExpiresAt,
+	}
+	if s.Assets == nil || s.Store == nil {
+		return view
+	}
 	asset, ok, err := s.Assets.GetByID(ctx, d.SourceAssetID)
+	if err != nil || !ok {
+		return view
+	}
+	url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL)
 	if err != nil {
-		return DesignView{}, fmt.Errorf("design: source asset: %w", err)
+		return view
 	}
-	preview := ""
-	previewExp := time.Time{}
-	if ok {
-		url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL)
-		if err != nil {
-			return DesignView{}, fmt.Errorf("design: signed url: %w", err)
-		}
-		preview = url
-		previewExp = now.Add(ports.DefaultSignedGetTTL)
-	}
-	return DesignView{
-		ID:                        d.ID,
-		Status:                    d.Status,
-		TemplateID:                d.TemplateID,
-		TemplateVersion:           d.TemplateVersion,
-		Texts:                     d.Texts,
-		UploadID:                  d.SourceAssetID,
-		CreatedAt:                 d.CreatedAt,
-		ExpiresAt:                 d.ExpiresAt,
-		SourcePreviewURL:          preview,
-		SourcePreviewURLExpiresAt: previewExp,
-	}, nil
+	view.SourcePreviewURL = url
+	view.SourcePreviewURLExpiresAt = now.Add(ports.DefaultSignedGetTTL)
+	return view
 }
 
 func validateTextsFromPublished(tpl ports.PublishedTemplate, input map[string]string) (map[string]string, error) {

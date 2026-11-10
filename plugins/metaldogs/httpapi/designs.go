@@ -21,7 +21,7 @@ type DesignResponse struct {
 	CreatedAt                 time.Time         `json:"created_at"`
 	ExpiresAt                 time.Time         `json:"expires_at"`
 	SourcePreviewURL          string            `json:"source_preview_url"`
-	SourcePreviewURLExpiresAt time.Time         `json:"source_preview_url_expires_at"`
+	SourcePreviewURLExpiresAt *time.Time        `json:"source_preview_url_expires_at,omitempty"`
 	OwnerToken                string            `json:"owner_token,omitempty"`
 }
 
@@ -52,6 +52,10 @@ func CreateDesign(svc *application.DesignService) http.Handler {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, application.DesignErrBadRequest)
+			return
+		}
+		if !looksLikeUUID(strings.TrimSpace(body.TemplateID)) || !looksLikeUUID(strings.TrimSpace(body.UploadID)) {
 			writeJSONError(w, http.StatusBadRequest, application.DesignErrBadRequest)
 			return
 		}
@@ -130,6 +134,10 @@ func PatchDesign(svc *application.DesignService) http.Handler {
 			writeJSONError(w, http.StatusBadRequest, application.DesignErrBadRequest)
 			return
 		}
+		if body.UploadID != nil && !looksLikeUUID(strings.TrimSpace(*body.UploadID)) {
+			writeJSONError(w, http.StatusBadRequest, application.DesignErrBadRequest)
+			return
+		}
 		in := application.PatchInput{UploadID: body.UploadID}
 		if body.Texts != nil {
 			in.Texts = *body.Texts
@@ -152,19 +160,23 @@ func toDesignResponse(v application.DesignView) DesignResponse {
 	if texts == nil {
 		texts = map[string]string{}
 	}
-	return DesignResponse{
-		ID:                        v.ID,
-		Status:                    v.Status,
-		TemplateID:                v.TemplateID,
-		TemplateVersion:           v.TemplateVersion,
-		Texts:                     texts,
-		UploadID:                  v.UploadID,
-		CreatedAt:                 v.CreatedAt.UTC(),
-		ExpiresAt:                 v.ExpiresAt.UTC(),
-		SourcePreviewURL:          v.SourcePreviewURL,
-		SourcePreviewURLExpiresAt: v.SourcePreviewURLExpiresAt.UTC(),
-		OwnerToken:                v.OwnerToken,
+	resp := DesignResponse{
+		ID:               v.ID,
+		Status:           v.Status,
+		TemplateID:       v.TemplateID,
+		TemplateVersion:  v.TemplateVersion,
+		Texts:            texts,
+		UploadID:         v.UploadID,
+		CreatedAt:        v.CreatedAt.UTC(),
+		ExpiresAt:        v.ExpiresAt.UTC(),
+		SourcePreviewURL: v.SourcePreviewURL,
+		OwnerToken:       v.OwnerToken,
 	}
+	if !v.SourcePreviewURLExpiresAt.IsZero() {
+		t := v.SourcePreviewURLExpiresAt.UTC()
+		resp.SourcePreviewURLExpiresAt = &t
+	}
+	return resp
 }
 
 func writeDesignError(w http.ResponseWriter, err error) {

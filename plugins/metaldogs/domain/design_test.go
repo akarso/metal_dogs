@@ -89,6 +89,22 @@ func TestValidateDesignTexts(t *testing.T) {
 		t.Fatalf("polish: %v", err)
 	}
 	_, err = domain.ValidateDesignTexts(
+		[]domain.TextFieldSpec{{Key: "dog_name", MaxLength: 12, AllowedCharset: "latin"}},
+		nil,
+		map[string]string{"dog_name": "Burekł"},
+	)
+	if err == nil {
+		t.Fatal("latin must reject Polish-only ł")
+	}
+	_, err = domain.ValidateDesignTexts(
+		[]domain.TextFieldSpec{{Key: "dog_name", MaxLength: 12, AllowedCharset: "latin"}},
+		nil,
+		map[string]string{"dog_name": "León"},
+	)
+	if err != nil {
+		t.Fatalf("latin should allow ó: %v", err)
+	}
+	_, err = domain.ValidateDesignTexts(
 		[]domain.TextFieldSpec{{Key: "dog_name", MaxLength: 5, AllowedCharset: "ascii"}},
 		nil,
 		map[string]string{"dog_name": "Burek!"},

@@ -125,7 +125,7 @@ Do **not** treat `delete_after` as preview validity — use `preview_url_expires
 | `GET` | `/api/customizer/designs/{id}` | `Authorization: Bearer <owner_token>` | `200` design DTO |
 | `PATCH` | `/api/customizer/designs/{id}` | Bearer | `200` design DTO |
 
-Token in query string is rejected (`400`). Wrong/missing Bearer or unknown id → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
+Platform `AuthMiddleware` does **not** JWT-parse `Authorization` on `/api/customizer/*` (owner tokens are opaque base64url, not Shopanda JWTs). Token in query string is rejected (`400`). Wrong/missing Bearer, unknown id, or past `expires_at` → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
 
 ### Create body
 
@@ -133,11 +133,13 @@ Token in query string is rejected (`400`). Wrong/missing Bearer or unknown id �
 { "template_id": "uuid", "upload_id": "uuid", "texts": { "dog_name": "Burek" } }
 ```
 
-All three fields required. Template must be published. Upload must be an active unbound `source` asset. Editable texts validated (charset/max length); unknown keys rejected; fixed template texts merged server-side. Asset `owner_ref` set to design id.
+All three fields required; `template_id` / `upload_id` must be UUID-shaped (`400` otherwise). Template must be published. Upload must be an active unbound `source` asset. Editable texts validated (charset/max length); unknown keys rejected; fixed template texts merged server-side. Asset `owner_ref` set to design id; attached `delete_after` moves to 7 days from activity.
+
+`owner_token` is returned whenever `CreateBound` commits. Preview signing soft-fails to an empty `source_preview_url` (omitted expiry); `GET` signs again.
 
 ### PATCH body
 
-Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `generation_failed`, or `preview_ready` (else `409` `invalid_transition`). Replace-photo clears previous asset `owner_ref` and binds the new upload.
+Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `generation_failed`, or `preview_ready` (else `409` `invalid_transition`). Text validation uses the **pinned** template row (any status). Replace-photo soft-deletes the previous source (keeps it from re-attach), binds the new upload under `SELECT … FOR UPDATE` with status/source predicates, and bumps retention.
 
 ### Success DTO
 
@@ -157,21 +159,21 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 }
 ```
 
-`owner_token` appears only on create. `expires_at` is design retention (30d unordered). Source preview TTL is 60s.
+`owner_token` appears only on create. `expires_at` is design retention (30d from last activity). Attached source retention is 7d from last activity. Source preview TTL is 60s when signing succeeds.
 
 ### Errors
 
 | HTTP | Body | When |
 | --- | --- | --- |
-| `400` | `bad_request` | Malformed JSON / token in query / empty patch |
-| `404` | `not_found` | Unknown id / missing or wrong Bearer |
-| `409` | `invalid_transition` | PATCH in non-editable status |
-| `422` | `template_unavailable` | Template not published |
+| `400` | `bad_request` | Malformed JSON / non-UUID ids / token in query / empty patch |
+| `404` | `not_found` | Unknown id / missing or wrong Bearer / expired design |
+| `409` | `invalid_transition` | PATCH in non-editable status or lost replace race |
+| `422` | `template_unavailable` | Create: template not published; PATCH texts: pinned row missing |
 | `422` | `upload_unavailable` | Missing/deleted/non-source upload |
 | `422` | `upload_already_attached` | Upload `owner_ref` already set |
 | `422` | `invalid_texts` | Charset / length / unknown or missing keys |
 | `503` | `unavailable` | No DB / AssetStore / catalog |
-| `500` | `internal_error` | Persistence or sign failure |
+| `500` | `internal_error` | Persistence failure |
 
 ## Safe delivery
 

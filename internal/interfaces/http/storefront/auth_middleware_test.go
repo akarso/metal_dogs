@@ -158,6 +158,35 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_CustomizerBearerSkipped(t *testing.T) {
+	parser := &stubTokenParser{err: errors.New("jwt: malformed token")}
+	mw := storefront.AuthMiddleware(parser)
+
+	var gotID identity.Identity
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotID = auth.IdentityFrom(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/customizer/designs/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", nil)
+	req.Header.Set("Authorization", "Bearer "+base64urlOwnerToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !gotID.IsGuest() {
+		t.Fatalf("expected guest, got %+v", gotID)
+	}
+	if parser.lastToken != "" {
+		t.Fatalf("JWT parser must not see customizer Bearer, got %q", parser.lastToken)
+	}
+}
+
+// raw base64url owner-token shape (no JWT dots) — must not hit Issuer.Parse.
+const base64urlOwnerToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 func TestAuthMiddleware_MalformedHeader(t *testing.T) {
 	parser := &stubTokenParser{}
 	mw := storefront.AuthMiddleware(parser)

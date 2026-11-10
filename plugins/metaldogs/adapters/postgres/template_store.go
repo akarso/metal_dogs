@@ -204,6 +204,18 @@ func (s *TemplateStore) GetPublishedByID(ctx context.Context, id string) (ports.
 	return t, true, nil
 }
 
+// GetByID returns a template by id for any status (pinned design field validation).
+func (s *TemplateStore) GetByID(ctx context.Context, id string) (domain.Template, bool, error) {
+	if id == "" {
+		return domain.Template{}, false, nil
+	}
+	return s.scanOne(ctx, s.db, `
+		SELECT `+templateColumns+`
+		FROM metaldogs_templates
+		WHERE id = $1
+	`, id)
+}
+
 func (s *TemplateStore) SetStatus(ctx context.Context, id, status string) error {
 	if id == "" {
 		return fmt.Errorf("metaldogs templates: id required")

@@ -69,7 +69,7 @@ func (m *memAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) er
 	return nil
 }
 
-func (m *memAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string) error {
+func (m *memAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[assetID]
@@ -77,6 +77,7 @@ func (m *memAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string)
 		return ports.ErrAssetBindConflict
 	}
 	a.OwnerRef = ownerRef
+	a.DeleteAfter = deleteAfter
 	m.byID[assetID] = a
 	return nil
 }
@@ -85,8 +86,8 @@ func (m *memAssetRepo) ClearOwnerRef(_ context.Context, assetID, ownerRef string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[assetID]
-	if !ok || a.OwnerRef != ownerRef {
-		return nil
+	if !ok || a.OwnerRef != ownerRef || a.DeletedAt != nil {
+		return ports.ErrAssetBindConflict
 	}
 	a.OwnerRef = ""
 	m.byID[assetID] = a

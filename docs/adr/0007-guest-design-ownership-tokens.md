@@ -36,5 +36,6 @@ MVP has no customer accounts (out of scope unless required for sales). Shopanda 
 
 ## Compliance
 
-- Feature tests: missing/wrong token → `404`; token in query string rejected; token never appears in logs (log capture assertion).
-- Unit test: token entropy ≥ 256 bits; only hash persisted.
+- Feature tests: missing/wrong token → `404`; token in query string rejected; token never appears in logs (log capture assertion — follow-up if access-log harness lands).
+- Unit test: token entropy ≥ 256 bits (32 CSPRNG bytes); only hash persisted.
+- `storefront.AuthMiddleware` skips JWT parsing for `/api/customizer/*` Bearer credentials so owner tokens are not rejected as malformed Shopanda JWTs (covered by middleware + create→GET→PATCH stack test).

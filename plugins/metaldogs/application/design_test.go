@@ -46,30 +46,41 @@ func (m *designMemRepo) GetByID(_ context.Context, id string) (domain.Design, bo
 	return cp, true, nil
 }
 
-func (m *designMemRepo) UpdateEditable(_ context.Context, d domain.Design) error {
+func (m *designMemRepo) UpdateEditable(_ context.Context, d domain.Design, expectedSource string, _ time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.byID[d.ID]
-	if !ok {
-		return fmt.Errorf("missing")
+	if !ok || cur.SourceAssetID != expectedSource || !(domain.Design{Status: cur.Status}).EditableForPatch() {
+		return ports.ErrDesignConflict
 	}
 	cur.Texts = copyTexts(d.Texts)
 	cur.SourceAssetID = d.SourceAssetID
 	cur.Status = d.Status
 	cur.UpdatedAt = d.UpdatedAt
+	cur.ExpiresAt = d.ExpiresAt
 	m.byID[d.ID] = cur
 	return nil
 }
 
-func (m *designMemRepo) CreateBound(ctx context.Context, d domain.Design) error {
-	if err := m.Insert(ctx, d); err != nil {
-		return err
-	}
-	return nil // bind done by DesignService via Assets in real path; mem uses CreateBound only
+func (m *designMemRepo) CreateBound(ctx context.Context, d domain.Design, _ time.Time) error {
+	return m.Insert(ctx, d)
 }
 
-func (m *designMemRepo) ReplaceSource(ctx context.Context, d domain.Design, _ string) error {
-	return m.UpdateEditable(ctx, d)
+func (m *designMemRepo) ReplaceSource(ctx context.Context, d domain.Design, expectedOld string, deleteAfter time.Time) error {
+	return m.UpdateEditable(ctx, d, expectedOld, deleteAfter)
+}
+
+func (m *designMemRepo) TouchActivity(_ context.Context, designID string, now, expiresAt time.Time, _ string, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.byID[designID]
+	if !ok {
+		return ports.ErrDesignConflict
+	}
+	cur.ExpiresAt = expiresAt
+	cur.UpdatedAt = now
+	m.byID[designID] = cur
+	return nil
 }
 
 func copyTexts(in map[string]string) map[string]string {
@@ -107,14 +118,14 @@ func (m *designAssetRepo) SoftDelete(_ context.Context, id string, at time.Time)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[id]
-	if !ok {
-		return nil
+	if !ok || a.DeletedAt != nil {
+		return ports.ErrAssetBindConflict
 	}
 	a.DeletedAt = &at
 	m.byID[id] = a
 	return nil
 }
-func (m *designAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string) error {
+func (m *designAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[assetID]
@@ -122,6 +133,7 @@ func (m *designAssetRepo) BindOwnerRef(_ context.Context, assetID, ownerRef stri
 		return ports.ErrAssetBindConflict
 	}
 	a.OwnerRef = ownerRef
+	a.DeleteAfter = deleteAfter
 	m.byID[assetID] = a
 	return nil
 }
@@ -129,10 +141,11 @@ func (m *designAssetRepo) ClearOwnerRef(_ context.Context, assetID, ownerRef str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.byID[assetID]
-	if ok && a.OwnerRef == ownerRef {
-		a.OwnerRef = ""
-		m.byID[assetID] = a
+	if !ok || a.OwnerRef != ownerRef || a.DeletedAt != nil {
+		return ports.ErrAssetBindConflict
 	}
+	a.OwnerRef = ""
+	m.byID[assetID] = a
 	return nil
 }
 
@@ -200,6 +213,14 @@ func (m *designTplStore) GetPublishedByID(_ context.Context, id string) (ports.P
 	return ports.PublishedFromDomain(r), true, nil
 }
 
+func (m *designTplStore) GetByID(_ context.Context, id string) (domain.Template, bool, error) {
+	r, ok := m.rows[id]
+	if !ok {
+		return domain.Template{}, false, nil
+	}
+	return r, true, nil
+}
+
 // bindingDesignRepo wraps designMemRepo + asset bind for CreateBound/ReplaceSource.
 type bindingDesignRepo struct {
 	designs *designMemRepo
@@ -212,23 +233,46 @@ func (m *bindingDesignRepo) Insert(ctx context.Context, d domain.Design) error {
 func (m *bindingDesignRepo) GetByID(ctx context.Context, id string) (domain.Design, bool, error) {
 	return m.designs.GetByID(ctx, id)
 }
-func (m *bindingDesignRepo) UpdateEditable(ctx context.Context, d domain.Design) error {
-	return m.designs.UpdateEditable(ctx, d)
-}
-func (m *bindingDesignRepo) CreateBound(ctx context.Context, d domain.Design) error {
-	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID); err != nil {
+func (m *bindingDesignRepo) UpdateEditable(ctx context.Context, d domain.Design, expectedSource string, deleteAfter time.Time) error {
+	if err := m.designs.UpdateEditable(ctx, d, expectedSource, deleteAfter); err != nil {
 		return err
 	}
-	return m.designs.Insert(ctx, d)
+	m.assets.mu.Lock()
+	defer m.assets.mu.Unlock()
+	if a, ok := m.assets.byID[d.SourceAssetID]; ok {
+		a.DeleteAfter = deleteAfter
+		m.assets.byID[d.SourceAssetID] = a
+	}
+	return nil
 }
-func (m *bindingDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, oldAssetID string) error {
+func (m *bindingDesignRepo) CreateBound(ctx context.Context, d domain.Design, deleteAfter time.Time) error {
+	if err := m.designs.Insert(ctx, d); err != nil {
+		return err
+	}
+	return m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter)
+}
+func (m *bindingDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, oldAssetID string, deleteAfter time.Time) error {
 	if oldAssetID != "" && oldAssetID != d.SourceAssetID {
-		_ = m.assets.ClearOwnerRef(ctx, oldAssetID, d.ID)
+		if err := m.assets.SoftDelete(ctx, oldAssetID, d.UpdatedAt); err != nil {
+			return err
+		}
 	}
-	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID); err != nil {
+	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter); err != nil {
 		return err
 	}
-	return m.designs.UpdateEditable(ctx, d)
+	return m.designs.UpdateEditable(ctx, d, oldAssetID, deleteAfter)
+}
+func (m *bindingDesignRepo) TouchActivity(ctx context.Context, designID string, now, expiresAt time.Time, sourceAssetID string, assetDeleteAfter time.Time) error {
+	if err := m.designs.TouchActivity(ctx, designID, now, expiresAt, sourceAssetID, assetDeleteAfter); err != nil {
+		return err
+	}
+	m.assets.mu.Lock()
+	defer m.assets.mu.Unlock()
+	if a, ok := m.assets.byID[sourceAssetID]; ok && a.DeletedAt == nil {
+		a.DeleteAfter = assetDeleteAfter
+		m.assets.byID[sourceAssetID] = a
+	}
+	return nil
 }
 
 func publishedTpl(id string) domain.Template {
@@ -311,6 +355,136 @@ func TestDesignService_Create_UnpublishedTemplate(t *testing.T) {
 	})
 	var de *application.DesignError
 	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrTemplateUnavailable {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+type signFailBlobStore struct {
+	designBlobStore
+	fail bool
+}
+
+func (m *signFailBlobStore) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	if m.fail {
+		return "", errors.New("sign boom")
+	}
+	return m.designBlobStore.SignedGetURL(ctx, key, ttl)
+}
+
+func TestDesignService_Create_SignFailureStillReturnsOwnerToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	key := "private/blobs/metaldogs/source/2026/11/x.jpg"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key,
+			MimeType: "image/jpeg", SizeBytes: 10, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	store := &signFailBlobStore{designBlobStore: designBlobStore{objects: map[string][]byte{key: {1}}}, fail: true}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store,
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.OwnerToken == "" {
+		t.Fatal("owner_token must be returned after commit even when sign fails")
+	}
+	if created.SourcePreviewURL != "" || !created.SourcePreviewURLExpiresAt.IsZero() {
+		t.Fatalf("preview must soft-fail empty: %+v", created)
+	}
+	bound, ok, _ := assets.GetByID(context.Background(), uploadID)
+	if !ok || bound.OwnerRef == "" {
+		t.Fatal("upload must stay bound")
+	}
+	store.fail = false
+	got, err := svc.Get(context.Background(), created.ID, created.OwnerToken)
+	if err != nil || got.SourcePreviewURL == "" {
+		t.Fatalf("GET should sign again: %+v err=%v", got, err)
+	}
+}
+
+func TestDesignService_Patch_PinnedRetiredTemplate(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "k",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	tpl := publishedTpl(tplID)
+	store := &designTplStore{rows: map[string]domain.Template{tplID: tpl}}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: store},
+		Store:     &designBlobStore{objects: map[string][]byte{"k": {1}}},
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpl.Status = domain.TemplateRetired
+	store.rows[tplID] = tpl
+	patched, err := svc.Patch(context.Background(), created.ID, created.OwnerToken, application.PatchInput{
+		Texts: map[string]string{"dog_name": "Azor"},
+	})
+	if err != nil || patched.Texts["dog_name"] != "Azor" {
+		t.Fatalf("pinned retired template must still validate texts: %+v err=%v", patched, err)
+	}
+}
+
+func TestDesignService_Get_ExpiredNotFound(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "k",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	clock := testutil.NewFakeClock(now)
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"k": {1}}},
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     clock,
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(domain.DesignRetentionUnordered + time.Second)
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrNotFound {
 		t.Fatalf("err=%v", err)
 	}
 }

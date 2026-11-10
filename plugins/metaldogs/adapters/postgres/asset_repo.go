@@ -84,12 +84,12 @@ func (s *AssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) err
 	return nil
 }
 
-// BindOwnerRef sets owner_ref on an active unbound source asset.
-func (s *AssetRepo) BindOwnerRef(ctx context.Context, assetID, ownerRef string) error {
-	return bindOwnerRef(ctx, s.db, assetID, ownerRef)
+// BindOwnerRef sets owner_ref and delete_after on an active unbound source asset.
+func (s *AssetRepo) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return bindOwnerRef(ctx, s.db, assetID, ownerRef, deleteAfter)
 }
 
-// ClearOwnerRef clears owner_ref when it matches.
+// ClearOwnerRef clears owner_ref when it matches an active row (else ErrAssetBindConflict).
 func (s *AssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
 	return clearOwnerRef(ctx, s.db, assetID, ownerRef)
 }
@@ -98,18 +98,18 @@ type execContexter interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-func bindOwnerRef(ctx context.Context, db execContexter, assetID, ownerRef string) error {
-	if assetID == "" || ownerRef == "" {
-		return fmt.Errorf("metaldogs assets: asset id and owner_ref required")
+func bindOwnerRef(ctx context.Context, db execContexter, assetID, ownerRef string, deleteAfter time.Time) error {
+	if assetID == "" || ownerRef == "" || deleteAfter.IsZero() {
+		return fmt.Errorf("metaldogs assets: asset id, owner_ref, delete_after required")
 	}
 	res, err := db.ExecContext(ctx, `
 		UPDATE metaldogs_assets
-		SET owner_ref = $2
+		SET owner_ref = $2, delete_after = $3
 		WHERE id = $1
 		  AND deleted_at IS NULL
-		  AND type = $3
+		  AND type = $4
 		  AND owner_ref IS NULL
-	`, assetID, ownerRef, domain.AssetTypeSource)
+	`, assetID, ownerRef, deleteAfter.UTC(), domain.AssetTypeSource)
 	if err != nil {
 		return fmt.Errorf("metaldogs assets bind: %w", err)
 	}
@@ -127,13 +127,62 @@ func clearOwnerRef(ctx context.Context, db execContexter, assetID, ownerRef stri
 	if assetID == "" || ownerRef == "" {
 		return fmt.Errorf("metaldogs assets: asset id and owner_ref required")
 	}
-	_, err := db.ExecContext(ctx, `
+	res, err := db.ExecContext(ctx, `
 		UPDATE metaldogs_assets
 		SET owner_ref = NULL
 		WHERE id = $1 AND owner_ref = $2 AND deleted_at IS NULL
 	`, assetID, ownerRef)
 	if err != nil {
 		return fmt.Errorf("metaldogs assets clear owner_ref: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear owner_ref rows: %w", err)
+	}
+	if n != 1 {
+		return ports.ErrAssetBindConflict
+	}
+	return nil
+}
+
+func softDeleteAsset(ctx context.Context, db execContexter, id string, at time.Time) error {
+	if id == "" {
+		return fmt.Errorf("metaldogs assets: id required")
+	}
+	res, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET deleted_at = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id, at.UTC())
+	if err != nil {
+		return fmt.Errorf("metaldogs assets soft delete: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ports.ErrAssetBindConflict
+	}
+	return nil
+}
+
+func touchAssetDeleteAfter(ctx context.Context, db execContexter, id string, deleteAfter time.Time) error {
+	if id == "" || deleteAfter.IsZero() {
+		return fmt.Errorf("metaldogs assets: id and delete_after required")
+	}
+	res, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET delete_after = $2
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id, deleteAfter.UTC())
+	if err != nil {
+		return fmt.Errorf("metaldogs assets touch delete_after: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ports.ErrAssetBindConflict
 	}
 	return nil
 }

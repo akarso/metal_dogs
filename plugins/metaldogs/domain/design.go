@@ -32,6 +32,9 @@ var DesignStatuses = []string{
 // DesignRetentionUnordered is how long never-ordered designs remain (domain-model).
 const DesignRetentionUnordered = 30 * 24 * time.Hour
 
+// SourceAttachedRetention is how long a design-attached source photo is kept from last activity.
+const SourceAttachedRetention = 7 * 24 * time.Hour
+
 // Design is the customer customizer aggregate.
 type Design struct {
 	ID                 string
@@ -149,6 +152,11 @@ func ValidateDesignTexts(editable []TextFieldSpec, fixed map[string]string, inpu
 			return nil, &ErrInvalidTexts{Message: fmt.Sprintf("unknown text key %q", key)}
 		}
 	}
+	for key := range allowed {
+		if _, isFixed := fixed[key]; isFixed {
+			return nil, &ErrInvalidTexts{Message: fmt.Sprintf("text key %q is both editable and fixed", key)}
+		}
+	}
 	out := make(map[string]string, len(allowed)+len(fixed))
 	for key, spec := range allowed {
 		raw, ok := input[key]
@@ -217,18 +225,24 @@ func isLatinNameRune(r rune) bool {
 	if isASCIINameRune(r) {
 		return true
 	}
+	// Exclude Polish-only letters so charset "latin" is stricter than "latin_polish".
+	// ó stays in latin (shared with other Western European names).
+	if _, polishOnly := polishOnlyRunes[r]; polishOnly {
+		return false
+	}
 	return unicode.Is(unicode.Latin, r) && unicode.IsLetter(r)
 }
 
-var polishExtra = map[rune]struct{}{
-	'ą': {}, 'ć': {}, 'ę': {}, 'ł': {}, 'ń': {}, 'ó': {}, 'ś': {}, 'ź': {}, 'ż': {},
-	'Ą': {}, 'Ć': {}, 'Ę': {}, 'Ł': {}, 'Ń': {}, 'Ó': {}, 'Ś': {}, 'Ź': {}, 'Ż': {},
+// polishOnlyRunes are Polish diacritics beyond generic Western European Latin (ó).
+var polishOnlyRunes = map[rune]struct{}{
+	'ą': {}, 'ć': {}, 'ę': {}, 'ł': {}, 'ń': {}, 'ś': {}, 'ź': {}, 'ż': {},
+	'Ą': {}, 'Ć': {}, 'Ę': {}, 'Ł': {}, 'Ń': {}, 'Ś': {}, 'Ź': {}, 'Ż': {},
 }
 
 func isLatinPolishNameRune(r rune) bool {
 	if isLatinNameRune(r) {
 		return true
 	}
-	_, ok := polishExtra[r]
+	_, ok := polishOnlyRunes[r]
 	return ok
 }

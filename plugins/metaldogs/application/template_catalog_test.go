@@ -151,6 +151,16 @@ func (m *memStore) GetPublishedByID(_ context.Context, id string) (ports.Publish
 	return ports.PublishedFromDomain(r), true, nil
 }
 
+func (m *memStore) GetByID(_ context.Context, id string) (domain.Template, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok {
+		return domain.Template{}, false, nil
+	}
+	return r, true, nil
+}
+
 func (m *memStore) SetStatus(_ context.Context, id, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
