@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -138,6 +139,17 @@ func (m *designAssetRepo) ClearOwnerRef(_ context.Context, assetID, ownerRef str
 	m.byID[assetID] = a
 	return nil
 }
+func (m *designAssetRepo) ClearStorageKey(_ context.Context, assetID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[assetID]
+	if !ok {
+		return nil
+	}
+	a.StorageKey = ""
+	m.byID[assetID] = a
+	return nil
+}
 
 type designBlobStore struct {
 	objects map[string][]byte
@@ -161,6 +173,9 @@ func (m *designBlobStore) SignedGetURL(_ context.Context, key string, _ time.Dur
 	return "https://signed.example/" + key, nil
 }
 func (m *designBlobStore) Delete(_ context.Context, key string) error {
+	if _, ok := m.objects[key]; !ok {
+		return os.ErrNotExist
+	}
 	delete(m.objects, key)
 	return nil
 }
@@ -251,18 +266,34 @@ func (m *bindingDesignRepo) CreateBound(ctx context.Context, d domain.Design, de
 }
 func (m *bindingDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, oldAssetID string, expectedUpdatedAt time.Time, deleteAfter time.Time) (string, error) {
 	oldKey := ""
+	alreadyDeleted := false
 	if oldAssetID != "" && oldAssetID != d.SourceAssetID {
 		m.assets.mu.Lock()
 		if a, ok := m.assets.byID[oldAssetID]; ok {
 			oldKey = a.StorageKey
+			alreadyDeleted = a.DeletedAt != nil
 		}
 		m.assets.mu.Unlock()
 		_ = m.assets.SoftDelete(ctx, oldAssetID, d.UpdatedAt) // idempotent
 	}
+	undoSoftDelete := func() {
+		if alreadyDeleted || oldAssetID == "" || oldAssetID == d.SourceAssetID {
+			return
+		}
+		m.assets.mu.Lock()
+		if a, ok := m.assets.byID[oldAssetID]; ok {
+			a.DeletedAt = nil
+			m.assets.byID[oldAssetID] = a
+		}
+		m.assets.mu.Unlock()
+	}
 	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter); err != nil {
+		undoSoftDelete()
 		return "", err
 	}
 	if err := m.designs.UpdateEditable(ctx, d, oldAssetID, expectedUpdatedAt, deleteAfter); err != nil {
+		_ = m.assets.ClearOwnerRef(ctx, d.SourceAssetID, d.ID)
+		undoSoftDelete()
 		return "", err
 	}
 	return oldKey, nil
@@ -487,6 +518,86 @@ func TestDesignService_Get_DoesNotSlideExpiresAt(t *testing.T) {
 	}
 }
 
+func TestDesignService_ReplaceSource_AlreadySweptOld_NoHardCleanupLog(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111114"
+	uploadID := "22222222-2222-4222-8222-222222222226"
+	upload2 := "22222222-2222-4222-8222-222222222227"
+	key1 := "private/blobs/metaldogs/source/2026/11/swept.jpg"
+	key2 := "private/blobs/metaldogs/source/2026/11/new2.jpg"
+	deletedAt := now.Add(-time.Hour)
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key1,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour), DeletedAt: &deletedAt, OwnerRef: "will-set",
+		},
+		upload2: {
+			ID: upload2, Type: domain.AssetTypeSource, StorageKey: key2,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:cd",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	// Design still points at swept upload; blob already gone from store.
+	designs := &designMemRepo{byID: map[string]domain.Design{}}
+	hashTok, hash, err := application.MintOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	designID := "des-0001"
+	assets.byID[uploadID] = func() domain.Asset {
+		a := assets.byID[uploadID]
+		a.OwnerRef = designID
+		return a
+	}()
+	_ = designs.Insert(context.Background(), domain.Design{
+		ID: designID, TemplateID: tplID, TemplateVersion: 2, Status: domain.DesignDraft,
+		Texts: map[string]string{"dog_name": "Burek", "tagline": "METAL"},
+		SourceAssetID: uploadID, OwnerTokenHash: hash,
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(domain.DesignRetentionUnordered),
+	})
+	store := &designBlobStore{objects: map[string][]byte{key2: {2}}} // key1 already absent
+	var cleanupLogs []string
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: designs, assets: assets},
+		Assets:    assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store,
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+		OnCleanupError: func(op, assetID, storageKey string, err error) {
+			cleanupLogs = append(cleanupLogs, op+":"+err.Error())
+		},
+	}
+	patched, err := svc.Patch(context.Background(), designID, hashTok, application.PatchInput{
+		UploadID: &upload2,
+	})
+	if err != nil || patched.UploadID != upload2 {
+		t.Fatalf("%+v err=%v", patched, err)
+	}
+	if len(cleanupLogs) != 0 {
+		t.Fatalf("missing object must not hard-fail cleanup: %v", cleanupLogs)
+	}
+	gotOld, ok, _ := assets.GetByID(context.Background(), uploadID)
+	if ok {
+		t.Fatalf("old must stay soft-deleted, got %+v", gotOld)
+	}
+	assets.mu.Lock()
+	old := assets.byID[uploadID]
+	assets.mu.Unlock()
+	if old.DeletedAt == nil {
+		t.Fatal("must not clear DeletedAt on already-swept row")
+	}
+	if old.StorageKey != "" {
+		t.Fatalf("storage_key should be cleared after absent delete, got %q", old.StorageKey)
+	}
+	bound, ok, _ := assets.GetByID(context.Background(), upload2)
+	if !ok || bound.OwnerRef != designID {
+		t.Fatalf("new upload bound=%+v ok=%v", bound, ok)
+	}
+}
+
 func TestDesignService_ReplaceSource_DeletesOldBlob(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -536,6 +647,12 @@ func TestDesignService_ReplaceSource_DeletesOldBlob(t *testing.T) {
 	}
 	if _, ok, _ := assets.GetByID(context.Background(), uploadID); ok {
 		t.Fatal("old asset must be soft-deleted")
+	}
+	assets.mu.Lock()
+	old := assets.byID[uploadID]
+	assets.mu.Unlock()
+	if old.StorageKey != "" {
+		t.Fatalf("storage_key must be cleared after successful delete, got %q", old.StorageKey)
 	}
 }
 

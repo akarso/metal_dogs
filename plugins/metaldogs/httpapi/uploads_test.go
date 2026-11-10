@@ -86,6 +86,17 @@ func (m *memAssetRepo) ClearOwnerRef(_ context.Context, assetID, ownerRef string
 	m.byID[assetID] = a
 	return nil
 }
+func (m *memAssetRepo) ClearStorageKey(_ context.Context, assetID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[assetID]
+	if !ok {
+		return nil
+	}
+	a.StorageKey = ""
+	m.byID[assetID] = a
+	return nil
+}
 
 type memBlobStore struct {
 	mu      sync.Mutex

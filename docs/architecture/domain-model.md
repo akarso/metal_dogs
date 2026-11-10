@@ -265,9 +265,9 @@ stateDiagram-v2
 | Subject | Condition | Keep for |
 | --- | --- | --- |
 | Upload not attached to a design | — | 2 hours |
-| Source photo | design never ordered | 7 days from last activity |
-| Artwork and mockup previews | design never ordered | 7 days from last activity |
-| Design row | never ordered | 30 days, then `expired` and purged |
+| Source photo | design never ordered | 7 days from last **mutating** activity (create / patch / replace). `GET` does not extend this clock. |
+| Artwork and mockup previews | design never ordered | 7 days from last mutating activity |
+| Design row | never ordered | 30 days from create / last mutating activity (`POST`/`PATCH`), then `expired` and purged. `GET` does not slide `expires_at`. |
 | Source photo | design ordered | until fulfilment `shipped` + 14 days |
 | Approved and production artwork | design ordered | per legal/warranty policy (decision in O2) |
 | Snapshot row | always | with the order |

@@ -81,6 +81,17 @@ func (m *dAssetRepo) ClearOwnerRef(_ context.Context, assetID, ownerRef string) 
 	m.byID[assetID] = a
 	return nil
 }
+func (m *dAssetRepo) ClearStorageKey(_ context.Context, assetID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.byID[assetID]
+	if !ok {
+		return nil
+	}
+	a.StorageKey = ""
+	m.byID[assetID] = a
+	return nil
+}
 
 type dDesignRepo struct {
 	mu     sync.Mutex
@@ -139,27 +150,34 @@ func (m *dDesignRepo) CreateBound(ctx context.Context, d domain.Design, deleteAf
 }
 func (m *dDesignRepo) ReplaceSource(ctx context.Context, d domain.Design, old string, expectedUpdatedAt time.Time, deleteAfter time.Time) (string, error) {
 	oldKey := ""
+	alreadyDeleted := false
 	if old != "" && old != d.SourceAssetID {
 		m.assets.mu.Lock()
 		if a, ok := m.assets.byID[old]; ok {
 			oldKey = a.StorageKey
+			alreadyDeleted = a.DeletedAt != nil
 		}
 		m.assets.mu.Unlock()
 		_ = m.assets.SoftDelete(ctx, old, d.UpdatedAt)
 	}
-	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter); err != nil {
-		// Roll back soft-delete in the fake to mirror Postgres txn semantics.
-		if oldKey != "" {
-			m.assets.mu.Lock()
-			if a, ok := m.assets.byID[old]; ok {
-				a.DeletedAt = nil
-				m.assets.byID[old] = a
-			}
-			m.assets.mu.Unlock()
+	undoSoftDelete := func() {
+		if alreadyDeleted || old == "" || old == d.SourceAssetID {
+			return
 		}
+		m.assets.mu.Lock()
+		if a, ok := m.assets.byID[old]; ok {
+			a.DeletedAt = nil
+			m.assets.byID[old] = a
+		}
+		m.assets.mu.Unlock()
+	}
+	if err := m.assets.BindOwnerRef(ctx, d.SourceAssetID, d.ID, deleteAfter); err != nil {
+		undoSoftDelete()
 		return "", err
 	}
 	if err := m.UpdateEditable(ctx, d, old, expectedUpdatedAt, deleteAfter); err != nil {
+		_ = m.assets.ClearOwnerRef(ctx, d.SourceAssetID, d.ID)
+		undoSoftDelete()
 		return "", err
 	}
 	return oldKey, nil

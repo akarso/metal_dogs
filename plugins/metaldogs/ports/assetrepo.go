@@ -20,4 +20,6 @@ type AssetRepository interface {
 	// ClearOwnerRef clears owner_ref only when it currently equals ownerRef on an active row.
 	// Zero rows → ErrAssetBindConflict.
 	ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error
+	// ClearStorageKey nulls storage_key after the blob was removed (or already absent).
+	ClearStorageKey(ctx context.Context, assetID string) error
 }

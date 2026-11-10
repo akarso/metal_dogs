@@ -94,6 +94,20 @@ func (s *AssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string)
 	return clearOwnerRef(ctx, s.db, assetID, ownerRef)
 }
 
+// ClearStorageKey nulls storage_key after the blob was removed (or already absent).
+func (s *AssetRepo) ClearStorageKey(ctx context.Context, assetID string) error {
+	if assetID == "" {
+		return fmt.Errorf("metaldogs assets: id required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET storage_key = NULL WHERE id = $1
+	`, assetID)
+	if err != nil {
+		return fmt.Errorf("metaldogs assets clear storage_key: %w", err)
+	}
+	return nil
+}
+
 type execContexter interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
@@ -181,10 +195,10 @@ type assetScanner interface {
 
 func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	var a domain.Asset
-	var owner sql.NullString
+	var storageKey, owner sql.NullString
 	var deletedAt sql.NullTime
 	err := row.Scan(
-		&a.ID, &a.Type, &a.StorageKey, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height, &a.Checksum, &owner,
+		&a.ID, &a.Type, &storageKey, &a.MimeType, &a.SizeBytes, &a.Width, &a.Height, &a.Checksum, &owner,
 		&a.CreatedAt, &a.DeleteAfter, &deletedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -192,6 +206,9 @@ func scanAsset(row assetScanner) (domain.Asset, bool, error) {
 	}
 	if err != nil {
 		return domain.Asset{}, false, fmt.Errorf("metaldogs assets scan: %w", err)
+	}
+	if storageKey.Valid {
+		a.StorageKey = storageKey.String
 	}
 	if owner.Valid {
 		a.OwnerRef = owner.String

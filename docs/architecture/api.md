@@ -159,7 +159,7 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 }
 ```
 
-`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row and deletes its storage object (cleanup failure is logged). Source preview TTL is 60s when signing succeeds.
+`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` (missing object is success; other cleanup failures are logged). Source preview TTL is 60s when signing succeeds. If the active source row was swept, `upload_id` is omitted (empty preview alone means sign failure with the upload still present).
 
 ### Errors
 
@@ -167,7 +167,8 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 | --- | --- | --- |
 | `400` | `bad_request` | Malformed JSON / non-UUID ids / token in query / empty patch |
 | `404` | `not_found` | Unknown id / missing or wrong Bearer / expired design |
-| `409` | `invalid_transition` | PATCH in non-editable status or lost replace race |
+| `409` | `invalid_transition` | PATCH in non-editable status |
+| `409` | `conflict` | Lost optimistic race (`updated_at` / source predicate); safe to retry |
 | `422` | `template_unavailable` | Create: template not published; PATCH texts: pinned row missing |
 | `422` | `upload_unavailable` | Missing/deleted/non-source upload |
 | `422` | `upload_already_attached` | Upload `owner_ref` already set |

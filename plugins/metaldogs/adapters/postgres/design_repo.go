@@ -212,7 +212,7 @@ func updateEditable(ctx context.Context, db designExecer, d domain.Design, expec
 }
 
 func assetStorageKey(ctx context.Context, db designQuerier, id string) (string, error) {
-	var key string
+	var key sql.NullString
 	err := db.QueryRowContext(ctx, `
 		SELECT storage_key FROM metaldogs_assets WHERE id = $1
 	`, id).Scan(&key)
@@ -222,7 +222,10 @@ func assetStorageKey(ctx context.Context, db designQuerier, id string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("metaldogs assets storage_key: %w", err)
 	}
-	return key, nil
+	if !key.Valid {
+		return "", nil
+	}
+	return key.String, nil
 }
 
 type designScanner interface {

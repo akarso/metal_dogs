@@ -17,7 +17,7 @@ type DesignResponse struct {
 	TemplateID                string            `json:"template_id"`
 	TemplateVersion           int               `json:"template_version"`
 	Texts                     map[string]string `json:"texts"`
-	UploadID                  string            `json:"upload_id"`
+	UploadID                  string            `json:"upload_id,omitempty"`
 	CreatedAt                 time.Time         `json:"created_at"`
 	ExpiresAt                 time.Time         `json:"expires_at"`
 	SourcePreviewURL          string            `json:"source_preview_url"`
@@ -197,7 +197,7 @@ func designStatus(code string) int {
 	case application.DesignErrTemplateUnavailable, application.DesignErrUploadUnavailable,
 		application.DesignErrUploadAlreadyAttached, application.DesignErrInvalidTexts:
 		return http.StatusUnprocessableEntity
-	case application.DesignErrInvalidTransition:
+	case application.DesignErrInvalidTransition, application.DesignErrConflict:
 		return http.StatusConflict
 	case application.DesignErrUnavailable:
 		return http.StatusServiceUnavailable

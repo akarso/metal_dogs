@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ const (
 	DesignErrUploadAlreadyAttached = "upload_already_attached"
 	DesignErrInvalidTexts          = "invalid_texts"
 	DesignErrInvalidTransition     = "invalid_transition"
+	DesignErrConflict              = "conflict" // lost optimistic race (retryable)
 )
 
 // DesignView is the customer-facing design projection (no token hash).
@@ -233,24 +235,34 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 				return DesignView{}, &DesignError{Code: DesignErrUploadAlreadyAttached, Message: "upload already attached"}
 			}
 			if errors.Is(err, ports.ErrDesignConflict) {
-				return DesignView{}, &DesignError{Code: DesignErrInvalidTransition, Message: "design conflict"}
+				return DesignView{}, &DesignError{Code: DesignErrConflict, Message: "design conflict"}
 			}
 			return DesignView{}, fmt.Errorf("design: replace source: %w", err)
 		}
-		if oldKey != "" {
-			if delErr := s.Store.Delete(ctx, oldKey); delErr != nil {
-				s.cleanupErr("delete", oldAsset, oldKey, delErr)
-			}
-		}
+		s.removeReplacedBlob(ctx, oldAsset, oldKey)
 	} else {
 		if err := s.Designs.UpdateEditable(ctx, d, oldAsset, expectedUpdatedAt, assetDeleteAfter); err != nil {
 			if errors.Is(err, ports.ErrDesignConflict) {
-				return DesignView{}, &DesignError{Code: DesignErrInvalidTransition, Message: "design conflict"}
+				return DesignView{}, &DesignError{Code: DesignErrConflict, Message: "design conflict"}
 			}
 			return DesignView{}, fmt.Errorf("design: update: %w", err)
 		}
 	}
 	return s.toView(ctx, d, now), nil
+}
+
+func (s *DesignService) removeReplacedBlob(ctx context.Context, assetID, storageKey string) {
+	if storageKey == "" {
+		return
+	}
+	delErr := s.Store.Delete(ctx, storageKey)
+	if delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
+		s.cleanupErr("delete", assetID, storageKey, delErr)
+		return
+	}
+	if clearErr := s.Assets.ClearStorageKey(ctx, assetID); clearErr != nil {
+		s.cleanupErr("clear_storage_key", assetID, storageKey, clearErr)
+	}
 }
 
 func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken string) (domain.Design, time.Time, error) {
@@ -277,6 +289,8 @@ func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken stri
 }
 
 // toView never fails the caller after persistence: signing soft-fails to empty preview.
+// When the active source row is gone (swept), UploadID is cleared so clients can tell
+// that apart from a signer failure (which keeps upload_id and an empty preview URL).
 func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) DesignView {
 	view := DesignView{
 		ID:              d.ID,
@@ -293,6 +307,11 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 	}
 	asset, ok, err := s.Assets.GetByID(ctx, d.SourceAssetID)
 	if err != nil || !ok {
+		view.UploadID = ""
+		return view
+	}
+	if asset.StorageKey == "" {
+		view.UploadID = ""
 		return view
 	}
 	url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL)

@@ -9,6 +9,7 @@
 - Migration `004_create_designs.sql` (`metaldogs_designs`, status CHECK, `owner_token_hash bytea`)
 - Migration `005_design_bind_constraints.sql` (UNIQUE active `owner_ref`; `generating` on expires index)
 - Migration `006_soft_deleted_asset_blob_idx.sql` (soft-deleted blob sweep index)
+- Migration `007_asset_storage_key_nullable.sql` (clear `storage_key` after blob removed)
 - Domain Design status machine + `ValidateDesignTexts` (ascii / latin / latin_polish)
 - `DesignService` Create/Get/Patch; token mint (256-bit → base64url once; SHA-256 stored)
 - CreateBound / ReplaceSource (`FOR UPDATE`, soft-delete prior source) / TouchActivity
