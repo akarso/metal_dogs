@@ -8,7 +8,7 @@ New ADRs are written when a slice closes with a decision (see "Docs" lines in [`
 | --- | --- | --- | --- |
 | [0001](0001-metal-dogs-as-shopanda-external-plugin.md) | Metal Dogs backend is a Shopanda external plugin in an upstream-tracking fork | Accepted | F0 |
 | [0002](0002-storefront-customizer-and-shopanda-checkout.md) | Custom vanilla-JS customizer; Shopanda SSR for cart and checkout | Proposed | S1 / E3 |
-| [0003](0003-async-generation-pg-job-queue-polling.md) | Asynchronous generation on Shopanda's PostgreSQL job queue with HTTP polling | Proposed | F1 / C4 |
+| [0003](0003-async-generation-pg-job-queue-polling.md) | Asynchronous generation on Shopanda's PostgreSQL job queue with HTTP polling | Accepted | C4 |
 | [0004](0004-private-object-storage-signed-urls.md) | Private S3-compatible storage with short-lived signed URLs | Accepted | F4 |
 | [0005](0005-immutable-order-design-snapshot.md) | Approval freezes a `DesignVersion`; orders carry an `OrderDesignSnapshot` | Proposed | C6 / E4 |
 | [0006](0006-design-and-job-status-model.md) | Separate status machines for `Design`, `GenerationJob`, and fulfilment | Accepted | C3 |

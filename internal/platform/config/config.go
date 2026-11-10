@@ -672,7 +672,16 @@ type B2BPluginConfig struct {
 // SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/* (not a
 // process probe — use /healthz and /readyz for orchestrators).
 type MetalDogsPluginConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled    bool                         `yaml:"enabled"`
+	Generation MetalDogsGenerationConfig    `yaml:"generation"`
+}
+
+// MetalDogsGenerationConfig controls the async generate pipeline (C4).
+// Provider must be empty or "fake" in C4 (live providers land with ADR-0008 wiring).
+type MetalDogsGenerationConfig struct {
+	Provider             string `yaml:"provider"`
+	MaxRetries           int    `yaml:"max_retries"`
+	MaxAttemptsPerDesign int    `yaml:"max_attempts_per_design"`
 }
 
 // CorePluginsConfig allows explicit enable/disable of core infrastructure plugins.
@@ -924,6 +933,16 @@ func defaults() Config {
 			Downloadable: CatalogDownloadableConfig{
 				DefaultExpiry:        DefaultCatalogDownloadableExpiry,
 				DefaultDownloadLimit: DefaultCatalogDownloadableLimit,
+			},
+		},
+		Plugins: PluginsConfig{
+			MetalDogs: MetalDogsPluginConfig{
+				Enabled: false,
+				Generation: MetalDogsGenerationConfig{
+					Provider:             "fake",
+					MaxRetries:           3,
+					MaxAttemptsPerDesign: 3,
+				},
 			},
 		},
 	}
@@ -1309,6 +1328,19 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED"); v != "" {
 		cfg.Plugins.MetalDogs.Enabled = parseEnvBool(v)
 	}
+	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER"); v != "" {
+		cfg.Plugins.MetalDogs.Generation.Provider = v
+	}
+	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Plugins.MetalDogs.Generation.MaxRetries = n
+		}
+	}
+	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_ATTEMPTS_PER_DESIGN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign = n
+		}
+	}
 	if v := os.Getenv("SHOPANDA_FRONTEND_ENABLED"); v != "" {
 		cfg.Frontend.Enabled = parseEnvBool(v)
 	}
@@ -1567,6 +1599,9 @@ func flatten(cfg *Config) map[string]string {
 	m["plugins.pimdemo.cache_ttl"] = cfg.Plugins.PimDemo.CacheTTL
 	m["plugins.b2b.enabled"] = strconv.FormatBool(cfg.Plugins.B2B.Enabled)
 	m["plugins.metaldogs.enabled"] = strconv.FormatBool(cfg.Plugins.MetalDogs.Enabled)
+	m["plugins.metaldogs.generation.provider"] = cfg.Plugins.MetalDogs.Generation.Provider
+	m["plugins.metaldogs.generation.max_retries"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxRetries)
+	m["plugins.metaldogs.generation.max_attempts_per_design"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign)
 	m["frontend.enabled"] = strconv.FormatBool(cfg.Frontend.Enabled)
 	m["frontend.mode"] = cfg.Frontend.Mode
 	m["frontend.theme_path"] = cfg.Frontend.ThemePath

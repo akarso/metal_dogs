@@ -1,6 +1,6 @@
 # ADR-0006: Separate status machines for `Design`, `GenerationJob`, and fulfilment
 
-- **Status:** Accepted (C3 / CR-13 — Design machine + transitions; GenerationJob/fulfillment enums remain for later slices)
+- **Status:** Accepted (C3 / CR-13 Design machine; C4 / CR-14 GenerationJob machine + transitions)
 - **Date:** 2026-10-15
 - **Accepted:** 2026-11-10
 - **Related slices:** `C3`, `C4`, `C6`, `E4`, `P1`–`P4`

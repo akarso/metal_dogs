@@ -3,6 +3,7 @@ package mediastore_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -60,6 +61,13 @@ func (f *fakeSigned) SignedURL(_ context.Context, path string, opts media.SignUR
 		return "", os.ErrNotExist
 	}
 	return "https://signed.example/" + path + "?sig=1", nil
+}
+func (f *fakeSigned) Read(path string) ([]byte, error) {
+	b, ok := f.objects[path]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), b...), nil
 }
 
 func TestStore_WrapsSignedURLStorage(t *testing.T) {
@@ -143,6 +151,112 @@ func TestStore_RejectsKeysOutsideNamespace(t *testing.T) {
 	}
 	if inner.saveCalls != 0 {
 		t.Fatalf("inner Save called %d times", inner.saveCalls)
+	}
+}
+
+type blockingCtxReadable struct {
+	fakeSigned
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingCtxReadable) ReadContext(ctx context.Context, path string) ([]byte, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-b.release:
+		return b.fakeSigned.Read(path)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestStore_ReadRespectsCancel(t *testing.T) {
+	t.Parallel()
+	inner := &blockingCtxReadable{
+		fakeSigned: fakeSigned{objects: map[string][]byte{
+			"private/blobs/metaldogs/source/2026/11/a1.jpg": []byte("abc"),
+		}},
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	store, err := mediastore.New(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := store.Read(ctx, "private/blobs/metaldogs/source/2026/11/a1.jpg")
+		errCh <- err
+	}()
+	<-inner.started
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not return on cancel")
+	}
+	close(inner.release)
+}
+
+type slowPutReader struct {
+	started chan struct{}
+	release chan struct{}
+	n       int
+}
+
+func (s *slowPutReader) Read(p []byte) (int, error) {
+	if s.n == 0 {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		<-s.release
+		s.n++
+		if len(p) == 0 {
+			return 0, nil
+		}
+		p[0] = 'x'
+		return 1, io.EOF
+	}
+	return 0, io.EOF
+}
+
+func TestStore_PutRespectsCancel(t *testing.T) {
+	t.Parallel()
+	inner := &fakeSigned{}
+	store, err := mediastore.New(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &slowPutReader{started: make(chan struct{}, 1), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- store.Put(ctx, "private/blobs/metaldogs/source/2026/11/a1.jpg", r, "image/jpeg")
+	}()
+	<-r.started
+	cancel()
+	close(r.release)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Put did not return on cancel")
+	}
+	if inner.saveCalls != 1 {
+		t.Fatalf("saveCalls=%d", inner.saveCalls)
+	}
+	if len(inner.objects) != 0 {
+		t.Fatalf("cancelled Put must not leave object: %v", inner.objects)
 	}
 }
 

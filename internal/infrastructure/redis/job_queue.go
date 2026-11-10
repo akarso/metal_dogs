@@ -241,7 +241,8 @@ func (q *JobQueue) Dequeue(ctx context.Context) (*jobs.Job, error) {
 }
 
 // Complete marks a job as done.
-func (q *JobQueue) Complete(ctx context.Context, id string) error {
+func (q *JobQueue) Complete(ctx context.Context, id string, attempts int) error {
+	_ = attempts
 	removed, err := q.client.LRem(ctx, q.processingKey(), 1, id).Result()
 	if err != nil {
 		return fmt.Errorf("job_queue: complete: %w", err)
@@ -269,7 +270,8 @@ func queueRetryDelay(attempt int) time.Duration {
 }
 
 // Fail re-queues a job for retry or marks it as permanently failed.
-func (q *JobQueue) Fail(ctx context.Context, id string, jobErr error) error {
+func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
+	_ = attempts
 	removed, err := q.client.LRem(ctx, q.processingKey(), 1, id).Result()
 	if err != nil {
 		return fmt.Errorf("job_queue: fail: %w", err)

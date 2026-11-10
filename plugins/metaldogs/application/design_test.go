@@ -163,6 +163,13 @@ func (m *designBlobStore) Put(_ context.Context, key string, r io.Reader, _ stri
 	m.objects[key] = b
 	return nil
 }
+func (m *designBlobStore) Read(_ context.Context, key string) ([]byte, error) {
+	b, ok := m.objects[key]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), b...), nil
+}
 func (m *designBlobStore) Head(_ context.Context, key string) error {
 	if _, ok := m.objects[key]; !ok {
 		return fmt.Errorf("missing")

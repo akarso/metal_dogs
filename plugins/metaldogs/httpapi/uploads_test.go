@@ -116,6 +116,15 @@ func (m *memBlobStore) Put(_ context.Context, key string, r io.Reader, _ string)
 	m.objects[key] = b
 	return nil
 }
+func (m *memBlobStore) Read(_ context.Context, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.objects[key]
+	if !ok {
+		return nil, fmt.Errorf("missing")
+	}
+	return append([]byte(nil), b...), nil
+}
 func (m *memBlobStore) Head(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -348,6 +357,9 @@ func (b *blockingHTTPBlobStore) Put(ctx context.Context, key string, r io.Reader
 	b.once.Do(func() { close(b.started) })
 	<-b.release
 	return b.inner.Put(ctx, key, r, ct)
+}
+func (b *blockingHTTPBlobStore) Read(ctx context.Context, key string) ([]byte, error) {
+	return b.inner.Read(ctx, key)
 }
 func (b *blockingHTTPBlobStore) Head(ctx context.Context, key string) error {
 	return b.inner.Head(ctx, key)

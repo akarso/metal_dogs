@@ -218,16 +218,41 @@ func (s *Storage) Delete(path string) error {
 
 // Read returns file contents from basePath/path.
 func (s *Storage) Read(path string) ([]byte, error) {
+	return s.ReadContext(context.Background(), path)
+}
+
+// ReadContext returns file contents, honoring ctx cancellation between chunks.
+func (s *Storage) ReadContext(ctx context.Context, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	full, err := s.resolveSafePath(path)
 	if err != nil {
 		return nil, err
 	}
-
-	data, err := os.ReadFile(full)
+	f, err := os.Open(full)
 	if err != nil {
 		return nil, fmt.Errorf("localfs: read: %w", err)
 	}
-	return data, nil
+	defer f.Close()
+
+	var buf []byte
+	tmp := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		n, readErr := f.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if readErr == io.EOF {
+			return buf, nil
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("localfs: read: %w", readErr)
+		}
+	}
 }
 
 // Open returns a read-only file for streaming signed GETs.

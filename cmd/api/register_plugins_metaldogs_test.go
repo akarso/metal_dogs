@@ -124,8 +124,10 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
 		!patterns["POST /api/customizer/uploads"] ||
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
-		!patterns["PATCH /api/customizer/designs/{id}"] {
-		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads + designs", routes)
+		!patterns["PATCH /api/customizer/designs/{id}"] ||
+		!patterns["POST /api/customizer/designs/{id}/generate"] ||
+		!patterns["GET /api/customizer/generation-jobs/{id}"] {
+		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads + designs + generate", routes)
 	}
 	foundAdminHealth := false
 	for _, r := range app.AdminRoutes() {

@@ -194,6 +194,13 @@ func (m *dBlob) Put(_ context.Context, key string, r io.Reader, _ string) error 
 	m.objects[key] = b
 	return nil
 }
+func (m *dBlob) Read(_ context.Context, key string) ([]byte, error) {
+	b, ok := m.objects[key]
+	if !ok {
+		return nil, fmt.Errorf("missing")
+	}
+	return append([]byte(nil), b...), nil
+}
 func (m *dBlob) Head(_ context.Context, key string) error {
 	if _, ok := m.objects[key]; !ok {
 		return fmt.Errorf("missing")

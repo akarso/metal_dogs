@@ -1,6 +1,6 @@
 # ADR-0003: Asynchronous generation on Shopanda's PostgreSQL job queue with HTTP polling
 
-- **Status:** Proposed (to be Accepted at close of `F1`, revisited in `C4`)
+- **Status:** Accepted (C4 / CR-14)
 - **Date:** 2026-10-15
 - **Related slices:** `F1`, `F3`, `C4`, `G5`, `E4`, `P2`, `O2`
 - **Related ADRs:** [ADR-0001](0001-metal-dogs-as-shopanda-external-plugin.md)
@@ -58,4 +58,16 @@ Inspected and wired at the F0 pin; confirmed by compiling `plugins/metaldogs` ag
 | On-demand enqueue | **Supported.** `Integration.Enqueue` after composition-root `BindQueue` (PR-1087–1088). Generation job registration lands in `C4`. |
 | Lease/visibility timeout semantics | **Inspected at pin** (Phase 11 queue); contract tests still owed in `C4`. |
 
-Status remains **Proposed** until `C4` accepts this ADR with runtime feature tests for generate/retry.
+## Verification (C4, 2026-11-10)
+
+| Item | Result |
+| --- | --- |
+| `RegisterManual("generate")` → `integration.sync.metaldogs.generate` | **Shipped.** Wired in `plugins/metaldogs/sync_generate.go` with `MaxRetries` from config. |
+| `POST …/generate` + `Idempotency-Key` → `202` + job id; poll `GET …/generation-jobs/{id}` | **Shipped.** Feature HTTP tests cover accept, replay, auth 404, missing key 400. |
+| Enqueue vs design txn | Shopanda `JobQueue.Enqueue` opens its own tx → **post-commit Enqueue** after `BeginGenerating`; handler idempotent. |
+| Per-design mutex + idempotency | Partial unique indexes on `metaldogs_generation_jobs`; DSN tests for conflict. |
+| Fake provider → `preview_ready` | Application worker tests with Fake + G3 validate + artwork asset (null `owner_ref`). |
+| Crash / redelivery | Re-entry with `artwork_asset_id` set skips provider; otherwise reclaim from `queued`/`validating` (or expired `running` lease via DB `NOW()`) and may re-call the provider. Each claim bumps `claim_token`; stale writers no-op / `ErrSkipOutcome`. Platform enqueue uses product job id as PK; Conflict → `Requeue`. Product `claim_token` is invalidated inside the re-pend transaction (`OnRequeued`, installed at BindQueue / `jobs:retry` service construction) before `pending` is visible to `Dequeue`. Missing hook or fence failure aborts the re-pend. Worker re-checks `claim_token` before `Generate` and before durable writes. `Complete`/`Fail` match dequeue `attempts`. |
+| Lease/visibility | Relies on Shopanda queue Fail/retry; product tests simulate redelivery, not raw lease SQL. |
+
+Status: **Accepted**.
