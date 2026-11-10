@@ -135,7 +135,7 @@ Platform `AuthMiddleware` does **not** JWT-parse `Authorization` on `/api/custom
 
 All three fields required; `template_id` / `upload_id` must be UUID-shaped (`400` otherwise). Template must be published. Upload must be an active unbound `source` asset. Editable texts validated (charset/max length); unknown keys rejected; fixed template texts merged server-side. Asset `owner_ref` set to design id; attached `delete_after` moves to 7 days from activity.
 
-`owner_token` is returned whenever `CreateBound` commits. Preview signing soft-fails to an empty `source_preview_url` (omitted expiry); `GET` signs again.
+`owner_token` is returned whenever `CreateBound` commits, including when post-commit preview lookup fails (empty preview). `GET` still returns `500` on asset metadata I/O errors and signs again on success.
 
 ### PATCH body
 

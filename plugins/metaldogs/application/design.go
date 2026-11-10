@@ -151,10 +151,8 @@ func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView,
 		}
 		return DesignView{}, fmt.Errorf("design: create: %w", err)
 	}
-	view, err := s.toView(ctx, d, now)
-	if err != nil {
-		return DesignView{}, err
-	}
+	// After commit the plaintext token must still reach the client even if preview lookup fails.
+	view := s.viewAfterCommit(ctx, d, now)
 	view.OwnerToken = token
 	return view, nil
 }
@@ -251,7 +249,8 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 			return DesignView{}, fmt.Errorf("design: update: %w", err)
 		}
 	}
-	return s.toView(ctx, d, now)
+	// Write already committed — do not turn a preview lookup failure into 500.
+	return s.viewAfterCommit(ctx, d, now), nil
 }
 
 func (s *DesignService) removeReplacedBlob(ctx context.Context, assetID, storageKey string) {
@@ -291,9 +290,23 @@ func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken stri
 	return d, now, nil
 }
 
+// viewAfterCommit builds a response after Create/Patch persistence. Preview lookup
+// failures soft-fail to an empty preview so the committed outcome (incl. owner_token
+// on create) still reaches the client.
+func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, now time.Time) DesignView {
+	view, err := s.toView(ctx, d, now)
+	if err != nil {
+		return DesignView{
+			ID: d.ID, Status: d.Status, TemplateID: d.TemplateID, TemplateVersion: d.TemplateVersion,
+			Texts: d.Texts, UploadID: d.SourceAssetID, CreatedAt: d.CreatedAt, ExpiresAt: d.ExpiresAt,
+		}
+	}
+	return view
+}
+
 // toView soft-fails signing to an empty preview. A missing/soft-deleted source omits
-// UploadID; a live source with a signer failure keeps UploadID. Asset lookup I/O errors
-// are returned to the caller (HTTP 500), not treated as swept.
+// UploadID; a live row (even with empty storage_key) keeps UploadID. Asset lookup I/O
+// errors are returned to GET callers (HTTP 500), not treated as swept.
 func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
 	view := DesignView{
 		ID:              d.ID,
@@ -312,8 +325,11 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 	if err != nil {
 		return DesignView{}, fmt.Errorf("design: source asset: %w", err)
 	}
-	if !ok || asset.StorageKey == "" {
+	if !ok {
 		view.UploadID = ""
+		return view, nil
+	}
+	if asset.StorageKey == "" {
 		return view, nil
 	}
 	url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, ports.DefaultSignedGetTTL)

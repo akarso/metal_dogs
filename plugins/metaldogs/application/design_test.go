@@ -539,6 +539,80 @@ func (m *errAssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bo
 	return m.designAssetRepo.GetByID(ctx, id)
 }
 
+func TestDesignService_Create_PostCommitAssetLookupStillReturnsToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111118"
+	uploadID := "22222222-2222-4222-8222-22222222222b"
+	key := "private/blobs/metaldogs/source/2026/11/create-err.jpg"
+	inner := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: key,
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	// Create pre-check GetByID succeeds once; post-commit toView GetByID fails.
+	counting := &countdownAssetRepo{inner: inner, failAfter: 1}
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: &designMemRepo{}, assets: inner},
+		Assets:    counting,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{key: {1}}},
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.OwnerToken == "" {
+		t.Fatal("owner_token must be returned after CreateBound even when toView asset lookup fails")
+	}
+	if created.UploadID != uploadID {
+		t.Fatalf("upload_id=%q", created.UploadID)
+	}
+	if created.SourcePreviewURL != "" {
+		t.Fatalf("preview must be empty on soft-fail: %q", created.SourcePreviewURL)
+	}
+	bound, ok, _ := inner.GetByID(context.Background(), uploadID)
+	if !ok || bound.OwnerRef == "" {
+		t.Fatal("upload must stay bound")
+	}
+}
+
+// countdownAssetRepo succeeds for the first n GetByID calls, then returns an error.
+type countdownAssetRepo struct {
+	inner     *designAssetRepo
+	failAfter int
+	n         int
+}
+
+func (m *countdownAssetRepo) Insert(ctx context.Context, a domain.Asset) error {
+	return m.inner.Insert(ctx, a)
+}
+func (m *countdownAssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
+	m.n++
+	if m.n > m.failAfter {
+		return domain.Asset{}, false, errors.New("db down after commit")
+	}
+	return m.inner.GetByID(ctx, id)
+}
+func (m *countdownAssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) error {
+	return m.inner.SoftDelete(ctx, id, at)
+}
+func (m *countdownAssetRepo) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return m.inner.BindOwnerRef(ctx, assetID, ownerRef, deleteAfter)
+}
+func (m *countdownAssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
+	return m.inner.ClearOwnerRef(ctx, assetID, ownerRef)
+}
+func (m *countdownAssetRepo) ClearStorageKey(ctx context.Context, assetID string) error {
+	return m.inner.ClearStorageKey(ctx, assetID)
+}
+
 func TestDesignService_Get_AssetLookupError(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
