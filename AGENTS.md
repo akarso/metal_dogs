@@ -169,6 +169,16 @@ When the Go application is introduced:
 - Prefer concrete types at call sites and interfaces at dependency boundaries.
 - Run the repository's formatter, vet/linter, and test commands before completing a change.
 
+## Code comments
+
+- Default to no comment; names and structure should explain the code.
+- Comment only the *why*: a hidden constraint, workaround, compatibility reason, non-obvious decision (link the ADR/ticket), or a trap (ordering, concurrency, units, time zones).
+- One line; two or three at most. Never half a screen.
+- Do not narrate what the next line does, repeat the name or parameters, describe the change ("added", "now", "updated"), leave commented-out code, or use banner/section/bullet comments.
+- Exported identifiers keep a short godoc sentence (1–2 sentences) only where it adds information beyond the name.
+- Do not add comments to code you are not changing, and do not strip existing comments in unrelated diffs.
+- Test: if deleting the comment loses nothing the code does not already say, delete it.
+
 ## Testing
 
 Every behavior change should be covered at the lowest useful level and at important system boundaries.
