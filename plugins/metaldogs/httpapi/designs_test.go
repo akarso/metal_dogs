@@ -22,6 +22,7 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
+	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
 
 func httpSHA(b []byte) string {
@@ -269,6 +270,89 @@ func TestDesigns_NonDefaultMaxAttempts(t *testing.T) {
 	}
 	if created.MaxGenerationAttempts != 5 || created.GenerationAttemptsRemaining != 5 {
 		t.Fatalf("%+v", created)
+	}
+}
+
+func TestDesigns_GetRetryAfterCooldownAndLimit(t *testing.T) {
+	t.Parallel()
+	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaa1"
+	uploadID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaa2"
+	svc, _ := designSvc(t, tplID, uploadID, domain.TemplatePublished)
+	svc.MaxAttempts = 3
+	svc.Cooldown = 30 * time.Second
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	svc.Clock = testutil.NewFakeClock(now)
+	jobID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	finished := now.Add(-5 * time.Second)
+	svc.Jobs = &dJobRepo{byID: map[string]domain.GenerationJob{
+		jobID: {
+			ID: jobID, Status: domain.JobSucceeded, Attempt: 1,
+			QueuedAt: now.Add(-time.Minute), FinishedAt: &finished,
+		},
+	}}
+	designs := svc.Designs.(*dDesignRepo)
+
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs", httpapi.CreateDesign(svc))
+	mux.Handle("GET /api/customizer/designs/{id}", httpapi.GetDesign(svc))
+
+	body, _ := json.Marshal(map[string]any{
+		"template_id": tplID, "upload_id": uploadID, "texts": map[string]string{"dog_name": "Burek"},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/customizer/designs", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	designs.mu.Lock()
+	d := designs.byID[created.ID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+	svc.Jobs.(*dJobRepo).byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, Attempt: 1,
+		QueuedAt: now.Add(-time.Minute), FinishedAt: &finished,
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/customizer/designs/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get %d %s", rec.Code, rec.Body.String())
+	}
+	var got httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RetryAfter != 25 || got.GenerationAttemptsRemaining != 2 {
+		t.Fatalf("cooldown get: %+v", got)
+	}
+
+	designs.mu.Lock()
+	d = designs.byID[created.ID]
+	d.GenerationAttempts = 3
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/customizer/designs/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("limit get %d %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RetryAfter != 0 || got.GenerationAttemptsRemaining != 0 {
+		t.Fatalf("spent budget: %+v", got)
 	}
 }
 

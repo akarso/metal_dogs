@@ -254,13 +254,14 @@ func (r *GenerationJobRepo) PersistArtwork(ctx context.Context, j domain.Generat
 	if err := insertAssetTx(ctx, tx, artwork); err != nil {
 		return nil, err
 	}
+	// Claim + active status fence writers. Same-id re-persist and replacement under the
+	// same claim are both allowed; softDeleteLiveAssetType already retired prior artwork.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_generation_jobs
 		SET artwork_asset_id = $2
 		WHERE id = $1
 		  AND status IN ('queued', 'running', 'validating')
 		  AND claim_token = $3
-		  AND (artwork_asset_id IS NULL OR artwork_asset_id = $2)
 	`, j.ID, artwork.ID, j.ClaimToken)
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs persist artwork job: %w", err)

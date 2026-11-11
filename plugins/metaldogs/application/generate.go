@@ -307,7 +307,15 @@ func (s *GenerateService) checkCooldown(ctx context.Context, d domain.Design, no
 	if !ok {
 		return &GenerateError{Code: GenerateErrUnavailable, Message: "latest generation job missing", DesignID: d.ID}
 	}
-	if err := domain.CheckGenerationCooldown(domain.GenerationJobLastAttemptAt(job), cooldown, now); err != nil {
+	anchor, ok := domain.GenerationJobCooldownAnchor(job)
+	if !ok {
+		// In-flight or terminal without finished_at — not free; advertise full cooldown.
+		return &GenerateError{
+			Code: GenerateErrCooldown, Message: "cooldown: prior attempt still locking regenerate",
+			DesignID: d.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cooldown, cooldown),
+		}
+	}
+	if err := domain.CheckGenerationCooldown(anchor, cooldown, now); err != nil {
 		var cd *domain.ErrCooldown
 		if errors.As(err, &cd) {
 			return &GenerateError{

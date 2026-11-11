@@ -6,12 +6,12 @@
 
 ## What shipped
 
-- Design DTO: `generation_attempts`, `generation_attempts_remaining`, `max_generation_attempts`, `retry_after`
+- Design DTO: `generation_attempts`, `generation_attempts_remaining`, `max_generation_attempts`, `retry_after` (cooldown lockout only; `0` ≠ “may regenerate”)
 - Config `plugins.metaldogs.generation.cooldown_seconds` (default 30; `0` disables; env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS`; reject &lt;0 or &gt;24h at Init)
 - Hard cap checked **before** cooldown; spent budget → `429` `limit_reached` with **no** `Retry-After`
-- Cooldown → `429` `cooldown` with header + JSON `retry_after` (ceil seconds, clamped to cooldown)
-- Missing latest job with attempts &gt; 0 → `503` `unavailable` (fail closed)
-- `BeginGenerating` fences on prior `generation_attempts` + `latest_job_id`
+- Cooldown → `429` `cooldown` with header + JSON `retry_after` (ceil seconds, clamped to cooldown); anchor is terminal `finished_at` only
+- Missing latest job with attempts &gt; 0 → `503` `unavailable` on generate **and** design GET (fail closed)
+- `BeginGenerating` fences on prior `generation_attempts` + `latest_job_id`; PersistArtwork allows artwork replace under the same claim
 - **Policy:** every `RequestGeneration` (incl. after `generation_failed`) consumes budget and cooldown; provider-fault refunds remain a follow-up
 - ROADMAP: G4/C5 marked **partial** (web-sized mockup base still open)
 
@@ -23,14 +23,19 @@
 | Limit inside cooldown window | Pass locally |
 | Cooldown then success / same-key replay | Pass locally |
 | HTTP limit (no Retry-After) + cooldown mapping | Pass locally |
+| Design GET retry_after during cooldown / spent budget | Pass locally |
+| Init cooldown 0 / -1 / 86401 | Pass locally |
+| DSN PersistArtwork replace + stale latest fence | Pass with DSN (`:5433`) |
 | Docs links | Pass locally |
 
 ## Tests added
 
-- `domain/generation_job_test.go` — remaining, cooldown, ceil/clamp, LastAttemptAt
+- `domain/generation_job_test.go` — remaining, cooldown, ceil/clamp, LastAttemptAt, CooldownAnchor
 - `application/generate_test.go` — fourth attempt; limit inside window; cooldown; missing latest
 - `httpapi/generate_test.go` — `429` limit without Retry-After; `429` cooldown with `retry_after=25`
-- `httpapi/designs_test.go` — attempt budget on create
+- `httpapi/designs_test.go` — attempt budget; GET retry_after cooldown + spent budget
+- `adapters/postgres/generation_job_repo_test.go` — stale `latest_job_id` fence; PersistArtwork replace under claim
+- `plugin_test.go` — Init cooldown bounds
 
 ## Flags / migrations / rollback
 

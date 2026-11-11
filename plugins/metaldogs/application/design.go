@@ -355,36 +355,50 @@ func (s *DesignService) attemptBudget(d domain.Design) (attempts, remaining, max
 	return attempts, domain.GenerationAttemptsRemaining(attempts, max), max
 }
 
-func (s *DesignService) regenerateRetryAfter(ctx context.Context, d domain.Design, remaining int, now time.Time) int {
-	if remaining <= 0 || d.GenerationAttempts == 0 || s.Cooldown <= 0 || s.Jobs == nil {
-		return 0
+// regenerateRetryAfter mirrors POST generate cooldown rules for the design read model.
+// retry_after: 0 means "not locked by cooldown" — callers must still check status/remaining.
+// Missing/unreadable latest job with attempts>0 and cooldown on → unavailable (same as POST).
+func (s *DesignService) regenerateRetryAfter(ctx context.Context, d domain.Design, remaining int, now time.Time) (int, error) {
+	if remaining <= 0 || d.GenerationAttempts == 0 || s.Cooldown <= 0 {
+		return 0, nil
+	}
+	if s.Jobs == nil {
+		return 0, &DesignError{Code: DesignErrUnavailable, Message: "latest generation job missing"}
 	}
 	latestID := strings.TrimSpace(d.LatestJobID)
 	if latestID == "" {
-		return 0
+		return 0, &DesignError{Code: DesignErrUnavailable, Message: "latest generation job missing"}
 	}
 	job, ok, err := s.Jobs.GetByID(ctx, latestID)
-	if err != nil || !ok {
-		return 0
+	if err != nil {
+		return 0, fmt.Errorf("design: cooldown job: %w", err)
 	}
-	if err := domain.CheckGenerationCooldown(domain.GenerationJobLastAttemptAt(job), s.Cooldown, now); err != nil {
+	if !ok {
+		return 0, &DesignError{Code: DesignErrUnavailable, Message: "latest generation job missing"}
+	}
+	anchor, ok := domain.GenerationJobCooldownAnchor(job)
+	if !ok {
+		return domain.CooldownRetryAfterSeconds(s.Cooldown, s.Cooldown), nil
+	}
+	if err := domain.CheckGenerationCooldown(anchor, s.Cooldown, now); err != nil {
 		var cd *domain.ErrCooldown
 		if errors.As(err, &cd) {
-			return domain.CooldownRetryAfterSeconds(cd.RetryAfter, s.Cooldown)
+			return domain.CooldownRetryAfterSeconds(cd.RetryAfter, s.Cooldown), nil
 		}
+		return 0, err
 	}
-	return 0
+	return 0, nil
 }
 
 func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, now time.Time) DesignView {
 	view, err := s.toView(ctx, d, now)
 	if err != nil {
 		attempts, remaining, max := s.attemptBudget(d)
+		// Soft-fail create/patch responses: never omit owner_token because of preview/cooldown lookup.
 		return DesignView{
 			ID: d.ID, Status: d.Status, TemplateID: d.TemplateID, TemplateVersion: d.TemplateVersion,
 			Texts: d.Texts, UploadID: d.SourceAssetID, CreatedAt: d.CreatedAt, ExpiresAt: d.ExpiresAt,
 			GenerationAttempts: attempts, GenerationAttemptsRemaining: remaining, MaxGenerationAttempts: max,
-			RetryAfter: s.regenerateRetryAfter(ctx, d, remaining, now),
 		}
 	}
 	return view
@@ -393,8 +407,13 @@ func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, no
 // toView soft-fails signing to an empty preview. A missing/soft-deleted source omits
 // UploadID; a live row (even with empty storage_key) keeps UploadID. Asset lookup I/O
 // errors are returned to GET callers (HTTP 500), not treated as swept.
+// Cooldown lookup uses the same rules as POST generate; missing latest job → unavailable.
 func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
 	attempts, remaining, max := s.attemptBudget(d)
+	retryAfter, err := s.regenerateRetryAfter(ctx, d, remaining, now)
+	if err != nil {
+		return DesignView{}, err
+	}
 	view := DesignView{
 		ID:                          d.ID,
 		Status:                      d.Status,
@@ -408,7 +427,7 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 		GenerationAttempts:          attempts,
 		GenerationAttemptsRemaining: remaining,
 		MaxGenerationAttempts:       max,
-		RetryAfter:                  s.regenerateRetryAfter(ctx, d, remaining, now),
+		RetryAfter:                  retryAfter,
 	}
 	if s.Assets == nil || s.Store == nil {
 		return view, nil

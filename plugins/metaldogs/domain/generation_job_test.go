@@ -178,6 +178,25 @@ func TestGenerationJobLastAttemptAt(t *testing.T) {
 	}
 }
 
+func TestGenerationJobCooldownAnchor(t *testing.T) {
+	t.Parallel()
+	queued := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	finished := queued.Add(2 * time.Minute)
+	j := domain.GenerationJob{Status: domain.JobRunning, QueuedAt: queued, FinishedAt: &finished}
+	if _, ok := domain.GenerationJobCooldownAnchor(j); ok {
+		t.Fatal("running must not anchor")
+	}
+	j.Status = domain.JobSucceeded
+	got, ok := domain.GenerationJobCooldownAnchor(j)
+	if !ok || !got.Equal(finished) {
+		t.Fatalf("succeeded anchor=%v ok=%v", got, ok)
+	}
+	j.FinishedAt = nil
+	if _, ok := domain.GenerationJobCooldownAnchor(j); ok {
+		t.Fatal("terminal without finished_at must not anchor")
+	}
+}
+
 func TestDesign_MarkPreviewReadyAndFailed(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
