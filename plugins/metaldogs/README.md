@@ -64,7 +64,7 @@ plugins/metaldogs/
 
 Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
 
-Generation config (C4): `plugins.metaldogs.generation.provider` (fake only), `max_retries`, `max_attempts_per_design`.
+Generation config (C4/C7): `plugins.metaldogs.generation.provider` (fake only), `max_retries`, `max_attempts_per_design`, `cooldown_seconds` (default 30).
 
 ## Private assets (F4 / C2 / ADR-0004)
 

@@ -19,22 +19,25 @@ type designErrorBody struct {
 
 // DesignResponse is the customer-facing design DTO.
 type DesignResponse struct {
-	ID                         string            `json:"id"`
-	Status                     string            `json:"status"`
-	TemplateID                 string            `json:"template_id"`
-	TemplateVersion            int               `json:"template_version"`
-	Texts                      map[string]string `json:"texts"`
-	UploadID                   string            `json:"upload_id,omitempty"`
-	CreatedAt                  time.Time         `json:"created_at"`
-	ExpiresAt                  time.Time         `json:"expires_at"`
-	SourcePreviewURL           string            `json:"source_preview_url"`
-	SourcePreviewURLExpiresAt  *time.Time        `json:"source_preview_url_expires_at,omitempty"`
-	ArtworkPreviewURL          string            `json:"artwork_preview_url,omitempty"`
-	ArtworkPreviewURLExpiresAt *time.Time        `json:"artwork_preview_url_expires_at,omitempty"`
-	MockupPreviewURL           string            `json:"mockup_preview_url,omitempty"`
-	MockupPreviewURLExpiresAt  *time.Time        `json:"mockup_preview_url_expires_at,omitempty"`
-	ApprovedVersionID          string            `json:"approved_version_id,omitempty"`
-	OwnerToken                 string            `json:"owner_token,omitempty"`
+	ID                          string            `json:"id"`
+	Status                      string            `json:"status"`
+	TemplateID                  string            `json:"template_id"`
+	TemplateVersion             int               `json:"template_version"`
+	Texts                       map[string]string `json:"texts"`
+	UploadID                    string            `json:"upload_id,omitempty"`
+	CreatedAt                   time.Time         `json:"created_at"`
+	ExpiresAt                   time.Time         `json:"expires_at"`
+	SourcePreviewURL            string            `json:"source_preview_url"`
+	SourcePreviewURLExpiresAt   *time.Time        `json:"source_preview_url_expires_at,omitempty"`
+	ArtworkPreviewURL           string            `json:"artwork_preview_url,omitempty"`
+	ArtworkPreviewURLExpiresAt  *time.Time        `json:"artwork_preview_url_expires_at,omitempty"`
+	MockupPreviewURL            string            `json:"mockup_preview_url,omitempty"`
+	MockupPreviewURLExpiresAt   *time.Time        `json:"mockup_preview_url_expires_at,omitempty"`
+	ApprovedVersionID           string            `json:"approved_version_id,omitempty"`
+	OwnerToken                  string            `json:"owner_token,omitempty"`
+	GenerationAttempts          int               `json:"generation_attempts"`
+	GenerationAttemptsRemaining int               `json:"generation_attempts_remaining"`
+	MaxGenerationAttempts       int               `json:"max_generation_attempts"`
 }
 
 // VersionResponse is the frozen DesignVersion DTO (C6).
@@ -264,19 +267,22 @@ func toDesignResponse(v application.DesignView) DesignResponse {
 		texts = map[string]string{}
 	}
 	resp := DesignResponse{
-		ID:                v.ID,
-		Status:            v.Status,
-		TemplateID:        v.TemplateID,
-		TemplateVersion:   v.TemplateVersion,
-		Texts:             texts,
-		UploadID:          v.UploadID,
-		CreatedAt:         v.CreatedAt.UTC(),
-		ExpiresAt:         v.ExpiresAt.UTC(),
-		SourcePreviewURL:  v.SourcePreviewURL,
-		ArtworkPreviewURL: v.ArtworkPreviewURL,
-		MockupPreviewURL:  v.MockupPreviewURL,
-		ApprovedVersionID: v.ApprovedVersionID,
-		OwnerToken:        v.OwnerToken,
+		ID:                          v.ID,
+		Status:                      v.Status,
+		TemplateID:                  v.TemplateID,
+		TemplateVersion:             v.TemplateVersion,
+		Texts:                       texts,
+		UploadID:                    v.UploadID,
+		CreatedAt:                   v.CreatedAt.UTC(),
+		ExpiresAt:                   v.ExpiresAt.UTC(),
+		SourcePreviewURL:            v.SourcePreviewURL,
+		ArtworkPreviewURL:           v.ArtworkPreviewURL,
+		MockupPreviewURL:            v.MockupPreviewURL,
+		ApprovedVersionID:           v.ApprovedVersionID,
+		OwnerToken:                  v.OwnerToken,
+		GenerationAttempts:          v.GenerationAttempts,
+		GenerationAttemptsRemaining: v.GenerationAttemptsRemaining,
+		MaxGenerationAttempts:       v.MaxGenerationAttempts,
 	}
 	if !v.SourcePreviewURLExpiresAt.IsZero() {
 		t := v.SourcePreviewURLExpiresAt.UTC()

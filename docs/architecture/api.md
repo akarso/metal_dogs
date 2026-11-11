@@ -159,11 +159,14 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
   "artwork_preview_url_expires_at": "2026-11-10T12:01:00Z",
   "mockup_preview_url": "https://…signed…",
   "mockup_preview_url_expires_at": "2026-11-10T12:01:00Z",
+  "generation_attempts": 0,
+  "generation_attempts_remaining": 3,
+  "max_generation_attempts": 3,
   "owner_token": "base64url…"
 }
 ```
 
-`owner_token` appears only on create. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` only on that soft-deleted row (missing object is success; other cleanup failures are logged). Source / artwork / mockup preview TTL is 60s when signing succeeds. Artwork and mockup preview fields are omitted until the design is `preview_ready` (also `approved` / `ordered`) and the latest succeeded job has live assets; signing failures soft-fail to empty like source. If the active source row is missing/soft-deleted, `upload_id` is omitted; a live source with a signer failure keeps `upload_id` and an empty preview. Asset metadata I/O errors on the source lookup are `500`.
+`owner_token` appears only on create. Attempt budget fields (C7) mirror `plugins.metaldogs.generation.max_attempts_per_design`. Design `expires_at` is 30d from create / last **mutating** activity (`POST`/`PATCH`); `GET` does not slide it. Attached source `delete_after` is 7d from create/patch/replace. Replace soft-deletes the prior source row, deletes its storage object, then clears `storage_key` only on that soft-deleted row (missing object is success; other cleanup failures are logged). Source / artwork / mockup preview TTL is 60s when signing succeeds. Artwork and mockup preview fields are omitted until the design is `preview_ready` (also `approved` / `ordered`) and the latest succeeded job has live assets; signing failures soft-fail to empty like source. If the active source row is missing/soft-deleted, `upload_id` is omitted; a live source with a signer failure keeps `upload_id` and an empty preview. Asset metadata I/O errors on the source lookup are `500`.
 
 ### Errors
 
@@ -194,7 +197,7 @@ Optional `texts` and/or `upload_id`. Allowed only when status is `draft`, `gener
 
 ### POST generate
 
-Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, the source asset is still live, and `generation_attempts < max_attempts_per_design` (default 3). Creates `GenerationJob` (`queued`) scoped to `source_asset_id` + `template_version` + `texts_digest`, sets design → `generating`, slides source `delete_after`, then enqueues `integration.sync.metaldogs.generate` with platform job id = product `generation_job_id` on a detached request context (preserves `request_id`). Duplicate PK → `Requeue` when the platform row is `failed`/`done`/`cancelled` or stale `processing` (Postgres queue; young `processing`/`pending` left alone). Product `claim_token` is invalidated in the same transaction as the pending update (before `Dequeue` can see it); Conflict does not bump the token a second time. Platform `Complete`/`Fail` are fenced by dequeue `attempts`; a delivery that lost the platform row returns `ErrSkipOutcome` so the worker does not ack a newer attempt. Claim/lease use database `NOW()` only. Same-key retry re-reads product status and re-enqueues when `queued` or `running` past that DB lease (`503` includes `job_id` on enqueue failure). At most one active job per design (DB partial unique). Reusing a key after replace-photo / template / texts change → `409` `conflict` with the prior `job_id`.
+Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, the source asset is still live, and `generation_attempts < max_attempts_per_design` (default 3). After the first attempt, regenerations must also wait `cooldown_seconds` (default 30) from the latest job's `finished_at` (else `queued_at`). Creates `GenerationJob` (`queued`) scoped to `source_asset_id` + `template_version` + `texts_digest`, sets design → `generating`, slides source `delete_after`, then enqueues `integration.sync.metaldogs.generate` with platform job id = product `generation_job_id` on a detached request context (preserves `request_id`). Duplicate PK → `Requeue` when the platform row is `failed`/`done`/`cancelled` or stale `processing` (Postgres queue; young `processing`/`pending` left alone). Product `claim_token` is invalidated in the same transaction as the pending update (before `Dequeue` can see it); Conflict does not bump the token a second time. Platform `Complete`/`Fail` are fenced by dequeue `attempts`; a delivery that lost the platform row returns `ErrSkipOutcome` so the worker does not ack a newer attempt. Claim/lease use database `NOW()` only. Same-key retry re-reads product status and re-enqueues when `queued` or `running` past that DB lease (`503` includes `job_id` on enqueue failure). At most one active job per design (DB partial unique). Reusing a key after replace-photo / template / texts change → `409` `conflict` with the prior `job_id`.
 
 ```json
 {
@@ -230,6 +233,7 @@ Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, 
 | `409` | `invalid_transition` (+ `job_id` when generating) | Design not eligible; includes active job id when present |
 | `409` | `conflict` (+ `job_id`) | Active job / idempotency key reused with different inputs |
 | `422` | `upload_unavailable` | Source missing/soft-deleted before a job is created |
+| `429` | `cooldown` (+ `Retry-After`) | Regenerating inside `cooldown_seconds` of the prior attempt |
 | `429` | `limit_reached` (+ `Retry-After`) | `generation_attempts` at configured max |
 | `503` | `unavailable` | No DB / enqueue failure (body may include `job_id`; retry same Idempotency-Key → re-Enqueue) |
 | `500` | `internal_error` | Persistence failure |
@@ -239,6 +243,7 @@ Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, 
 - `plugins.metaldogs.generation.provider` — C4 accepts only `fake` (default)
 - `plugins.metaldogs.generation.max_retries` — queue retries (default 3)
 - `plugins.metaldogs.generation.max_attempts_per_design` — customer regenerations (default 3)
+- `plugins.metaldogs.generation.cooldown_seconds` — minimum gap between distinct attempts (default 30)
 
 ## Approve and clone (C6)
 

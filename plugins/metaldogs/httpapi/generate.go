@@ -126,7 +126,11 @@ func writeGenerateError(w http.ResponseWriter, err error) {
 	if errors.As(err, &ge) {
 		status := generateStatus(ge.Code)
 		if status == http.StatusTooManyRequests {
-			w.Header().Set("Retry-After", "60")
+			retryAfter := ge.RetryAfter
+			if retryAfter <= 0 {
+				retryAfter = 60
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		}
 		if ge.JobID != "" && (ge.Code == application.GenerateErrConflict ||
 			ge.Code == application.GenerateErrInvalidTransition ||
@@ -152,7 +156,7 @@ func generateStatus(code string) int {
 		return http.StatusConflict
 	case application.GenerateErrUploadUnavailable:
 		return http.StatusUnprocessableEntity
-	case application.GenerateErrLimitReached:
+	case application.GenerateErrLimitReached, application.GenerateErrCooldown:
 		return http.StatusTooManyRequests
 	case application.GenerateErrUnavailable:
 		return http.StatusServiceUnavailable

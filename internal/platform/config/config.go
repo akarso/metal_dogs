@@ -676,12 +676,14 @@ type MetalDogsPluginConfig struct {
 	Generation MetalDogsGenerationConfig    `yaml:"generation"`
 }
 
-// MetalDogsGenerationConfig controls the async generate pipeline (C4).
+// MetalDogsGenerationConfig controls the async generate pipeline (C4/C7).
 // Provider must be empty or "fake" in C4 (live providers land with ADR-0008 wiring).
 type MetalDogsGenerationConfig struct {
 	Provider             string `yaml:"provider"`
 	MaxRetries           int    `yaml:"max_retries"`
 	MaxAttemptsPerDesign int    `yaml:"max_attempts_per_design"`
+	// CooldownSeconds is the minimum gap between customer generation attempts (C7; default 30).
+	CooldownSeconds int `yaml:"cooldown_seconds"`
 }
 
 // CorePluginsConfig allows explicit enable/disable of core infrastructure plugins.
@@ -942,6 +944,7 @@ func defaults() Config {
 					Provider:             "fake",
 					MaxRetries:           3,
 					MaxAttemptsPerDesign: 3,
+					CooldownSeconds:       30,
 				},
 			},
 		},
@@ -1341,6 +1344,11 @@ func applyEnv(cfg *Config) {
 			cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign = n
 		}
 	}
+	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Plugins.MetalDogs.Generation.CooldownSeconds = n
+		}
+	}
 	if v := os.Getenv("SHOPANDA_FRONTEND_ENABLED"); v != "" {
 		cfg.Frontend.Enabled = parseEnvBool(v)
 	}
@@ -1602,6 +1610,7 @@ func flatten(cfg *Config) map[string]string {
 	m["plugins.metaldogs.generation.provider"] = cfg.Plugins.MetalDogs.Generation.Provider
 	m["plugins.metaldogs.generation.max_retries"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxRetries)
 	m["plugins.metaldogs.generation.max_attempts_per_design"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign)
+	m["plugins.metaldogs.generation.cooldown_seconds"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.CooldownSeconds)
 	m["frontend.enabled"] = strconv.FormatBool(cfg.Frontend.Enabled)
 	m["frontend.mode"] = cfg.Frontend.Mode
 	m["frontend.theme_path"] = cfg.Frontend.ThemePath

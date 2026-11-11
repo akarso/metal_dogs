@@ -46,22 +46,25 @@ const (
 
 // DesignView is the customer-facing design projection (no token hash).
 type DesignView struct {
-	ID                         string
-	Status                     string
-	TemplateID                 string
-	TemplateVersion            int
-	Texts                      map[string]string
-	UploadID                   string
-	CreatedAt                  time.Time
-	ExpiresAt                  time.Time
-	SourcePreviewURL           string
-	SourcePreviewURLExpiresAt  time.Time // zero when preview unavailable
-	ArtworkPreviewURL          string
-	ArtworkPreviewURLExpiresAt time.Time
-	MockupPreviewURL           string
-	MockupPreviewURLExpiresAt  time.Time
-	ApprovedVersionID          string
-	OwnerToken                 string // set only on Create / Clone
+	ID                          string
+	Status                      string
+	TemplateID                  string
+	TemplateVersion             int
+	Texts                       map[string]string
+	UploadID                    string
+	CreatedAt                   time.Time
+	ExpiresAt                   time.Time
+	SourcePreviewURL            string
+	SourcePreviewURLExpiresAt   time.Time // zero when preview unavailable
+	ArtworkPreviewURL           string
+	ArtworkPreviewURLExpiresAt  time.Time
+	MockupPreviewURL            string
+	MockupPreviewURLExpiresAt   time.Time
+	ApprovedVersionID           string
+	OwnerToken                  string // set only on Create / Clone
+	GenerationAttempts          int
+	GenerationAttemptsRemaining int
+	MaxGenerationAttempts       int
 }
 
 // DesignService coordinates design create/get/patch/approve/clone with ownership tokens.
@@ -74,6 +77,8 @@ type DesignService struct {
 	Store     ports.AssetStore
 	IDs       ports.IDGenerator
 	Clock     ports.Clock
+	// MaxAttempts is plugins.metaldogs.generation.max_attempts_per_design (C7 remaining count).
+	MaxAttempts int
 	// EnqueuePrepare schedules prepare_production_artwork after approve (optional).
 	EnqueuePrepare ports.PrepareProductionEnqueue
 	// MaxInFlightClones caps concurrent Clone calls; 0 → DefaultMaxConcurrentUploads.
@@ -338,12 +343,23 @@ func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken stri
 // viewAfterCommit builds a response after Create/Patch persistence. Preview lookup
 // failures soft-fail to an empty preview so the committed outcome (incl. owner_token
 // on create) still reaches the client.
+func (s *DesignService) attemptBudget(d domain.Design) (attempts, remaining, max int) {
+	max = domain.NormalizeMaxAttempts(s.MaxAttempts)
+	attempts = d.GenerationAttempts
+	if attempts < 0 {
+		attempts = 0
+	}
+	return attempts, domain.GenerationAttemptsRemaining(attempts, max), max
+}
+
 func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, now time.Time) DesignView {
 	view, err := s.toView(ctx, d, now)
 	if err != nil {
+		attempts, remaining, max := s.attemptBudget(d)
 		return DesignView{
 			ID: d.ID, Status: d.Status, TemplateID: d.TemplateID, TemplateVersion: d.TemplateVersion,
 			Texts: d.Texts, UploadID: d.SourceAssetID, CreatedAt: d.CreatedAt, ExpiresAt: d.ExpiresAt,
+			GenerationAttempts: attempts, GenerationAttemptsRemaining: remaining, MaxGenerationAttempts: max,
 		}
 	}
 	return view
@@ -353,16 +369,20 @@ func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, no
 // UploadID; a live row (even with empty storage_key) keeps UploadID. Asset lookup I/O
 // errors are returned to GET callers (HTTP 500), not treated as swept.
 func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
+	attempts, remaining, max := s.attemptBudget(d)
 	view := DesignView{
-		ID:                d.ID,
-		Status:            d.Status,
-		TemplateID:        d.TemplateID,
-		TemplateVersion:   d.TemplateVersion,
-		Texts:             d.Texts,
-		UploadID:          d.SourceAssetID,
-		CreatedAt:         d.CreatedAt,
-		ExpiresAt:         d.ExpiresAt,
-		ApprovedVersionID: d.ApprovedVersionID,
+		ID:                          d.ID,
+		Status:                      d.Status,
+		TemplateID:                  d.TemplateID,
+		TemplateVersion:             d.TemplateVersion,
+		Texts:                       d.Texts,
+		UploadID:                    d.SourceAssetID,
+		CreatedAt:                   d.CreatedAt,
+		ExpiresAt:                   d.ExpiresAt,
+		ApprovedVersionID:           d.ApprovedVersionID,
+		GenerationAttempts:          attempts,
+		GenerationAttemptsRemaining: remaining,
+		MaxGenerationAttempts:       max,
 	}
 	if s.Assets == nil || s.Store == nil {
 		return view, nil

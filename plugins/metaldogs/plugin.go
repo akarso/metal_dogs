@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -80,6 +82,10 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
+	cooldownSecs := genCfg.CooldownSeconds
+	if cooldownSecs <= 0 {
+		cooldownSecs = int(domain.DefaultGenerationCooldown / time.Second)
+	}
 
 	registerCLICommands(app)
 
@@ -104,9 +110,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
 		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
-		p.designs = newDesignService(store, app.Bootstrap.DB, templates, app.Logger)
+		p.designs = newDesignService(store, app.Bootstrap.DB, templates, maxAttempts, app.Logger)
 		var genErr error
-		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts, app.Logger)
+		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts, cooldownSecs, app.Logger)
 		if genErr != nil {
 			return fmt.Errorf("metaldogs plugin: generate services: %w", genErr)
 		}
@@ -194,7 +200,7 @@ func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *ap
 	return svc
 }
 
-func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, log logger.Logger) *application.DesignService {
+func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, maxAttempts int, log logger.Logger) *application.DesignService {
 	if store == nil || db == nil || templates == nil {
 		return nil
 	}
@@ -208,14 +214,15 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 		}
 	}
 	svc := &application.DesignService{
-		Designs:   postgres.NewDesignRepo(db),
-		Assets:    postgres.NewAssetRepo(db),
-		Jobs:      postgres.NewGenerationJobRepo(db),
-		Versions:  versions,
-		Templates: templates,
-		Store:     store,
-		IDs:       ports.UUIDGenerator{},
-		Clock:     ports.SystemClock{},
+		Designs:     postgres.NewDesignRepo(db),
+		Assets:      postgres.NewAssetRepo(db),
+		Jobs:        postgres.NewGenerationJobRepo(db),
+		Versions:    versions,
+		Templates:   templates,
+		Store:       store,
+		IDs:         ports.UUIDGenerator{},
+		Clock:       ports.SystemClock{},
+		MaxAttempts: maxAttempts,
 	}
 	if log != nil {
 		svc.OnCleanupError = func(op, assetID, storageKey string, err error) {
@@ -240,7 +247,7 @@ func newGenerateServices(
 	store ports.AssetStore,
 	db *sql.DB,
 	providerName string,
-	maxRetries, maxAttempts int,
+	maxRetries, maxAttempts, cooldownSecs int,
 	log logger.Logger,
 ) (*application.GenerateService, *application.GenerateWorker, error) {
 	if store == nil || db == nil || app == nil {
@@ -277,6 +284,10 @@ func newGenerateServices(
 	enqueue := func(ctx context.Context, generationJobID, designID string) error {
 		return enqueueGenerateIdempotent(app, ctx, generationJobID, designID)
 	}
+	cooldown := time.Duration(cooldownSecs) * time.Second
+	if cooldown <= 0 {
+		cooldown = domain.DefaultGenerationCooldown
+	}
 	svc := &application.GenerateService{
 		Designs:     designs,
 		Jobs:        jobs,
@@ -286,6 +297,7 @@ func newGenerateServices(
 		Enqueue:     enqueue,
 		Provider:    prov.Name(),
 		MaxAttempts: maxAttempts,
+		Cooldown:    cooldown,
 	}
 	return svc, worker, nil
 }

@@ -140,9 +140,7 @@ func (d *Design) RequestGeneration(jobID string, maxAttempts int, at time.Time) 
 	if strings.TrimSpace(jobID) == "" {
 		return fmt.Errorf("job id required")
 	}
-	if maxAttempts <= 0 {
-		maxAttempts = 3
-	}
+	maxAttempts = NormalizeMaxAttempts(maxAttempts)
 	if d.GenerationAttempts >= maxAttempts {
 		return &ErrLimitReached{Attempts: d.GenerationAttempts, Max: maxAttempts}
 	}

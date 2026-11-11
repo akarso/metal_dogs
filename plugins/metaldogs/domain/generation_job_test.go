@@ -124,6 +124,37 @@ func TestDesign_RequestGeneration(t *testing.T) {
 	}
 }
 
+func TestGenerationAttemptsRemaining(t *testing.T) {
+	t.Parallel()
+	if got := domain.GenerationAttemptsRemaining(0, 3); got != 3 {
+		t.Fatalf("got %d", got)
+	}
+	if got := domain.GenerationAttemptsRemaining(3, 3); got != 0 {
+		t.Fatalf("got %d", got)
+	}
+	if got := domain.GenerationAttemptsRemaining(5, 3); got != 0 {
+		t.Fatalf("got %d", got)
+	}
+}
+
+func TestCheckGenerationCooldown(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	if err := domain.CheckGenerationCooldown(time.Time{}, domain.DefaultGenerationCooldown, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := domain.CheckGenerationCooldown(now.Add(-domain.DefaultGenerationCooldown), domain.DefaultGenerationCooldown, now); err != nil {
+		t.Fatal(err)
+	}
+	var cd *domain.ErrCooldown
+	if err := domain.CheckGenerationCooldown(now.Add(-5*time.Second), domain.DefaultGenerationCooldown, now); !errors.As(err, &cd) {
+		t.Fatalf("want cooldown, got %v", err)
+	}
+	if cd.RetryAfter < 24*time.Second || cd.RetryAfter > 26*time.Second {
+		t.Fatalf("retry_after=%s", cd.RetryAfter)
+	}
+}
+
 func TestDesign_MarkPreviewReadyAndFailed(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)

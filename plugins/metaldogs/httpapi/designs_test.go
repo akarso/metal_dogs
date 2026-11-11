@@ -275,6 +275,9 @@ func TestDesigns_CreateGetAuthPatch(t *testing.T) {
 	if created.OwnerToken == "" || created.ID == "" || created.SourcePreviewURL == "" {
 		t.Fatalf("%+v", created)
 	}
+	if created.GenerationAttempts != 0 || created.GenerationAttemptsRemaining != 3 || created.MaxGenerationAttempts != 3 {
+		t.Fatalf("attempt budget: %+v", created)
+	}
 
 	rec = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/customizer/designs/"+created.ID, nil)

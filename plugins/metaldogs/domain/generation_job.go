@@ -50,6 +50,65 @@ func (e *ErrLimitReached) Error() string {
 	return fmt.Sprintf("limit_reached: attempts %d >= max %d", e.Attempts, e.Max)
 }
 
+// DefaultGenerationCooldown is the minimum gap between customer generation attempts (C7).
+const DefaultGenerationCooldown = 30 * time.Second
+
+// ErrCooldown means the design must wait before another generation request.
+type ErrCooldown struct {
+	RetryAfter time.Duration
+}
+
+func (e *ErrCooldown) Error() string {
+	secs := int(e.RetryAfter.Round(time.Second) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return fmt.Sprintf("cooldown: retry after %ds", secs)
+}
+
+// NormalizeMaxAttempts returns maxAttempts or the product default (3).
+func NormalizeMaxAttempts(maxAttempts int) int {
+	if maxAttempts <= 0 {
+		return 3
+	}
+	return maxAttempts
+}
+
+// GenerationAttemptsRemaining is how many RequestGeneration calls remain.
+func GenerationAttemptsRemaining(attempts, maxAttempts int) int {
+	maxAttempts = NormalizeMaxAttempts(maxAttempts)
+	if attempts < 0 {
+		attempts = 0
+	}
+	left := maxAttempts - attempts
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+// CheckGenerationCooldown returns ErrCooldown when now is still inside the cooldown
+// window after lastAttemptAt. Zero lastAttemptAt or non-positive cooldown → OK.
+func CheckGenerationCooldown(lastAttemptAt time.Time, cooldown time.Duration, now time.Time) error {
+	if cooldown <= 0 || lastAttemptAt.IsZero() {
+		return nil
+	}
+	elapsed := now.UTC().Sub(lastAttemptAt.UTC())
+	if elapsed >= cooldown {
+		return nil
+	}
+	return &ErrCooldown{RetryAfter: cooldown - elapsed}
+}
+
+// GenerationJobLastAttemptAt is the timestamp used for regeneration cooldown
+// (finished when known, otherwise queued).
+func GenerationJobLastAttemptAt(j GenerationJob) time.Time {
+	if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
+		return j.FinishedAt.UTC()
+	}
+	return j.QueuedAt.UTC()
+}
+
 // GenerationJob is one generation attempt for a design.
 type GenerationJob struct {
 	ID              string

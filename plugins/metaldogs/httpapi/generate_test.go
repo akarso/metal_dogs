@@ -170,6 +170,55 @@ func TestGenerateDesign_NilService(t *testing.T) {
 	}
 }
 
+func TestGenerateDesign_LimitReached(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	designID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	uploadID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	token, hash, err := application.MintOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &application.GenerateService{
+		Designs: &dDesignRepo{byID: map[string]domain.Design{
+			designID: {
+				ID: designID, Status: domain.DesignPreviewReady, SourceAssetID: uploadID,
+				OwnerTokenHash: hash, Texts: map[string]string{"dog_name": "Burek"},
+				ExpiresAt: now.Add(time.Hour), UpdatedAt: now, CreatedAt: now,
+				TemplateID: "t1", TemplateVersion: 1, GenerationAttempts: 3,
+			},
+		}},
+		Jobs: &gJobRepo{},
+		Assets: &dAssetRepo{byID: map[string]domain.Asset{
+			uploadID: {
+				ID: uploadID, Type: domain.AssetTypeSource,
+				StorageKey: "private/blobs/metaldogs/source/2026/11/" + uploadID + ".jpg",
+				MimeType:   "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
+				DeleteAfter: now.Add(time.Hour), OwnerRef: designID,
+			},
+		}},
+		IDs: &testutil.FixedGenerator{ID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}, Clock: testutil.NewFakeClock(now),
+		Enqueue:  func(context.Context, string, string) error { return nil },
+		Provider: "fake", MaxAttempts: 3,
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(svc))
+	req := httptest.NewRequest(http.MethodPost, "/api/customizer/designs/"+designID+"/generate", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "idem-limit")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), application.GenerateErrLimitReached) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After")
+	}
+}
+
 func TestGenerateDesign_EnqueueUnavailableIncludesJobID(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
