@@ -93,6 +93,7 @@ erDiagram
         string provider
         string model
         string prompt_version
+        jsonb parameters
         timestamptz approved_at
     }
 
@@ -265,9 +266,9 @@ stateDiagram-v2
 | Subject | Condition | Keep for |
 | --- | --- | --- |
 | Upload not attached to a design | — | 2 hours |
-| Source photo | design never ordered | 7 days from last **mutating** activity (create / patch / replace). `GET` does not extend this clock. |
-| Artwork and mockup previews | design never ordered | 7 days from last mutating activity |
-| Design row | never ordered | 30 days from create / last mutating activity (`POST`/`PATCH`), then `expired` and purged. `GET` does not slide `expires_at`. |
+| Source photo | design never ordered | Normally 7 days from last mutating activity; **approve extends** (never shortens) `delete_after` to the design `expires_at` (~30d) so the freeze survives until E4/order. |
+| Artwork and mockup previews | design never ordered | Same as source on approve: extend to design `expires_at` (GREATEST). Version-referenced artwork must outlive a 7d preview sweep. |
+| Design row | never ordered | 30 days from create / last mutating activity (`POST`/`PATCH`, incl. **approve**), then `expired` and purged. `GET` does not slide `expires_at`. |
 | Source photo | design ordered | until fulfilment `shipped` + 14 days |
 | Approved and production artwork | design ordered | per legal/warranty policy (decision in O2) |
 | Snapshot row | always | with the order |

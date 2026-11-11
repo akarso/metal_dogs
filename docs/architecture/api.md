@@ -240,6 +240,57 @@ Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, 
 - `plugins.metaldogs.generation.max_retries` — queue retries (default 3)
 - `plugins.metaldogs.generation.max_attempts_per_design` — customer regenerations (default 3)
 
+## Approve and clone (C6)
+
+| Method | Path | Auth | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/customizer/designs/{id}/approve` | Bearer owner token | `200` `{ design, version }` |
+| `POST` | `/api/customizer/designs/{id}/clone` | Bearer (owns approved design) | `201` new draft + `owner_token` |
+
+### POST approve
+
+Allowed when status is `preview_ready` and the latest succeeded generation job has a live artwork asset (`owner_ref` = design, type artwork, checksum set). The handler **reads and SHA-256s** the artwork object; missing object → `422` `checksum_mismatch`; other store errors → `503` `unavailable` (no `version_id`); oversize → `422` `payload_too_large`. `ApproveBound` locks the design + artwork row, freezes a `DesignVersion`, slides design `expires_at`, and **extends** (never shortens) source/artwork/mockup `delete_after` to that expiry (artwork extend miss aborts the TX). Then enqueues `prepare_production_artwork` (platform job id = version id). Stub **fails once** (`MaxRetries=1`, `pending_spec`, not Complete). Conflict path: leave `done`/`failed`/`pending` alone (never `Admin.Retry`); reclaim `cancelled` → pending with `attempts=0` (`status='cancelled' AND type=prepare` only); young `processing` left alone; stale `processing` → pending/`run_at` only (`processing` + stale `updated_at` + type; attempts preserved for the Fail fence); zero-row re-read success for `pending`/`failed`/`done`/young `processing`, error if still stale `processing` (type mismatch / clock skew → 503). Skip enqueue when `production_status` is `ready`. Already `approved` → idempotent + re-enqueue unless ready/failed-terminal stub. Enqueue failure after commit → `503` + `version_id`. Race without approve → `409` `invalid_transition`.
+
+```json
+{
+  "design": { "id": "uuid", "status": "approved", "approved_version_id": "uuid", "…": "…" },
+  "version": {
+    "id": "uuid",
+    "design_id": "uuid",
+    "template_id": "uuid",
+    "template_version": 1,
+    "texts": { "dog_name": "Burek", "tagline": "METAL" },
+    "artwork_asset_id": "uuid",
+    "artwork_checksum": "sha256:…",
+    "production_status": "pending",
+    "provider": "fake",
+    "model": "fake",
+    "prompt_version": "…",
+    "approved_at": "2026-11-10T12:00:00Z"
+  }
+}
+```
+
+Approved designs reject `PATCH` and `POST …/generate` (`409` `invalid_transition`).
+
+### POST clone
+
+Allowed from `approved` (and later `ordered`). Requires source `owner_ref` = design id; verifies size ≤ upload cap, SHA-256 vs asset row, and JPEG/PNG sniff before Put-copy. Concurrency-capped like uploads. Cleanup soft-deletes then deletes the blob (`WithoutCancel` + `OnCleanupError`). Returns a new draft with a new `owner_token`. Unapproved → `409` `invalid_transition`.
+
+### Errors (approve / clone)
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `400` | `bad_request` | Token in query |
+| `404` | `not_found` | Unknown id / missing or wrong Bearer / expired |
+| `409` | `invalid_transition` | Approve not from `preview_ready` / race without approve; clone not from approved/ordered; PATCH/generate on approved |
+| `422` | `checksum_mismatch` | Artwork/source bytes disagree with stored checksum/size, or artwork object missing |
+| `422` | `payload_too_large` | Artwork over approve size cap |
+| `422` | `upload_unavailable` | Clone source missing / wrong owner / bad media |
+| `429` | `too_many_requests` | Clone concurrency limit |
+| `503` | `unavailable` | Object store I/O (no `version_id`); or prepare enqueue failed after commit (`version_id` set — retry approve) |
+| `500` | `internal_error` | Persistence failure |
+
 ## Safe delivery
 
-No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads, designs, and generate require media + DB. Flag default off. Generate uses the fake provider unless a later slice wires a live provider.
+No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads, designs, generate, approve, and clone require media + DB. Flag default off. Generate uses the fake provider unless a later slice wires a live provider. Approve enqueues prepare_production_artwork (C6 stub terminals with `pending_spec`; G5 owns reclaim of failed rows).

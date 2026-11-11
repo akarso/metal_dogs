@@ -96,6 +96,10 @@ Eval maps hard validation failure to sample `error_class=validation_failed` (ali
 - Job handlers are idempotent: re-execution after a crash skips the provider when `artwork_asset_id` is already set; otherwise a single-winner claim from `queued`/`validating` (or an expired `running` lease) may re-call the provider. Platform enqueue uses the product `generation_job_id` as the queue row id so replay does not insert a second delivery.
 - Status writes to the design happen in the same transaction as the job's terminal state.
 
+## Production prepare (C6 stub → G5)
+
+After approve, the API enqueues `integration.sync.metaldogs.prepare_production_artwork` with payload `{design_version_id, design_id}` and platform job id = version id. Until P0/G5, the handler **returns an error** with `MaxRetries=1` (logs `pending_spec`) so the row is `failed` after one delivery — approve does **not** call `Admin.Retry` (would re-pend terminal stubs). On PK conflict: leave done/failed/pending alone; reclaim cancelled → pending with `attempts=0` (`status='cancelled' AND type`); young processing left alone; stale processing → UPDATE to pending/`run_at` only (`status='processing'` + stale `updated_at` + type; **attempts preserved** so a zombie `Fail` cannot match the next dequeue); zero-row re-read success for pending/failed/done/young processing, error if still stale processing (type mismatch / clock skew). G5: raise `max_retries` on reclaim; never rewind `attempts` on in-flight stale processing. Skip enqueue when `production_status` is `ready`. Enqueue failure after the version commits → HTTP `503` with `version_id`.
+
 ## Observability
 
 Every log line in the pipeline carries: `job_id`, `design_id`, `template_slug`, `template_version`, `attempt`, `provider`, `model`, `prompt_version`, `correlation_id`. Terminal lines add `duration_ms`, `cost`, `terminal_reason`. Never logged: image bytes, prompt text with customer data, signed URLs, provider raw payloads.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
@@ -14,8 +15,10 @@ import (
 
 // DesignError is a classified design failure for HTTP mapping.
 type DesignError struct {
-	Code    string
-	Message string
+	Code      string
+	Message   string
+	VersionID string // set on approve enqueue 503 so clients can retry
+	DesignID  string
 }
 
 func (e *DesignError) Error() string {
@@ -35,7 +38,10 @@ const (
 	DesignErrUploadAlreadyAttached = "upload_already_attached"
 	DesignErrInvalidTexts          = "invalid_texts"
 	DesignErrInvalidTransition     = "invalid_transition"
-	DesignErrConflict              = "conflict" // lost optimistic race (retryable)
+	DesignErrConflict              = "conflict" // lost approve race that still approved (retry → idempotent)
+	DesignErrTooManyRequests       = "too_many_requests"
+	DesignErrChecksumMismatch      = "checksum_mismatch"
+	DesignErrPayloadTooLarge       = "payload_too_large"
 )
 
 // DesignView is the customer-facing design projection (no token hash).
@@ -54,20 +60,54 @@ type DesignView struct {
 	ArtworkPreviewURLExpiresAt time.Time
 	MockupPreviewURL           string
 	MockupPreviewURLExpiresAt  time.Time
-	OwnerToken                 string // set only on Create
+	ApprovedVersionID          string
+	OwnerToken                 string // set only on Create / Clone
 }
 
-// DesignService coordinates design create/get/patch with ownership tokens.
+// DesignService coordinates design create/get/patch/approve/clone with ownership tokens.
 type DesignService struct {
 	Designs   ports.DesignRepository
 	Assets    ports.AssetRepository
-	Jobs      ports.GenerationJobRepository // optional; used for artwork/mockup previews (C5)
+	Jobs      ports.GenerationJobRepository // optional; used for artwork/mockup previews (C5) + approve
+	Versions  ports.DesignVersionRepository // optional until C6; required for Approve
 	Templates *TemplateCatalog
 	Store     ports.AssetStore
 	IDs       ports.IDGenerator
 	Clock     ports.Clock
-	// OnCleanupError is optional; op is "delete"; never pass URLs or tokens.
+	// EnqueuePrepare schedules prepare_production_artwork after approve (optional).
+	EnqueuePrepare ports.PrepareProductionEnqueue
+	// MaxInFlightClones caps concurrent Clone calls; 0 → DefaultMaxConcurrentUploads.
+	MaxInFlightClones int
+	// OnCleanupError is optional; op is "delete", "soft_delete", or "clear_storage_key"; never pass URLs or tokens.
 	OnCleanupError func(op, assetID, storageKey string, err error)
+	// OnPrepareEnqueueError is optional; ids only — no tokens/URLs.
+	OnPrepareEnqueueError func(designID, versionID string, err error)
+
+	cloneOnce     sync.Once
+	cloneInFlight chan struct{}
+}
+
+func (s *DesignService) acquireClone() bool {
+	s.cloneOnce.Do(func() {
+		n := s.MaxInFlightClones
+		if n <= 0 {
+			n = DefaultMaxConcurrentUploads
+		}
+		s.cloneInFlight = make(chan struct{}, n)
+	})
+	select {
+	case s.cloneInFlight <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *DesignService) releaseClone() {
+	select {
+	case <-s.cloneInFlight:
+	default:
+	}
 }
 
 // CreateInput is the public create payload.
@@ -314,14 +354,15 @@ func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, no
 // errors are returned to GET callers (HTTP 500), not treated as swept.
 func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
 	view := DesignView{
-		ID:              d.ID,
-		Status:          d.Status,
-		TemplateID:      d.TemplateID,
-		TemplateVersion: d.TemplateVersion,
-		Texts:           d.Texts,
-		UploadID:        d.SourceAssetID,
-		CreatedAt:       d.CreatedAt,
-		ExpiresAt:       d.ExpiresAt,
+		ID:                d.ID,
+		Status:            d.Status,
+		TemplateID:        d.TemplateID,
+		TemplateVersion:   d.TemplateVersion,
+		Texts:             d.Texts,
+		UploadID:          d.SourceAssetID,
+		CreatedAt:         d.CreatedAt,
+		ExpiresAt:         d.ExpiresAt,
+		ApprovedVersionID: d.ApprovedVersionID,
 	}
 	if s.Assets == nil || s.Store == nil {
 		return view, nil

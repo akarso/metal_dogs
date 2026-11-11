@@ -320,7 +320,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### G5 · Production artwork preparation — size M
 
 - **Goal:** From the approved artwork, produce the production file matching the POD specification from P0 (resolution, dimensions, transparency, colour profile), compute checksum, store as `production` asset linked to the approved design version.
-- **Scope:** Upscaling policy decided (reject vs upscale) based on P0; validation against spec; job `integration.sync.metaldogs.prepare_production_artwork`.
+- **Scope:** Upscaling policy decided (reject vs upscale) based on P0; validation against spec; job `integration.sync.metaldogs.prepare_production_artwork`. Reclaim of C6 `failed`/`cancelled` may set `attempts=0` and raise `max_retries` together; stale `processing` must leave `attempts` alone (zombie Fail fence) and raise `max_retries` only (C6 enqueued with `MaxRetries=1`).
 - **Tests:** Unit tests for spec validation; feature test: approve → job → production asset recorded with checksum; failure path marks `production_failed` with reason.
 - **Safe delivery:** Runs only for approved designs; failures are visible in admin (E5) and do not block checkout until P2 requires it.
 - **Docs:** `architecture/flows/checkout-snapshot-and-fulfillment.md`; runbook `production-artwork-failed.md` section inside `generation-job-stuck-or-failed.md`.
@@ -367,12 +367,12 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged.
 - **Docs:** `architecture/api.md` design DTO; pipeline compose stage; CR-15.
 
-#### C6 · Approve — size M
+#### C6 · Approve — size M — **DONE** (CR-16)
 
 - **Goal:** `POST /api/customizer/designs/{id}/approve` (idempotent) freezes the current artwork as `DesignVersion` with checksum, template version, texts, provider/model/prompt versions; design → `approved`; enqueues `integration.sync.metaldogs.prepare_production_artwork` (G5, if P0 closed; otherwise job type registered but handler no-ops with a `pending_spec` log). Approved designs reject further edits and regeneration; "change it" creates a new design cloned from the approved one.
-- **Tests:** Unit: approve only from `preview_ready`; immutability enforced; feature: double approve returns same version; clone creates new draft with new token.
-- **Safe delivery:** Flagged.
-- **Docs:** ADR-0005 → Accepted.
+- **Tests:** Unit: approve only from `preview_ready`; immutability enforced; feature: double approve returns same version; clone creates new draft with new token (source bytes Put-copied). DSN: `ApproveBound` unique + status race.
+- **Safe delivery:** Flagged; migrations `013`/`014` (versions + append-only/FK); prepare stub fails once (`MaxRetries=1`); approve conflict never uses `Admin.Retry` (type-scoped cancelled/stale-processing UPDATEs; failed/done stay terminal).
+- **Docs:** ADR-0005 Accepted for DesignVersion/approve (OrderDesignSnapshot remains E4).
 
 #### C7 · Regeneration limits — size S
 

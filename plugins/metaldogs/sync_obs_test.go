@@ -30,9 +30,9 @@ func (q *memQueue) Enqueue(_ context.Context, job jobs.Job) error {
 	q.enqueued = append(q.enqueued, job)
 	return nil
 }
-func (q *memQueue) Dequeue(context.Context) (*jobs.Job, error) { return nil, nil }
-func (q *memQueue) Complete(context.Context, string, int) error     { return nil }
-func (q *memQueue) Fail(context.Context, string, int, error) error  { return nil }
+func (q *memQueue) Dequeue(context.Context) (*jobs.Job, error)     { return nil, nil }
+func (q *memQueue) Complete(context.Context, string, int) error    { return nil }
+func (q *memQueue) Fail(context.Context, string, int, error) error { return nil }
 func (q *memQueue) snapshot() []jobs.Job {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -110,16 +110,21 @@ func TestPlugin_Init_RegistersHealthAndObsPing(t *testing.T) {
 		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
 		!patterns["POST /api/customizer/uploads"] ||
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
-		!patterns["PATCH /api/customizer/designs/{id}"] {
+		!patterns["PATCH /api/customizer/designs/{id}"] ||
+		!patterns["POST /api/customizer/designs/{id}/approve"] ||
+		!patterns["POST /api/customizer/designs/{id}/clone"] {
 		t.Fatalf("routes = %+v", routes)
 	}
-	found := false
+	foundPing, foundPrepare := false, false
 	for _, reg := range app.SyncJobs() {
 		if reg.JobType == "integration.sync.metaldogs.obs.ping" {
-			found = true
+			foundPing = true
+		}
+		if reg.JobType == "integration.sync.metaldogs.prepare_production_artwork" {
+			foundPrepare = true
 		}
 	}
-	if !found {
+	if !foundPing || !foundPrepare {
 		t.Fatalf("SyncJobs = %+v", app.SyncJobs())
 	}
 	var health plugin.PublicRoute

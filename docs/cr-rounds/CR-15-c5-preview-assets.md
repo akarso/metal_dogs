@@ -42,5 +42,5 @@
 
 - Ship a real web-sized tee base (or stop calling the preview web-sized) and close G4/C5
 - Drive print area from template `output_config`
-- C6: approve + DesignVersion freeze
+- C6: approve + DesignVersion freeze → CR-16
 - G5: production artwork (distinct from mockup preview)
