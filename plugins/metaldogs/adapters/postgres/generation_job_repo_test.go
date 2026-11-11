@@ -62,7 +62,7 @@ func TestGenerationJobRepo_BeginIdempotencyAndMutex(t *testing.T) {
 	}
 	digest := domain.TextsDigestFor(d.Texts)
 	job := domain.NewQueuedJob(jobID, designID, "idem-a", "fake", d.GenerationAttempts, now, "corr", d.SourceAssetID, d.TemplateVersion, digest)
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,13 +80,13 @@ func TestGenerationJobRepo_BeginIdempotencyAndMutex(t *testing.T) {
 	d2 := d
 	d2.GenerationAttempts = 2
 	d2.LatestJobID = job2.ID
-	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention)); !errors.Is(err, ports.ErrGenerationJobConflict) {
+	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention), d2.GenerationAttempts-1, ""); !errors.Is(err, ports.ErrGenerationJobConflict) {
 		t.Fatalf("idempotency conflict: %v", err)
 	}
 
 	// Active mutex conflict (different key)
 	job3 := domain.NewQueuedJob("ffffffff-ffff-4fff-8fff-ffffffffffff", designID, "idem-b", "fake", 2, now, "", d.SourceAssetID, d.TemplateVersion, digest)
-	if err := jobs.BeginGenerating(ctx, job3, d2, now.Add(domain.SourceAttachedRetention)); !errors.Is(err, ports.ErrGenerationJobConflict) {
+	if err := jobs.BeginGenerating(ctx, job3, d2, now.Add(domain.SourceAttachedRetention), d2.GenerationAttempts-1, ""); !errors.Is(err, ports.ErrGenerationJobConflict) {
 		t.Fatalf("active mutex: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestInvalidateClaimExec_BumpsActive(t *testing.T) {
 	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	_ = d.RequestGeneration(jobID, 3, now)
 	job := domain.NewQueuedJob(jobID, designID, "idem-inv", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
@@ -162,7 +162,7 @@ func TestInvalidateClaimExec_ActiveUnmatchedErrors(t *testing.T) {
 	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	_ = d.RequestGeneration(jobID, 3, now)
 	job := domain.NewQueuedJob(jobID, designID, "idem-unmatched", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +187,7 @@ func TestGenerationJobRepo_PersistArtworkAndCompleteSuccessMockup(t *testing.T) 
 	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	_ = d.RequestGeneration(jobID, 3, now)
 	job := domain.NewQueuedJob(jobID, designID, "idem-mock", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
@@ -260,9 +260,14 @@ func TestGenerationJobRepo_PersistArtworkAndCompleteSuccessMockup(t *testing.T) 
 		t.Fatalf("design status=%s", d2.Status)
 	}
 	job2ID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	priorAttempts := d2.GenerationAttempts
+	priorLatest := d2.LatestJobID
+	if priorLatest != jobID {
+		t.Fatalf("expected latest_job_id=%s got %s", jobID, priorLatest)
+	}
 	_ = d2.RequestGeneration(job2ID, 3, now.Add(time.Second))
 	job2 := domain.NewQueuedJob(job2ID, designID, "idem-mock-2", "fake", 2, now.Add(time.Second), "", d2.SourceAssetID, d2.TemplateVersion, domain.TextsDigestFor(d2.Texts))
-	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention), priorAttempts, priorLatest); err != nil {
 		t.Fatal(err)
 	}
 	claimed2, err := jobs.ClaimForWork(ctx, job2ID, time.Minute)
@@ -313,5 +318,60 @@ func TestGenerationJobRepo_PersistArtworkAndCompleteSuccessMockup(t *testing.T) 
 	}
 	if artCount != 1 || mockCount != 1 {
 		t.Fatalf("live counts artwork=%d mockup=%d", artCount, mockCount)
+	}
+}
+
+func TestGenerationJobRepo_BeginGeneratingStaleLatestFence(t *testing.T) {
+	db := testutil.OpenIsolated(t, "generation_jobs_stale_latest")
+	assets := postgres.NewAssetRepo(db)
+	designs := postgres.NewDesignRepo(db)
+	jobs := postgres.NewGenerationJobRepo(db)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	designID := "bbbbbbbb-bbbb-4ccc-8ddd-bbbbbbbbbbbb"
+	assetID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaaa"
+	seedDesignForJobs(t, designs, assets, designID, assetID, now)
+	d, _, _ := designs.GetByID(ctx, designID)
+	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	priorAttempts := d.GenerationAttempts
+	priorLatest := d.LatestJobID
+	_ = d.RequestGeneration(jobID, 3, now)
+	job := domain.NewQueuedJob(jobID, designID, "idem-fence-1", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), priorAttempts, priorLatest); err != nil {
+		t.Fatal(err)
+	}
+
+	// Terminalize so status is eligible again, then attempt a second generate with a stale prior latest.
+	claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(time.Minute)
+	if err := claimed.Fail(domain.TerminalProviderError, "provider_error", finished); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.CompleteFailure(ctx, claimed, domain.Design{
+		ID: designID, Status: domain.DesignGenerationFailed, UpdatedAt: finished,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d2, _, _ := designs.GetByID(ctx, designID)
+	if d2.Status != domain.DesignGenerationFailed || d2.LatestJobID != jobID {
+		t.Fatalf("after fail: %+v", d2)
+	}
+	job2ID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	stalePriorAttempts := d2.GenerationAttempts
+	_ = d2.RequestGeneration(job2ID, 3, finished.Add(time.Second))
+	job2 := domain.NewQueuedJob(job2ID, designID, "idem-fence-2", "fake", d2.GenerationAttempts, finished.Add(time.Second), "", d2.SourceAssetID, d2.TemplateVersion, domain.TextsDigestFor(d2.Texts))
+	if err := jobs.BeginGenerating(ctx, job2, d2, finished.Add(domain.SourceAttachedRetention), stalePriorAttempts, "ffffffff-ffff-4fff-8fff-ffffffffffff"); !errors.Is(err, ports.ErrDesignConflict) {
+		t.Fatalf("want ErrDesignConflict for stale latest, got %v", err)
+	}
+	if _, ok, _ := jobs.GetByID(ctx, job2ID); ok {
+		t.Fatal("stale fence must not leave a new job row")
+	}
+	cur, _, _ := designs.GetByID(ctx, designID)
+	if cur.LatestJobID != jobID || cur.GenerationAttempts != 1 {
+		t.Fatalf("design must stay on first job: %+v", cur)
 	}
 }

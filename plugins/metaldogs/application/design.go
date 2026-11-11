@@ -17,16 +17,25 @@ import (
 type DesignError struct {
 	Code      string
 	Message   string
-	VersionID string // set on approve enqueue 503 so clients can retry
+	VersionID string     // set on approve enqueue/view 503 so clients can retry
 	DesignID  string
+	JobID     string     // set when a generation job lookup/preview I/O fails
+	Design    DesignView // set when a mutation committed but the response view failed
+	Cause     error      // optional wrapped infra cause (logged; not serialized)
 }
 
 func (e *DesignError) Error() string {
-	if e.Message != "" {
-		return e.Message
+	msg := e.Message
+	if msg == "" {
+		msg = e.Code
 	}
-	return e.Code
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", msg, e.Cause)
+	}
+	return msg
 }
+
+func (e *DesignError) Unwrap() error { return e.Cause }
 
 // Stable design error codes.
 const (
@@ -46,22 +55,26 @@ const (
 
 // DesignView is the customer-facing design projection (no token hash).
 type DesignView struct {
-	ID                         string
-	Status                     string
-	TemplateID                 string
-	TemplateVersion            int
-	Texts                      map[string]string
-	UploadID                   string
-	CreatedAt                  time.Time
-	ExpiresAt                  time.Time
-	SourcePreviewURL           string
-	SourcePreviewURLExpiresAt  time.Time // zero when preview unavailable
-	ArtworkPreviewURL          string
-	ArtworkPreviewURLExpiresAt time.Time
-	MockupPreviewURL           string
-	MockupPreviewURLExpiresAt  time.Time
-	ApprovedVersionID          string
-	OwnerToken                 string // set only on Create / Clone
+	ID                          string
+	Status                      string
+	TemplateID                  string
+	TemplateVersion             int
+	Texts                       map[string]string
+	UploadID                    string
+	CreatedAt                   time.Time
+	ExpiresAt                   time.Time
+	SourcePreviewURL            string
+	SourcePreviewURLExpiresAt   time.Time // zero when preview unavailable
+	ArtworkPreviewURL           string
+	ArtworkPreviewURLExpiresAt  time.Time
+	MockupPreviewURL            string
+	MockupPreviewURLExpiresAt   time.Time
+	ApprovedVersionID           string
+	OwnerToken                  string // set only on Create / Clone
+	GenerationAttempts          int
+	GenerationAttemptsRemaining int
+	MaxGenerationAttempts       int
+	RetryAfter                  int // seconds until regenerate is allowed (0 = now)
 }
 
 // DesignService coordinates design create/get/patch/approve/clone with ownership tokens.
@@ -74,6 +87,10 @@ type DesignService struct {
 	Store     ports.AssetStore
 	IDs       ports.IDGenerator
 	Clock     ports.Clock
+	// MaxAttempts is plugins.metaldogs.generation.max_attempts_per_design (C7 remaining count).
+	MaxAttempts int
+	// Cooldown is plugins.metaldogs.generation.cooldown_seconds (0 disables).
+	Cooldown time.Duration
 	// EnqueuePrepare schedules prepare_production_artwork after approve (optional).
 	EnqueuePrepare ports.PrepareProductionEnqueue
 	// MaxInFlightClones caps concurrent Clone calls; 0 → DefaultMaxConcurrentUploads.
@@ -197,7 +214,7 @@ func (s *DesignService) Create(ctx context.Context, in CreateInput) (DesignView,
 		return DesignView{}, fmt.Errorf("design: create: %w", err)
 	}
 	// After commit the plaintext token must still reach the client even if preview lookup fails.
-	view := s.viewAfterCommit(ctx, d, now)
+	view := s.createCloneView(ctx, d, now)
 	view.OwnerToken = token
 	return view, nil
 }
@@ -274,6 +291,14 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 		d.UpdatedAt = now
 	}
 
+	// Cooldown/latest-job fail-closed before mutating so clients do not see a write
+	// succeed then a 503 with no body (especially after photo replace deletes the old blob).
+	_, remaining, _ := s.attemptBudget(d)
+	retryAfter, err := s.regenerateRetryAfter(ctx, d, remaining, now)
+	if err != nil {
+		return DesignView{}, err
+	}
+
 	if changedPhoto {
 		oldKey, err := s.Designs.ReplaceSource(ctx, d, oldAsset, expectedUpdatedAt, assetDeleteAfter)
 		if err != nil {
@@ -294,8 +319,34 @@ func (s *DesignService) Patch(ctx context.Context, id, bearerToken string, in Pa
 			return DesignView{}, fmt.Errorf("design: update: %w", err)
 		}
 	}
-	// Write already committed — do not turn a preview lookup failure into 500.
-	return s.viewAfterCommit(ctx, d, now), nil
+	// Reuse preflight retry_after — do not re-read the job for cooldown (avoids commit-then-503
+	// on a blip, and avoids advertising a stale preflight retry_after after a failed re-read).
+	view, err := s.toViewWithRetryAfter(ctx, d, now, retryAfter)
+	if err != nil {
+		return DesignView{}, s.patchViewAfterCommitError(ctx, d, now, retryAfter, err)
+	}
+	return view, nil
+}
+
+// patchViewAfterCommitError attaches the committed design (with preflight retry_after)
+// so clients do not retry a photo replace whose prior blob was already deleted.
+// Cooldown failures never reach here — they return before UpdateEditable/ReplaceSource.
+func (s *DesignService) patchViewAfterCommitError(ctx context.Context, d domain.Design, now time.Time, retryAfter int, cause error) error {
+	committed := s.budgetView(d, retryAfter)
+	s.signPreviewsSoft(ctx, &committed, d, now)
+	var de *DesignError
+	if errors.As(cause, &de) {
+		out := *de
+		out.Design = committed
+		if out.DesignID == "" {
+			out.DesignID = d.ID
+		}
+		return &out
+	}
+	return &DesignError{
+		Code: DesignErrUnavailable, Message: "design updated; view unavailable",
+		DesignID: d.ID, Design: committed, Cause: cause,
+	}
 }
 
 func (s *DesignService) removeReplacedBlob(ctx context.Context, assetID, storageKey string) {
@@ -335,41 +386,134 @@ func (s *DesignService) loadAuthorized(ctx context.Context, id, bearerToken stri
 	return d, now, nil
 }
 
-// viewAfterCommit builds a response after Create/Patch persistence. Preview lookup
-// failures soft-fail to an empty preview so the committed outcome (incl. owner_token
-// on create) still reaches the client.
-func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, now time.Time) DesignView {
-	view, err := s.toView(ctx, d, now)
+func (s *DesignService) attemptBudget(d domain.Design) (attempts, remaining, max int) {
+	max = domain.NormalizeMaxAttempts(s.MaxAttempts)
+	attempts = d.GenerationAttempts
+	if attempts < 0 {
+		attempts = 0
+	}
+	return attempts, domain.GenerationAttemptsRemaining(attempts, max), max
+}
+
+// regenerateRetryAfter mirrors POST generate cooldown rules for the design read model.
+// retry_after: 0 means "not locked by cooldown" — callers must still check status/remaining.
+// Missing/unreadable latest job with attempts>0 and cooldown on → unavailable (same as POST).
+func (s *DesignService) regenerateRetryAfter(ctx context.Context, d domain.Design, remaining int, now time.Time) (int, error) {
+	if remaining <= 0 || d.GenerationAttempts == 0 || s.Cooldown <= 0 {
+		return 0, nil
+	}
+	if s.Jobs == nil {
+		return 0, &DesignError{Code: DesignErrUnavailable, Message: "latest generation job missing", DesignID: d.ID}
+	}
+	latestID := strings.TrimSpace(d.LatestJobID)
+	if latestID == "" {
+		return 0, &DesignError{Code: DesignErrUnavailable, Message: "latest generation job missing", DesignID: d.ID}
+	}
+	job, ok, err := s.Jobs.GetByID(ctx, latestID)
 	if err != nil {
-		return DesignView{
-			ID: d.ID, Status: d.Status, TemplateID: d.TemplateID, TemplateVersion: d.TemplateVersion,
-			Texts: d.Texts, UploadID: d.SourceAssetID, CreatedAt: d.CreatedAt, ExpiresAt: d.ExpiresAt,
+		return 0, &DesignError{
+			Code: DesignErrUnavailable, Message: "latest generation job unreadable",
+			DesignID: d.ID, JobID: latestID,
+			Cause: fmt.Errorf("design: cooldown job: %w", err),
 		}
 	}
+	if !ok || job.DesignID != d.ID {
+		return 0, &DesignError{
+			Code: DesignErrUnavailable, Message: "latest generation job missing",
+			DesignID: d.ID, JobID: latestID,
+		}
+	}
+	if job.IsActive() {
+		return domain.CooldownRetryAfterSeconds(s.Cooldown, s.Cooldown), nil
+	}
+	anchor, ok := domain.GenerationJobCooldownAnchor(job)
+	if !ok {
+		return 0, &DesignError{
+			Code: DesignErrUnavailable, Message: "latest generation job missing finished_at",
+			DesignID: d.ID, JobID: latestID,
+		}
+	}
+	if err := domain.CheckGenerationCooldown(anchor, s.Cooldown, now); err != nil {
+		var cd *domain.ErrCooldown
+		if errors.As(err, &cd) {
+			return domain.CooldownRetryAfterSeconds(cd.RetryAfter, s.Cooldown), nil
+		}
+		return 0, err
+	}
+	return 0, nil
+}
+
+func (s *DesignService) budgetView(d domain.Design, retryAfter int) DesignView {
+	attempts, remaining, max := s.attemptBudget(d)
+	return DesignView{
+		ID: d.ID, Status: d.Status, TemplateID: d.TemplateID, TemplateVersion: d.TemplateVersion,
+		Texts: d.Texts, UploadID: d.SourceAssetID, CreatedAt: d.CreatedAt, ExpiresAt: d.ExpiresAt,
+		ApprovedVersionID:           d.ApprovedVersionID,
+		GenerationAttempts:          attempts,
+		GenerationAttemptsRemaining: remaining,
+		MaxGenerationAttempts:       max,
+		RetryAfter:                  retryAfter,
+	}
+}
+
+// createCloneView is for create/clone after the write committed. Attempts are always 0,
+// so cooldown never applies; preview signing soft-fails so owner_token still returns.
+func (s *DesignService) createCloneView(ctx context.Context, d domain.Design, now time.Time) DesignView {
+	view := s.budgetView(d, 0)
+	s.signPreviewsSoft(ctx, &view, d, now)
 	return view
 }
 
-// toView soft-fails signing to an empty preview. A missing/soft-deleted source omits
-// UploadID; a live row (even with empty storage_key) keeps UploadID. Asset lookup I/O
-// errors are returned to GET callers (HTTP 500), not treated as swept.
-func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
-	view := DesignView{
-		ID:                d.ID,
-		Status:            d.Status,
-		TemplateID:        d.TemplateID,
-		TemplateVersion:   d.TemplateVersion,
-		Texts:             d.Texts,
-		UploadID:          d.SourceAssetID,
-		CreatedAt:         d.CreatedAt,
-		ExpiresAt:         d.ExpiresAt,
-		ApprovedVersionID: d.ApprovedVersionID,
+// approveViewAfterCommit matches GET fail-closed rules for cooldown and preview job/asset
+// I/O (including when cooldown_seconds is 0 and the cooldown read is skipped).
+func (s *DesignService) approveViewAfterCommit(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
+	_, remaining, _ := s.attemptBudget(d)
+	retryAfter, err := s.regenerateRetryAfter(ctx, d, remaining, now)
+	if err != nil {
+		return DesignView{}, err
 	}
+	return s.toViewWithRetryAfter(ctx, d, now, retryAfter)
+}
+
+// toView returns lookup/cooldown errors to GET/PATCH callers.
+// A missing/soft-deleted source omits UploadID; live rows keep UploadID on signer failure.
+func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Time) (DesignView, error) {
+	_, remaining, _ := s.attemptBudget(d)
+	retryAfter, err := s.regenerateRetryAfter(ctx, d, remaining, now)
+	if err != nil {
+		return DesignView{}, err
+	}
+	return s.toViewWithRetryAfter(ctx, d, now, retryAfter)
+}
+
+// toViewWithRetryAfter builds the read model using a cooldown value already computed
+// (PATCH preflight) so the latest job is not read twice for cooldown.
+func (s *DesignService) toViewWithRetryAfter(ctx context.Context, d domain.Design, now time.Time, retryAfter int) (DesignView, error) {
+	view := s.budgetView(d, retryAfter)
+	if err := s.signPreviewsHard(ctx, &view, d, now); err != nil {
+		return DesignView{}, err
+	}
+	return view, nil
+}
+
+func (s *DesignService) signPreviewsSoft(ctx context.Context, view *DesignView, d domain.Design, now time.Time) {
+	_ = s.signPreviews(ctx, view, d, now, true)
+}
+
+func (s *DesignService) signPreviewsHard(ctx context.Context, view *DesignView, d domain.Design, now time.Time) error {
+	return s.signPreviews(ctx, view, d, now, false)
+}
+
+func (s *DesignService) signPreviews(ctx context.Context, view *DesignView, d domain.Design, now time.Time, soft bool) error {
 	if s.Assets == nil || s.Store == nil {
-		return view, nil
+		return nil
 	}
 	asset, ok, err := s.Assets.GetByID(ctx, d.SourceAssetID)
 	if err != nil {
-		return DesignView{}, fmt.Errorf("design: source asset: %w", err)
+		if soft {
+			return nil
+		}
+		return fmt.Errorf("design: source asset: %w", err)
 	}
 	if !ok {
 		view.UploadID = ""
@@ -379,10 +523,13 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 			view.SourcePreviewURLExpiresAt = now.Add(ports.DefaultSignedGetTTL)
 		}
 	}
-	if err := s.attachGenerationPreviews(ctx, &view, d, now); err != nil {
-		return DesignView{}, err
+	if err := s.attachGenerationPreviews(ctx, view, d, now); err != nil {
+		if soft {
+			return nil
+		}
+		return err
 	}
-	return view, nil
+	return nil
 }
 
 func (s *DesignService) attachGenerationPreviews(ctx context.Context, view *DesignView, d domain.Design, now time.Time) error {
@@ -395,9 +542,14 @@ func (s *DesignService) attachGenerationPreviews(ctx context.Context, view *Desi
 	default:
 		return nil
 	}
-	job, ok, err := s.Jobs.GetByID(ctx, d.LatestJobID)
+	jobID := d.LatestJobID
+	job, ok, err := s.Jobs.GetByID(ctx, jobID)
 	if err != nil {
-		return fmt.Errorf("design: generation job: %w", err)
+		return &DesignError{
+			Code: DesignErrUnavailable, Message: "generation preview job unreadable",
+			DesignID: d.ID, JobID: jobID,
+			Cause: fmt.Errorf("design: generation job: %w", err),
+		}
 	}
 	if !ok || job.Status != domain.JobSucceeded || job.DesignID != d.ID {
 		return nil
@@ -406,7 +558,11 @@ func (s *DesignService) attachGenerationPreviews(ctx context.Context, view *Desi
 	if job.ArtworkAssetID != "" {
 		a, aok, aerr := s.Assets.GetByID(ctx, job.ArtworkAssetID)
 		if aerr != nil {
-			return fmt.Errorf("design: artwork asset: %w", aerr)
+			return &DesignError{
+				Code: DesignErrUnavailable, Message: "generation preview artwork unreadable",
+				DesignID: d.ID, JobID: jobID,
+				Cause: fmt.Errorf("design: artwork asset: %w", aerr),
+			}
 		}
 		if aok && a.Type == domain.AssetTypeArtwork && a.OwnerRef == d.ID && a.StorageKey != "" {
 			if u, signErr := s.Store.SignedGetURL(ctx, a.StorageKey, ports.DefaultSignedGetTTL); signErr == nil {
@@ -418,7 +574,11 @@ func (s *DesignService) attachGenerationPreviews(ctx context.Context, view *Desi
 	if job.MockupAssetID != "" {
 		a, aok, aerr := s.Assets.GetByID(ctx, job.MockupAssetID)
 		if aerr != nil {
-			return fmt.Errorf("design: mockup asset: %w", aerr)
+			return &DesignError{
+				Code: DesignErrUnavailable, Message: "generation preview mockup unreadable",
+				DesignID: d.ID, JobID: jobID,
+				Cause: fmt.Errorf("design: mockup asset: %w", aerr),
+			}
 		}
 		if aok && a.Type == domain.AssetTypeMockup && a.OwnerRef == d.ID && a.StorageKey != "" {
 			if u, signErr := s.Store.SignedGetURL(ctx, a.StorageKey, ports.DefaultSignedGetTTL); signErr == nil {

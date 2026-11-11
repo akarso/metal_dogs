@@ -134,9 +134,9 @@ func (s *DesignService) Approve(ctx context.Context, designID, bearerToken strin
 			VersionID: v.ID, DesignID: d.ID,
 		}
 	}
-	view, err := s.toView(ctx, d, now)
+	view, err := s.approveViewAfterCommit(ctx, d, now)
 	if err != nil {
-		return ApproveResult{}, fmt.Errorf("approve: view: %w", err)
+		return ApproveResult{Version: toVersionView(v)}, s.approveViewError(d.ID, v.ID, err)
 	}
 	return ApproveResult{Design: view, Version: toVersionView(v)}, nil
 }
@@ -153,11 +153,25 @@ func (s *DesignService) approveIdempotent(ctx context.Context, d domain.Design, 
 			VersionID: v.ID, DesignID: d.ID,
 		}
 	}
-	view, err := s.toView(ctx, d, now)
+	view, err := s.approveViewAfterCommit(ctx, d, now)
 	if err != nil {
-		return ApproveResult{}, fmt.Errorf("approve: view: %w", err)
+		return ApproveResult{Version: toVersionView(v)}, s.approveViewError(d.ID, v.ID, err)
 	}
 	return ApproveResult{Design: view, Version: toVersionView(v)}, nil
+}
+
+func (s *DesignService) approveViewError(designID, versionID string, cause error) error {
+	var de *DesignError
+	if errors.As(cause, &de) {
+		out := *de
+		out.VersionID = versionID
+		if out.DesignID == "" {
+			out.DesignID = designID
+		}
+		return &out
+	}
+	// Source-asset I/O and other plain wraps stay 500 — same as GET (do not promote to 503).
+	return cause
 }
 
 func (s *DesignService) logPrepareEnqueue(designID, versionID string, err error) {
@@ -316,7 +330,7 @@ func (s *DesignService) Clone(ctx context.Context, designID, bearerToken string)
 		}
 		return DesignView{}, fmt.Errorf("clone: create: %w", err)
 	}
-	view := s.viewAfterCommit(ctx, draft, now)
+	view := s.createCloneView(ctx, draft, now)
 	view.OwnerToken = token
 	return view, nil
 }

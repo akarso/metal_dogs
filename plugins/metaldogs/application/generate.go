@@ -20,23 +20,32 @@ const (
 	GenerateErrInvalidTransition = "invalid_transition"
 	GenerateErrConflict          = "conflict"
 	GenerateErrLimitReached      = "limit_reached"
+	GenerateErrCooldown          = "cooldown"
 	GenerateErrUploadUnavailable = "upload_unavailable"
 )
 
 // GenerateError is a classified generate failure for HTTP mapping.
 type GenerateError struct {
-	Code     string
-	Message  string
-	JobID    string // set on conflict when an active/prior job exists
-	DesignID string
+	Code       string
+	Message    string
+	JobID      string // set on conflict when an active/prior job exists
+	DesignID   string
+	RetryAfter int   // seconds; set for cooldown / limit hints
+	Cause      error // optional wrapped infra cause (logged; not serialized)
 }
 
 func (e *GenerateError) Error() string {
-	if e.Message != "" {
-		return e.Message
+	msg := e.Message
+	if msg == "" {
+		msg = e.Code
 	}
-	return e.Code
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", msg, e.Cause)
+	}
+	return msg
 }
+
+func (e *GenerateError) Unwrap() error { return e.Cause }
 
 // JobView is the customer-facing generation job projection.
 type JobView struct {
@@ -59,6 +68,8 @@ type GenerateService struct {
 	Enqueue     ports.GenerationEnqueue
 	Provider    string
 	MaxAttempts int
+	// Cooldown is the minimum gap between distinct generation attempts (C7). 0 → default.
+	Cooldown time.Duration
 }
 
 func (s *GenerateService) depsReady() bool {
@@ -159,24 +170,44 @@ func (s *GenerateService) RequestGenerate(ctx context.Context, designID, bearerT
 		return toJobView(existing), nil
 	}
 
-	maxAttempts := s.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 3
-	}
+	maxAttempts := domain.NormalizeMaxAttempts(s.MaxAttempts)
 	provider := strings.TrimSpace(s.Provider)
 	if provider == "" {
 		provider = "fake"
 	}
 
+	// Transition before cooldown so an in-flight generate stays 409, not 429.
+	if !d.CanRequestGeneration() {
+		if active, found, lookupErr := s.Jobs.GetActiveByDesign(ctx, designID); lookupErr == nil && found {
+			return JobView{}, &GenerateError{
+				Code: GenerateErrInvalidTransition, Message: (&domain.ErrInvalidTransition{From: d.Status, Command: "RequestGeneration"}).Error(),
+				JobID: active.ID, DesignID: designID,
+			}
+		}
+		return JobView{}, &GenerateError{
+			Code:     GenerateErrInvalidTransition,
+			Message:  (&domain.ErrInvalidTransition{From: d.Status, Command: "RequestGeneration"}).Error(),
+			DesignID: designID,
+		}
+	}
+	// Hard cap before cooldown so a spent budget is never advertised as "retry later".
+	if d.GenerationAttempts >= maxAttempts {
+		return JobView{}, &GenerateError{Code: GenerateErrLimitReached, Message: (&domain.ErrLimitReached{Attempts: d.GenerationAttempts, Max: maxAttempts}).Error(), DesignID: designID}
+	}
+	if err := s.checkCooldown(ctx, d, now); err != nil {
+		return JobView{}, err
+	}
+
+	expectedAttempts := d.GenerationAttempts
+	expectedLatestJobID := d.LatestJobID
 	jobID := s.IDs.New()
 	if err := d.RequestGeneration(jobID, maxAttempts, now); err != nil {
 		var lim *domain.ErrLimitReached
 		if errors.As(err, &lim) {
-			return JobView{}, &GenerateError{Code: GenerateErrLimitReached, Message: lim.Error()}
+			return JobView{}, &GenerateError{Code: GenerateErrLimitReached, Message: lim.Error(), DesignID: designID}
 		}
 		var it *domain.ErrInvalidTransition
 		if errors.As(err, &it) {
-			// Surface active job id when design is already generating.
 			if active, found, lookupErr := s.Jobs.GetActiveByDesign(ctx, designID); lookupErr == nil && found {
 				return JobView{}, &GenerateError{
 					Code: GenerateErrInvalidTransition, Message: it.Error(),
@@ -190,7 +221,7 @@ func (s *GenerateService) RequestGenerate(ctx context.Context, designID, bearerT
 
 	job := domain.NewQueuedJob(jobID, designID, key, provider, d.GenerationAttempts, now, correlationID, d.SourceAssetID, d.TemplateVersion, textsDigest)
 	sourceDeleteAfter := now.Add(domain.SourceAttachedRetention)
-	if err := s.Jobs.BeginGenerating(ctx, job, d, sourceDeleteAfter); err != nil {
+	if err := s.Jobs.BeginGenerating(ctx, job, d, sourceDeleteAfter, expectedAttempts, expectedLatestJobID); err != nil {
 		if errors.Is(err, ports.ErrGenerationJobConflict) {
 			if existing, found, lookupErr := s.Jobs.GetByIdempotency(ctx, designID, key); lookupErr != nil {
 				return JobView{}, fmt.Errorf("generate: conflict idempotency: %w", lookupErr)
@@ -261,6 +292,57 @@ func (s *GenerateService) GetJob(ctx context.Context, jobID, bearerToken string)
 		return JobView{}, &GenerateError{Code: GenerateErrNotFound, Message: "not found"}
 	}
 	return toJobView(job), nil
+}
+
+func (s *GenerateService) checkCooldown(ctx context.Context, d domain.Design, now time.Time) error {
+	if d.GenerationAttempts == 0 {
+		return nil
+	}
+	cooldown := s.Cooldown // 0 disables; defaults applied at plugin Init when config omits the key
+	if cooldown <= 0 {
+		return nil
+	}
+	latestID := strings.TrimSpace(d.LatestJobID)
+	if latestID == "" {
+		// attempts > 0 without a latest job is inconsistent — fail closed.
+		return &GenerateError{Code: GenerateErrUnavailable, Message: "latest generation job missing", DesignID: d.ID}
+	}
+	job, ok, err := s.Jobs.GetByID(ctx, latestID)
+	if err != nil {
+		return &GenerateError{
+			Code: GenerateErrUnavailable, Message: "latest generation job unreadable",
+			DesignID: d.ID, JobID: latestID,
+			Cause: fmt.Errorf("generate: cooldown job: %w", err),
+		}
+	}
+	if !ok || job.DesignID != d.ID {
+		return &GenerateError{
+			Code: GenerateErrUnavailable, Message: "latest generation job missing",
+			DesignID: d.ID, JobID: latestID,
+		}
+	}
+	if job.IsActive() {
+		return &GenerateError{
+			Code: GenerateErrCooldown, Message: "cooldown: prior attempt still in flight",
+			DesignID: d.ID, JobID: job.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cooldown, cooldown),
+		}
+	}
+	anchor, ok := domain.GenerationJobCooldownAnchor(job)
+	if !ok {
+		// Terminal without finished_at never clears — fail closed, do not 429 forever.
+		return &GenerateError{Code: GenerateErrUnavailable, Message: "latest generation job missing finished_at", DesignID: d.ID, JobID: job.ID}
+	}
+	if err := domain.CheckGenerationCooldown(anchor, cooldown, now); err != nil {
+		var cd *domain.ErrCooldown
+		if errors.As(err, &cd) {
+			return &GenerateError{
+				Code: GenerateErrCooldown, Message: cd.Error(),
+				DesignID: d.ID, JobID: job.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cd.RetryAfter, cooldown),
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func toJobView(j domain.GenerationJob) JobView {

@@ -121,6 +121,52 @@ func TestPlugin_Init_Disabled(t *testing.T) {
 	}
 }
 
+func TestPlugin_Init_CooldownSecondsBounds(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		secs    int
+		wantErr string
+	}{
+		{0, ""},
+		{30, ""},
+		{86400, ""},
+		{-1, "cooldown_seconds must be >= 0"},
+		{86401, "cooldown_seconds must be <="},
+	}
+	for _, tc := range cases {
+		log := logger.NewWithWriter(io.Discard, "error")
+		app := &plugin.App{
+			Logger: log,
+			Bus:    event.NewBus(log),
+			Config: &config.Config{
+				Plugins: config.PluginsConfig{
+					MetalDogs: config.MetalDogsPluginConfig{
+						Enabled: true,
+						Generation: config.MetalDogsGenerationConfig{
+							Provider:        "fake",
+							CooldownSeconds: tc.secs,
+						},
+					},
+				},
+			},
+		}
+		if tc.wantErr != "" {
+			err := metaldogs.New().Init(app)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("secs=%d: want err containing %q, got %v", tc.secs, tc.wantErr, err)
+			}
+			continue
+		}
+		reg := plugin.NewRegistry(log)
+		p := metaldogs.New()
+		reg.Register(p)
+		summary := reg.InitAll(app)
+		if summary.Failed > 0 {
+			t.Fatalf("secs=%d: InitAll failed %+v", tc.secs, summary)
+		}
+	}
+}
+
 func TestPlugin_Init_WithoutMedia_EvalOnly_NoHTTP(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))

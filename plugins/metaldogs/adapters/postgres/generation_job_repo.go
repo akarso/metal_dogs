@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -72,7 +73,7 @@ func (r *GenerationJobRepo) GetActiveByDesign(ctx context.Context, designID stri
 	return scanGenerationJob(row)
 }
 
-func (r *GenerationJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error {
+func (r *GenerationJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("metaldogs generation_jobs begin: %w", err)
@@ -87,7 +88,10 @@ func (r *GenerationJobRepo) BeginGenerating(ctx context.Context, j domain.Genera
 		    updated_at = $5, expires_at = $6
 		WHERE id = $1
 		  AND status IN ('draft', 'generation_failed', 'preview_ready')
-	`, d.ID, d.Status, d.GenerationAttempts, d.LatestJobID, d.UpdatedAt.UTC(), d.ExpiresAt.UTC())
+		  AND generation_attempts = $7
+		  AND latest_job_id IS NOT DISTINCT FROM NULLIF($8, '')::uuid
+	`, d.ID, d.Status, d.GenerationAttempts, d.LatestJobID, d.UpdatedAt.UTC(), d.ExpiresAt.UTC(),
+		expectedAttempts, strings.TrimSpace(expectedLatestJobID))
 	if err != nil {
 		return fmt.Errorf("metaldogs designs mark generating: %w", err)
 	}
@@ -250,13 +254,14 @@ func (r *GenerationJobRepo) PersistArtwork(ctx context.Context, j domain.Generat
 	if err := insertAssetTx(ctx, tx, artwork); err != nil {
 		return nil, err
 	}
+	// Claim + active status fence writers. Same-id re-persist and replacement under the
+	// same claim are both allowed; softDeleteLiveAssetType already retired prior artwork.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_generation_jobs
 		SET artwork_asset_id = $2
 		WHERE id = $1
 		  AND status IN ('queued', 'running', 'validating')
 		  AND claim_token = $3
-		  AND (artwork_asset_id IS NULL OR artwork_asset_id = $2)
 	`, j.ID, artwork.ID, j.ClaimToken)
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs persist artwork job: %w", err)

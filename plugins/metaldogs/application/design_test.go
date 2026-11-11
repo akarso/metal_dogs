@@ -546,10 +546,11 @@ func TestDesignService_Get_SweptSourceOmitsUploadID(t *testing.T) {
 type errAssetRepo struct {
 	designAssetRepo
 	getErr error
+	failID string // when set with getErr, only this id fails; empty → all GetByID fail
 }
 
 func (m *errAssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
-	if m.getErr != nil {
+	if m.getErr != nil && (m.failID == "" || id == m.failID) {
 		return domain.Asset{}, false, m.getErr
 	}
 	return m.designAssetRepo.GetByID(ctx, id)
@@ -933,7 +934,7 @@ func (r *designJobRepo) GetByIdempotency(context.Context, string, string) (domai
 func (r *designJobRepo) GetActiveByDesign(context.Context, string) (domain.GenerationJob, bool, error) {
 	return domain.GenerationJob{}, false, nil
 }
-func (r *designJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time) error {
+func (r *designJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time, int, string) error {
 	return nil
 }
 func (r *designJobRepo) ClaimForWork(context.Context, string, time.Duration) (domain.GenerationJob, error) {
@@ -992,8 +993,8 @@ func (r *errDesignJobRepo) GetByIdempotency(ctx context.Context, designID, key s
 func (r *errDesignJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
 	return r.inner.GetActiveByDesign(ctx, designID)
 }
-func (r *errDesignJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time) error {
-	return r.inner.BeginGenerating(ctx, j, d, at)
+func (r *errDesignJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time, expectedAttempts int, expectedLatestJobID string) error {
+	return r.inner.BeginGenerating(ctx, j, d, at, expectedAttempts, expectedLatestJobID)
 }
 func (r *errDesignJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
 	return r.inner.ClaimForWork(ctx, id, lease)
@@ -1417,6 +1418,469 @@ func TestDesignService_ApproveAndClone(t *testing.T) {
 	_, err = svc.Approve(context.Background(), cloned.ID, cloned.OwnerToken)
 	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrInvalidTransition {
 		t.Fatalf("unapproved clone approve: %v", err)
+	}
+}
+
+type countdownJobRepo struct {
+	inner     *designJobRepo
+	failAfter int
+	n         int
+	mu        sync.Mutex
+	errAfter  error // when set, GetByID returns this error after failAfter successes
+}
+
+func (r *countdownJobRepo) GetByID(ctx context.Context, id string) (domain.GenerationJob, bool, error) {
+	r.mu.Lock()
+	r.n++
+	n := r.n
+	r.mu.Unlock()
+	if n > r.failAfter {
+		if r.errAfter != nil {
+			return domain.GenerationJob{}, false, r.errAfter
+		}
+		return domain.GenerationJob{}, false, nil
+	}
+	return r.inner.GetByID(ctx, id)
+}
+func (r *countdownJobRepo) Insert(ctx context.Context, j domain.GenerationJob) error {
+	return r.inner.Insert(ctx, j)
+}
+func (r *countdownJobRepo) GetByIdempotency(ctx context.Context, designID, key string) (domain.GenerationJob, bool, error) {
+	return r.inner.GetByIdempotency(ctx, designID, key)
+}
+func (r *countdownJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
+	return r.inner.GetActiveByDesign(ctx, designID)
+}
+func (r *countdownJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time, expectedAttempts int, expectedLatestJobID string) error {
+	return r.inner.BeginGenerating(ctx, j, d, at, expectedAttempts, expectedLatestJobID)
+}
+func (r *countdownJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
+	return r.inner.ClaimForWork(ctx, id, lease)
+}
+func (r *countdownJobRepo) ClaimLeaseExpired(ctx context.Context, id string, lease time.Duration) (bool, error) {
+	return r.inner.ClaimLeaseExpired(ctx, id, lease)
+}
+func (r *countdownJobRepo) InvalidateClaim(ctx context.Context, id string) error {
+	return r.inner.InvalidateClaim(ctx, id)
+}
+func (r *countdownJobRepo) Update(ctx context.Context, j domain.GenerationJob, expected string) error {
+	return r.inner.Update(ctx, j, expected)
+}
+func (r *countdownJobRepo) PersistArtwork(ctx context.Context, j domain.GenerationJob, artwork domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return r.inner.PersistArtwork(ctx, j, artwork)
+}
+func (r *countdownJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, mockup domain.Asset, design domain.Design) ([]ports.DeletedBlobRef, error) {
+	return r.inner.CompleteSuccess(ctx, j, mockup, design)
+}
+func (r *countdownJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design, mockup domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return r.inner.FinalizeSuccess(ctx, j, design, mockup)
+}
+func (r *countdownJobRepo) CompleteFailure(ctx context.Context, j domain.GenerationJob, design domain.Design) error {
+	return r.inner.CompleteFailure(ctx, j, design)
+}
+func (r *countdownJobRepo) FailActive(ctx context.Context, id, designID, terminalReason, errorCode string, claimToken int64, at time.Time) error {
+	return r.inner.FailActive(ctx, id, designID, terminalReason, errorCode, claimToken, at)
+}
+
+func TestDesignService_Approve_ViewCooldownFailIncludesVersionID(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-11111111111a"
+	uploadID := "22222222-2222-4222-8222-22222222222a"
+	artID := "33333333-3333-4333-8333-33333333333a"
+	jobID := "55555555-5555-4555-8555-55555555555a"
+	srcKey := "src-approve-view"
+	artBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9}
+	finished := now.Add(-time.Minute)
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: srcKey,
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Width: 300, Height: 300,
+			Checksum: sha256Sum(jpegStub), DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-approve-view",
+			MimeType: "image/png", SizeBytes: int64(len(artBytes)), Width: 64, Height: 64,
+			Checksum: sha256Sum(artBytes), DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	innerJobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	jobs := &countdownJobRepo{inner: innerJobs, failAfter: 1} // approve load once; view lookup fails
+	versions := &versionMemRepo{designs: designs, assets: assets}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs: jobs, Versions: versions,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{srcKey: append([]byte(nil), jpegStub...), "art-approve-view": append([]byte(nil), artBytes...)}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		Cooldown: 30 * time.Second, MaxAttempts: 3,
+		EnqueuePrepare: func(context.Context, string, string) error { return nil },
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.mu.Lock()
+	a := assets.byID[artID]
+	a.OwnerRef = created.ID
+	assets.byID[artID] = a
+	assets.mu.Unlock()
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	_ = designs.Insert(context.Background(), d)
+	innerJobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, ArtworkAssetID: artID,
+		Provider: "fake", Model: "fake", PromptVersion: "pv1", ParametersJSON: []byte(`{}`),
+		FinishedAt: &finished,
+	}
+	res, err := svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable || de.VersionID == "" {
+		t.Fatalf("want unavailable with version_id, got %v", err)
+	}
+	if res.Version.ID != de.VersionID {
+		t.Fatalf("version on result=%q error=%q", res.Version.ID, de.VersionID)
+	}
+	if res.Design.ID != "" {
+		t.Fatalf("approve must omit design view on cooldown failure: %+v", res.Design)
+	}
+	d2, ok, _ := designs.GetByID(context.Background(), created.ID)
+	if !ok || d2.Status != domain.DesignApproved {
+		t.Fatalf("approve must still commit: %+v", d2)
+	}
+}
+
+type gatedAssetRepo struct {
+	inner *designAssetRepo
+	fail  bool
+	err   error
+}
+
+func (g *gatedAssetRepo) Insert(ctx context.Context, a domain.Asset) error {
+	return g.inner.Insert(ctx, a)
+}
+func (g *gatedAssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
+	if g.fail {
+		return domain.Asset{}, false, g.err
+	}
+	return g.inner.GetByID(ctx, id)
+}
+func (g *gatedAssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) error {
+	return g.inner.SoftDelete(ctx, id, at)
+}
+func (g *gatedAssetRepo) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return g.inner.BindOwnerRef(ctx, assetID, ownerRef, deleteAfter)
+}
+func (g *gatedAssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
+	return g.inner.ClearOwnerRef(ctx, assetID, ownerRef)
+}
+func (g *gatedAssetRepo) ClearStorageKey(ctx context.Context, assetID string) error {
+	return g.inner.ClearStorageKey(ctx, assetID)
+}
+
+func TestDesignService_Patch_PostCommitViewIncludesDesign(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-11111111111b"
+	uploadID := "22222222-2222-4222-8222-22222222222b"
+	jobID := "55555555-5555-4555-8555-55555555555b"
+	finished := now.Add(-time.Minute)
+	innerAssets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src-patch-view",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	viewBoom := errors.New("postgres dial timeout")
+	assets := &gatedAssetRepo{inner: innerAssets}
+	designs := &designMemRepo{}
+	jobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: innerAssets}, Assets: assets, Jobs: jobs,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src-patch-view": {1}}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		Cooldown: 30 * time.Second, MaxAttempts: 3,
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	_ = designs.Insert(context.Background(), d)
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, Attempt: 1,
+		FinishedAt: &finished,
+	}
+	assets.fail = true
+	assets.err = viewBoom
+	_, err = svc.Patch(context.Background(), created.ID, created.OwnerToken, application.PatchInput{
+		Texts: map[string]string{"dog_name": "Reksio"},
+	})
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable || de.Design.ID != created.ID {
+		t.Fatalf("want unavailable with committed design, got %v", err)
+	}
+	if de.Design.Texts["dog_name"] != "Reksio" {
+		t.Fatalf("committed design texts: %+v", de.Design.Texts)
+	}
+	// Cooldown preflight succeeded (elapsed) — keep honest retry_after:0.
+	if de.Design.RetryAfter != 0 {
+		t.Fatalf("view fail after cooldown ok must keep retry_after=0, got %d", de.Design.RetryAfter)
+	}
+	if !errors.Is(err, viewBoom) {
+		t.Fatalf("want wrapped view cause, got %v", err)
+	}
+	d2, ok, _ := designs.GetByID(context.Background(), created.ID)
+	if !ok || d2.Texts["dog_name"] != "Reksio" {
+		t.Fatalf("patch must persist before view fail: %+v", d2)
+	}
+}
+
+func TestDesignService_Get_JobLookupErrorPreservesCause(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-11111111111c"
+	uploadID := "22222222-2222-4222-8222-22222222222c"
+	jobID := "55555555-5555-4555-8555-55555555555c"
+	boom := errors.New("postgres dial timeout")
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src-job-err",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	inner := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs: &errDesignJobRepo{inner: inner, err: boom},
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src-job-err": {1}}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		Cooldown: 30 * time.Second, MaxAttempts: 3,
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	_ = designs.Insert(context.Background(), d)
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable {
+		t.Fatalf("want unavailable, got %v", err)
+	}
+	if de.DesignID != created.ID || de.JobID != jobID {
+		t.Fatalf("want design_id/job_id on error, got design=%q job=%q", de.DesignID, de.JobID)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped cause %v, got %v", boom, err)
+	}
+}
+
+func TestDesignService_Get_ArtworkLookupError(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-11111111111f"
+	uploadID := "22222222-2222-4222-8222-22222222222f"
+	artID := "33333333-3333-4333-8333-33333333333f"
+	jobID := "55555555-5555-4555-8555-55555555555f"
+	boom := errors.New("postgres dial timeout")
+	inner := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src-art-err",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-err",
+			MimeType: "image/png", SizeBytes: 1, Width: 64, Height: 64, Checksum: "sha256:art",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	jobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: inner},
+		Assets:  &errAssetRepo{designAssetRepo: *inner, getErr: boom, failID: artID},
+		Jobs:    jobs,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src-art-err": {1}, "art-err": {2}}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		Cooldown: 0, MaxAttempts: 3,
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner.mu.Lock()
+	a := inner.byID[artID]
+	a.OwnerRef = created.ID
+	inner.byID[artID] = a
+	inner.mu.Unlock()
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	_ = designs.Insert(context.Background(), d)
+	finished := now.Add(-time.Minute)
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, Attempt: 1,
+		ArtworkAssetID: artID, FinishedAt: &finished,
+	}
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable {
+		t.Fatalf("want unavailable, got %v", err)
+	}
+	if de.DesignID != created.ID || de.JobID != jobID {
+		t.Fatalf("want design_id/job_id, got design=%q job=%q", de.DesignID, de.JobID)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped cause %v, got %v", boom, err)
+	}
+}
+
+func TestDesignService_Get_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-11111111111d"
+	uploadID := "22222222-2222-4222-8222-22222222222d"
+	jobID := "55555555-5555-4555-8555-55555555555d"
+	boom := errors.New("postgres dial timeout")
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src-preview-err",
+			MimeType: "image/jpeg", SizeBytes: 1, Width: 300, Height: 300, Checksum: "sha256:ab",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	inner := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs: &errDesignJobRepo{inner: inner, err: boom},
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src-preview-err": {1}}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		Cooldown: 0, MaxAttempts: 3, // cooldown skipped — preview job read must still fail closed
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	_ = designs.Insert(context.Background(), d)
+	_, err = svc.Get(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable {
+		t.Fatalf("want unavailable from preview job read, got %v", err)
+	}
+	if de.DesignID != created.ID || de.JobID != jobID {
+		t.Fatalf("want design_id/job_id, got design=%q job=%q", de.DesignID, de.JobID)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped cause %v, got %v", boom, err)
+	}
+}
+
+
+func TestDesignService_Approve_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-11111111111e"
+	uploadID := "22222222-2222-4222-8222-22222222222e"
+	artID := "33333333-3333-4333-8333-33333333333e"
+	jobID := "55555555-5555-4555-8555-55555555555e"
+	srcKey := "src-approve-cd0"
+	artBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9}
+	finished := now.Add(-time.Minute)
+	boom := errors.New("postgres dial timeout")
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: srcKey,
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Width: 300, Height: 300,
+			Checksum: sha256Sum(jpegStub), DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-approve-cd0",
+			MimeType: "image/png", SizeBytes: int64(len(artBytes)), Width: 64, Height: 64,
+			Checksum: sha256Sum(artBytes), DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	innerJobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	jobs := &countdownJobRepo{inner: innerJobs, failAfter: 1, errAfter: boom} // approve load ok; preview I/O fails
+	versions := &versionMemRepo{designs: designs, assets: assets}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs: jobs, Versions: versions,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{srcKey: append([]byte(nil), jpegStub...), "art-approve-cd0": append([]byte(nil), artBytes...)}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		Cooldown: 0, MaxAttempts: 3, // cooldown skipped — preview job read must still fail closed
+		EnqueuePrepare: func(context.Context, string, string) error { return nil },
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.mu.Lock()
+	a := assets.byID[artID]
+	a.OwnerRef = created.ID
+	assets.byID[artID] = a
+	assets.mu.Unlock()
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	_ = designs.Insert(context.Background(), d)
+	innerJobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, ArtworkAssetID: artID,
+		Provider: "fake", Model: "fake", PromptVersion: "pv1", ParametersJSON: []byte(`{}`),
+		FinishedAt: &finished,
+	}
+	res, err := svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable || de.VersionID == "" {
+		t.Fatalf("want unavailable with version_id, got %v", err)
+	}
+	if res.Design.ID != "" {
+		t.Fatalf("must omit design view: %+v", res.Design)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped cause, got %v", err)
+	}
+	d2, ok, _ := designs.GetByID(context.Background(), created.ID)
+	if !ok || d2.Status != domain.DesignApproved {
+		t.Fatalf("approve must still commit: %+v", d2)
 	}
 }
 

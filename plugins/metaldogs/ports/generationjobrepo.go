@@ -30,7 +30,9 @@ type GenerationJobRepository interface {
 	GetByIdempotency(ctx context.Context, designID, key string) (domain.GenerationJob, bool, error)
 	GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error)
 	// BeginGenerating inserts the job, marks design generating, and slides source delete_after.
-	BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error
+	// expectedAttempts / expectedLatestJobID are the design values before RequestGeneration
+	// (optimistic fence against a concurrent regenerate that already committed).
+	BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error
 	// ClaimForWork atomically transitions queued/validating → running, or reclaim running past lease.
 	// Sets started_at from the database clock and bumps claim_token. Returns ErrGenerationJobStale
 	// when another delivery holds the claim.

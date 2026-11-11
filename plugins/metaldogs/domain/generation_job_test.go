@@ -124,6 +124,68 @@ func TestDesign_RequestGeneration(t *testing.T) {
 	}
 }
 
+func TestGenerationAttemptsRemaining(t *testing.T) {
+	t.Parallel()
+	if got := domain.GenerationAttemptsRemaining(0, 3); got != 3 {
+		t.Fatalf("got %d", got)
+	}
+	if got := domain.GenerationAttemptsRemaining(3, 3); got != 0 {
+		t.Fatalf("got %d", got)
+	}
+	if got := domain.GenerationAttemptsRemaining(5, 3); got != 0 {
+		t.Fatalf("got %d", got)
+	}
+}
+
+func TestCheckGenerationCooldown(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	if err := domain.CheckGenerationCooldown(time.Time{}, domain.DefaultGenerationCooldown, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := domain.CheckGenerationCooldown(now.Add(-time.Second), 0, now); err != nil {
+		t.Fatal("cooldown 0 must disable wait")
+	}
+	if err := domain.CheckGenerationCooldown(now.Add(-domain.DefaultGenerationCooldown), domain.DefaultGenerationCooldown, now); err != nil {
+		t.Fatal(err)
+	}
+	var cd *domain.ErrCooldown
+	if err := domain.CheckGenerationCooldown(now.Add(-5*time.Second), domain.DefaultGenerationCooldown, now); !errors.As(err, &cd) {
+		t.Fatalf("want cooldown, got %v", err)
+	}
+	if cd.RetryAfter < 24*time.Second || cd.RetryAfter > 26*time.Second {
+		t.Fatalf("retry_after=%s", cd.RetryAfter)
+	}
+	if got := domain.CooldownRetryAfterSeconds(1500*time.Millisecond, 30*time.Second); got != 2 {
+		t.Fatalf("ceil Retry-After=%d", got)
+	}
+	if got := domain.CooldownRetryAfterSeconds(40*time.Second, 30*time.Second); got != 30 {
+		t.Fatalf("clamp Retry-After=%d", got)
+	}
+}
+
+func TestGenerationJobCooldownAnchor(t *testing.T) {
+	t.Parallel()
+	queued := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	finished := queued.Add(2 * time.Minute)
+	j := domain.GenerationJob{Status: domain.JobRunning, QueuedAt: queued, FinishedAt: &finished}
+	if _, ok := domain.GenerationJobCooldownAnchor(j); ok {
+		t.Fatal("running must not anchor")
+	}
+	if !j.IsActive() {
+		t.Fatal("running must be active")
+	}
+	j.Status = domain.JobSucceeded
+	got, ok := domain.GenerationJobCooldownAnchor(j)
+	if !ok || !got.Equal(finished) {
+		t.Fatalf("succeeded anchor=%v ok=%v", got, ok)
+	}
+	j.FinishedAt = nil
+	if _, ok := domain.GenerationJobCooldownAnchor(j); ok {
+		t.Fatal("terminal without finished_at must not anchor")
+	}
+}
+
 func TestDesign_MarkPreviewReadyAndFailed(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)

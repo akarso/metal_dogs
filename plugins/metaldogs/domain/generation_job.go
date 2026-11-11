@@ -50,6 +50,93 @@ func (e *ErrLimitReached) Error() string {
 	return fmt.Sprintf("limit_reached: attempts %d >= max %d", e.Attempts, e.Max)
 }
 
+// DefaultGenerationCooldown is the minimum gap between customer generation attempts (C7).
+const DefaultGenerationCooldown = 30 * time.Second
+
+// ErrCooldown means the design must wait before another generation request.
+type ErrCooldown struct {
+	RetryAfter time.Duration
+}
+
+func (e *ErrCooldown) Error() string {
+	return fmt.Sprintf("cooldown: retry after %ds", CooldownRetryAfterSeconds(e.RetryAfter, 0))
+}
+
+// MaxGenerationCooldown is the upper bound accepted for configured cooldown.
+const MaxGenerationCooldown = 24 * time.Hour
+
+// NormalizeMaxAttempts returns maxAttempts or the product default (3).
+func NormalizeMaxAttempts(maxAttempts int) int {
+	if maxAttempts <= 0 {
+		return 3
+	}
+	return maxAttempts
+}
+
+// GenerationAttemptsRemaining is how many RequestGeneration calls remain.
+func GenerationAttemptsRemaining(attempts, maxAttempts int) int {
+	maxAttempts = NormalizeMaxAttempts(maxAttempts)
+	if attempts < 0 {
+		attempts = 0
+	}
+	left := maxAttempts - attempts
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+// CheckGenerationCooldown returns ErrCooldown when now is still inside the cooldown
+// window after lastAttemptAt. Zero lastAttemptAt or non-positive cooldown → OK
+// (cooldown_seconds: 0 disables the wait).
+func CheckGenerationCooldown(lastAttemptAt time.Time, cooldown time.Duration, now time.Time) error {
+	if cooldown <= 0 || lastAttemptAt.IsZero() {
+		return nil
+	}
+	elapsed := now.UTC().Sub(lastAttemptAt.UTC())
+	if elapsed >= cooldown {
+		return nil
+	}
+	wait := cooldown - elapsed
+	if wait > cooldown {
+		wait = cooldown // future lastAttemptAt
+	}
+	return &ErrCooldown{RetryAfter: wait}
+}
+
+// CooldownRetryAfterSeconds ceilings wait to whole seconds and clamps to cooldown when > 0.
+func CooldownRetryAfterSeconds(retryAfter, cooldown time.Duration) int {
+	if retryAfter <= 0 {
+		return 1
+	}
+	secs := int((retryAfter + time.Second - 1) / time.Second)
+	if cooldown > 0 {
+		maxSecs := int((cooldown + time.Second - 1) / time.Second)
+		if secs > maxSecs {
+			secs = maxSecs
+		}
+	}
+	if secs < 1 {
+		return 1
+	}
+	return secs
+}
+
+// GenerationJobCooldownAnchor returns the finished_at of a terminal job.
+// ok is false while the job is still active. Terminal jobs without finished_at
+// are a data error — callers should fail closed (503), not advertise a cooldown.
+func GenerationJobCooldownAnchor(j GenerationJob) (time.Time, bool) {
+	switch j.Status {
+	case JobSucceeded, JobFailed, JobCancelled:
+		if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
+			return j.FinishedAt.UTC(), true
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
+	}
+}
+
 // GenerationJob is one generation attempt for a design.
 type GenerationJob struct {
 	ID              string

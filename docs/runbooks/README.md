@@ -21,5 +21,5 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 
 - Processes: `app serve` (HTTP), `app worker` (jobs), `app scheduler` (cron). In dev, `app dev` runs all three.
 - Correlation: every HTTP request and job log line carries `correlation_id`; design-scoped lines carry `design_id`; job lines carry `job_id`. Search logs by these ids, never by customer data.
-- Feature flags (`plugins.metaldogs.*`): `enabled`, `customizer_public`, `generation.provider`, `generation.max_attempts_per_design`, `generation.max_retries`, `cost.daily_cap`, `fulfillment.auto_submit`, `fulfillment.manual_gate`, `retention.dry_run`. Exact keys are confirmed as slices land.
+- Feature flags (`plugins.metaldogs.*`): `enabled`, `customizer_public`, `generation.provider`, `generation.max_attempts_per_design`, `generation.max_retries`, `generation.cooldown_seconds`, `cost.daily_cap`, `fulfillment.auto_submit`, `fulfillment.manual_gate`, `retention.dry_run`. Exact keys are confirmed as slices land.
 - Never paste signed URLs, tokens, provider payloads, or photos into tickets or chat.

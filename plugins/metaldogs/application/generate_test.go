@@ -94,7 +94,7 @@ func (m *genJobRepo) GetActiveByDesign(_ context.Context, designID string) (doma
 	return j, ok, nil
 }
 
-func (m *genJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error {
+func (m *genJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.insertLocked(j); err != nil {
@@ -104,6 +104,9 @@ func (m *genJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, 
 	defer m.designs.mu.Unlock()
 	cur, ok := m.designs.byID[d.ID]
 	if !ok || !cur.CanRequestGeneration() {
+		return ports.ErrDesignConflict
+	}
+	if cur.GenerationAttempts != expectedAttempts || cur.LatestJobID != expectedLatestJobID {
 		return ports.ErrDesignConflict
 	}
 	cur.Status = d.Status
@@ -385,7 +388,7 @@ func (t *transientProvider) Generate(context.Context, generation.GenerationReque
 
 func TestGenerateService_RequestAndIdempotency(t *testing.T) {
 	t.Parallel()
-	svc, _, designs, jobs, assets, _, _, designID, token, _ := genFixture(t)
+	svc, _, designs, jobs, assets, _, _, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "key-1", "corr")
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +418,7 @@ func TestGenerateService_RequestAndIdempotency(t *testing.T) {
 
 func TestGenerateService_EnqueueFailureThenReplay(t *testing.T) {
 	t.Parallel()
-	svc, _, _, jobs, _, _, _, designID, token, _ := genFixture(t)
+	svc, _, _, jobs, _, _, _, _, designID, token, _ := genFixture(t)
 	var calls int
 	svc.Enqueue = func(context.Context, string, string) error {
 		calls++
@@ -441,7 +444,7 @@ func TestGenerateService_EnqueueFailureThenReplay(t *testing.T) {
 
 func TestGenerateService_MissingSource(t *testing.T) {
 	t.Parallel()
-	svc, _, designs, _, assets, _, _, designID, token, _ := genFixture(t)
+	svc, _, designs, _, assets, _, _, _, designID, token, _ := genFixture(t)
 	d, _, _ := designs.GetByID(context.Background(), designID)
 	_ = assets.SoftDelete(context.Background(), d.SourceAssetID, time.Now().UTC())
 	_, err := svc.RequestGenerate(context.Background(), designID, token, "k", "")
@@ -453,7 +456,7 @@ func TestGenerateService_MissingSource(t *testing.T) {
 
 func TestGenerateWorker_FakePreviewReady(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, assets, _, prov, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, assets, _, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "run-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +514,7 @@ func (f *fenceAfterClaimRepo) GetByID(ctx context.Context, id string) (domain.Ge
 
 func TestGenerateWorker_StageCancelWhileHoldingClaim_RequeuesProduct(t *testing.T) {
 	t.Parallel()
-	svc, worker, _, jobsRepo, _, _, prov, designID, token, _ := genFixture(t)
+	svc, worker, _, jobsRepo, _, _, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "stage-cancel-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -539,7 +542,7 @@ func TestGenerateWorker_StageCancelWhileHoldingClaim_RequeuesProduct(t *testing.
 
 func TestGenerateWorker_LostClaimBeforeGenerate_SkipsProvider(t *testing.T) {
 	t.Parallel()
-	svc, worker, _, jobsRepo, _, _, prov, designID, token, _ := genFixture(t)
+	svc, worker, _, jobsRepo, _, _, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "lost-claim-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -556,7 +559,7 @@ func TestGenerateWorker_LostClaimBeforeGenerate_SkipsProvider(t *testing.T) {
 
 func TestGenerateWorker_LostClaimAfterGenerate_SkipsComplete(t *testing.T) {
 	t.Parallel()
-	svc, worker, _, jobsRepo, _, _, prov, designID, token, _ := genFixture(t)
+	svc, worker, _, jobsRepo, _, _, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "lost-mid-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -589,7 +592,7 @@ func TestGenerateWorker_LostClaimAfterGenerate_SkipsComplete(t *testing.T) {
 
 func TestGenerateWorker_ValidatingRedelivery_RecallsProvider(t *testing.T) {
 	t.Parallel()
-	svc, worker, _, jobs, _, _, prov, designID, token, _ := genFixture(t)
+	svc, worker, _, jobs, _, _, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "val-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -616,7 +619,7 @@ func TestGenerateWorker_ValidatingRedelivery_RecallsProvider(t *testing.T) {
 
 func TestGenerateWorker_LastAttemptStorageTerminal(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, _, store, _, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, _, store, _, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "last-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -644,7 +647,7 @@ func TestGenerateWorker_LastAttemptStorageTerminal(t *testing.T) {
 
 func TestGenerateWorker_TransientThenExhaust(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, _, _, _, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, _, _, _, _, designID, token, _ := genFixture(t)
 	tp := &transientProvider{}
 	worker.Provider = tp
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "tr-1", "")
@@ -671,7 +674,7 @@ func TestGenerateWorker_TransientThenExhaust(t *testing.T) {
 
 func TestGenerateWorker_PermanentFailure(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, _, _, _, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, _, _, _, _, designID, token, _ := genFixture(t)
 	worker.Provider = rejectProvider{}
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "fail-1", "")
 	if err != nil {
@@ -692,7 +695,7 @@ func TestGenerateWorker_PermanentFailure(t *testing.T) {
 
 func TestGenerateWorker_OverlapProcess_WinnerStaysSucceeded(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, _, _, prov, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, _, _, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "overlap-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -730,7 +733,7 @@ func TestGenerateWorker_OverlapProcess_WinnerStaysSucceeded(t *testing.T) {
 
 func TestGenerateWorker_LastAttemptJobLoadUsesDesignHint(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobsRepo, _, _, _, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobsRepo, _, _, _, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "load-fail-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -753,7 +756,7 @@ func TestGenerateWorker_LastAttemptJobLoadUsesDesignHint(t *testing.T) {
 
 func TestGenerateWorker_LastAttemptLoadStillBrokenDoesNotAck(t *testing.T) {
 	t.Parallel()
-	svc, worker, _, jobsRepo, _, _, _, designID, token, _ := genFixture(t)
+	svc, worker, _, jobsRepo, _, _, _, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "load-fail-2", "")
 	if err != nil {
 		t.Fatal(err)
@@ -772,7 +775,7 @@ func TestGenerateWorker_LastAttemptLoadStillBrokenDoesNotAck(t *testing.T) {
 
 func TestGenerateWorker_LastAttemptLoadWithArtworkFinishes(t *testing.T) {
 	t.Parallel()
-	svc, worker, designs, jobs, assets, store, _, designID, token, _ := genFixture(t)
+	svc, worker, designs, jobs, assets, store, _, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "load-art-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -821,7 +824,7 @@ func (f *failGetOnceRepo) GetByID(ctx context.Context, id string) (domain.Genera
 
 func TestGenerateService_IdempotencyTextsMismatch(t *testing.T) {
 	t.Parallel()
-	svc, _, designs, _, _, _, _, designID, token, _ := genFixture(t)
+	svc, _, designs, _, _, _, _, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "text-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -865,8 +868,9 @@ func (g *gatedProvider) Generate(ctx context.Context, req generation.GenerationR
 }
 
 type failGetJobRepo struct {
-	inner  *genJobRepo
-	failID string
+	inner     *genJobRepo
+	failID    string
+	alwaysErr error // when set with failID match, return this instead of "db down"
 }
 
 func (f *failGetJobRepo) Insert(ctx context.Context, j domain.GenerationJob) error {
@@ -874,6 +878,9 @@ func (f *failGetJobRepo) Insert(ctx context.Context, j domain.GenerationJob) err
 }
 func (f *failGetJobRepo) GetByID(ctx context.Context, id string) (domain.GenerationJob, bool, error) {
 	if id == f.failID {
+		if f.alwaysErr != nil {
+			return domain.GenerationJob{}, false, f.alwaysErr
+		}
 		return domain.GenerationJob{}, false, errors.New("db down")
 	}
 	return f.inner.GetByID(ctx, id)
@@ -884,8 +891,8 @@ func (f *failGetJobRepo) GetByIdempotency(ctx context.Context, designID, key str
 func (f *failGetJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
 	return f.inner.GetActiveByDesign(ctx, designID)
 }
-func (f *failGetJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error {
-	return f.inner.BeginGenerating(ctx, j, d, sourceDeleteAfter)
+func (f *failGetJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error {
+	return f.inner.BeginGenerating(ctx, j, d, sourceDeleteAfter, expectedAttempts, expectedLatestJobID)
 }
 func (f *failGetJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
 	return f.inner.ClaimForWork(ctx, id, lease)
@@ -919,11 +926,224 @@ var _ ports.GenerationJobRepository = (*failGetJobRepo)(nil)
 
 func TestGenerateService_MissingIdempotencyKey(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _, _, _, designID, token, _ := genFixture(t)
+	svc, _, _, _, _, _, _, _, designID, token, _ := genFixture(t)
 	_, err := svc.RequestGenerate(context.Background(), designID, token, "", "")
 	var ge *application.GenerateError
 	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrBadRequest {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestGenerateService_FourthAttemptLimitReached(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	for i := 1; i <= 3; i++ {
+		view, err := svc.RequestGenerate(context.Background(), designID, token, fmt.Sprintf("lim-%d", i), "")
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		designs.mu.Lock()
+		d := designs.byID[designID]
+		d.Status = domain.DesignPreviewReady
+		designs.byID[designID] = d
+		designs.mu.Unlock()
+		jobs.mu.Lock()
+		j := jobs.byID[view.ID]
+		finished := clock.Now()
+		j.Status = domain.JobSucceeded
+		j.FinishedAt = &finished
+		jobs.byID[view.ID] = j
+		delete(jobs.active, designID)
+		jobs.mu.Unlock()
+		clock.Advance(domain.DefaultGenerationCooldown) // clear cooldown between budgeted attempts
+	}
+	// Still inside a would-be cooldown window from the 3rd finish, but budget is spent.
+	clock.Advance(time.Second)
+	beforeJobs := len(jobs.byID)
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "lim-4", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrLimitReached {
+		t.Fatalf("want limit_reached, got %v", err)
+	}
+	if ge.RetryAfter != 0 {
+		t.Fatalf("limit_reached must not set RetryAfter, got %d", ge.RetryAfter)
+	}
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	designs.mu.Unlock()
+	if d.GenerationAttempts != 3 || d.Status != domain.DesignPreviewReady {
+		t.Fatalf("design must stay at 3 attempts / preview_ready: %+v", d)
+	}
+	if len(jobs.byID) != beforeJobs {
+		t.Fatalf("4th attempt must not create a job; jobs=%d", len(jobs.byID))
+	}
+}
+
+func TestGenerateService_LimitReachedInsideCooldownWindow(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 3
+	d.LatestJobID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	finished := clock.Now().Add(-time.Second)
+	jobs.mu.Lock()
+	jobs.byID[d.LatestJobID] = domain.GenerationJob{
+		ID: d.LatestJobID, DesignID: designID, Status: domain.JobSucceeded,
+		QueuedAt: finished.Add(-time.Minute), FinishedAt: &finished, Attempt: 3,
+	}
+	jobs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "lim-window", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrLimitReached {
+		t.Fatalf("want limit_reached inside cooldown window, got %v", err)
+	}
+	if len(jobs.byID) != 1 {
+		t.Fatalf("no new job: %d", len(jobs.byID))
+	}
+}
+
+func TestGenerateService_CooldownBetweenAttempts(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = 30 * time.Second
+	view, err := svc.RequestGenerate(context.Background(), designID, token, "cd-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	jobs.mu.Lock()
+	j := jobs.byID[view.ID]
+	finished := clock.Now()
+	j.Status = domain.JobSucceeded
+	j.FinishedAt = &finished
+	jobs.byID[view.ID] = j
+	delete(jobs.active, designID)
+	jobs.mu.Unlock()
+
+	jobsBefore := len(jobs.byID)
+	_, err = svc.RequestGenerate(context.Background(), designID, token, "cd-2", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrCooldown || ge.RetryAfter < 1 {
+		t.Fatalf("want cooldown, got %v", err)
+	}
+	if len(jobs.byID) != jobsBefore {
+		t.Fatalf("cooldown must not insert a job; jobs=%d", len(jobs.byID))
+	}
+	// Same-key replay during cooldown still returns the prior job (idempotency before cooldown).
+	replay, err := svc.RequestGenerate(context.Background(), designID, token, "cd-1", "")
+	if err != nil || replay.ID != view.ID {
+		t.Fatalf("same-key replay during cooldown: %v %+v", err, replay)
+	}
+	clock.Advance(30 * time.Second)
+	if _, err := svc.RequestGenerate(context.Background(), designID, token, "cd-2b", ""); err != nil {
+		t.Fatalf("after cooldown: %v", err)
+	}
+}
+
+func TestGenerateService_MissingLatestJobFailClosed(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, _, _, _, _, _, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "missing-latest", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable {
+		t.Fatalf("want unavailable, got %v", err)
+	}
+}
+
+func TestGenerateService_CooldownJobLookupErrorPreservesCause(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, _, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	boom := errors.New("postgres dial timeout")
+	jobID := "cccccccc-cccc-4ccc-8ccc-aaaaaaaaaaaa"
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	svc.Jobs = &failGetJobRepo{inner: jobs, failID: jobID, alwaysErr: boom}
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "job-io", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable {
+		t.Fatalf("want unavailable, got %v", err)
+	}
+	if ge.DesignID != designID || ge.JobID != jobID {
+		t.Fatalf("want design_id/job_id, got design=%q job=%q", ge.DesignID, ge.JobID)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped cause %v, got %v", boom, err)
+	}
+}
+
+func TestGenerateService_TerminalMissingFinishedAtUnavailable(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	jobID := "cccccccc-cccc-4ccc-8ccc-eeeeeeeeeeee"
+	jobs.mu.Lock()
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: designID, Status: domain.JobSucceeded, Attempt: 1,
+		QueuedAt: clock.Now().Add(-time.Minute), FinishedAt: nil,
+	}
+	jobs.mu.Unlock()
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "null-finished", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable || ge.JobID != jobID {
+		t.Fatalf("want unavailable with job_id, got %v", err)
+	}
+}
+
+func TestGenerateService_ActiveLatestJobCooldownIncludesJobID(t *testing.T) {
+	t.Parallel()
+	// Status allows generate, but latest job is still active (inconsistent / race) → 429 + job_id.
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = 30 * time.Second
+	jobID := "cccccccc-cccc-4ccc-8ccc-ffffffffffff"
+	jobs.mu.Lock()
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: designID, Status: domain.JobRunning, Attempt: 1,
+		QueuedAt: clock.Now().Add(-time.Second),
+	}
+	jobs.active[designID] = jobID
+	jobs.mu.Unlock()
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "inflight", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrCooldown || ge.JobID != jobID || ge.RetryAfter != 30 {
+		t.Fatalf("want cooldown with job_id + full window, got %v", err)
 	}
 }
 
@@ -968,7 +1188,7 @@ func (s *failMockupPutStore) Delete(ctx context.Context, key string) error {
 
 func TestGenerateWorker_MockupPutFails_ResumesWithoutProvider(t *testing.T) {
 	t.Parallel()
-	svc, worker, _, jobs, assets, store, prov, designID, token, _ := genFixture(t)
+	svc, worker, _, jobs, assets, store, prov, _, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "mockup-put-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1062,6 +1282,7 @@ func genFixture(t *testing.T) (
 	*designAssetRepo,
 	*designBlobStore,
 	*countingProvider,
+	*testutil.FakeClock,
 	string, string, string,
 ) {
 	t.Helper()
@@ -1114,5 +1335,5 @@ func genFixture(t *testing.T) (
 		Designs: designs, Jobs: jobs, Assets: assets, Templates: tplStore, Store: store,
 		Provider: prov, IDs: ids, Clock: clock, MaxQueueAttempts: 3,
 	}
-	return svc, worker, designs, jobs, assets, store, prov, designID, token, key
+	return svc, worker, designs, jobs, assets, store, prov, clock, designID, token, key
 }
