@@ -174,6 +174,61 @@ func (d *Design) MarkGenerationFailed(at time.Time) error {
 	return nil
 }
 
+// Approve freezes preview_ready → approved with the given DesignVersion id.
+func (d *Design) Approve(versionID string, at time.Time) error {
+	if d.Status != DesignPreviewReady {
+		return &ErrInvalidTransition{From: d.Status, Command: "Approve"}
+	}
+	versionID = strings.TrimSpace(versionID)
+	if versionID == "" {
+		return fmt.Errorf("version id required")
+	}
+	now := at.UTC()
+	d.Status = DesignApproved
+	d.ApprovedVersionID = versionID
+	d.UpdatedAt = now
+	d.ExpiresAt = now.Add(DesignRetentionUnordered)
+	return nil
+}
+
+// CloneDraft returns a new draft design copied from an approved (or ordered) design.
+// Caller supplies new id, source asset id, and owner token hash.
+func (d Design) CloneDraft(newID, newSourceAssetID string, ownerTokenHash []byte, at time.Time) (Design, error) {
+	switch d.Status {
+	case DesignApproved, DesignOrdered:
+		// ok
+	default:
+		return Design{}, &ErrInvalidTransition{From: d.Status, Command: "Clone"}
+	}
+	newID = strings.TrimSpace(newID)
+	newSourceAssetID = strings.TrimSpace(newSourceAssetID)
+	if newID == "" || newSourceAssetID == "" {
+		return Design{}, fmt.Errorf("clone: new id and source asset id required")
+	}
+	if len(ownerTokenHash) == 0 {
+		return Design{}, fmt.Errorf("clone: owner token hash required")
+	}
+	now := at.UTC()
+	texts := make(map[string]string, len(d.Texts))
+	for k, v := range d.Texts {
+		texts[k] = v
+	}
+	hash := append([]byte(nil), ownerTokenHash...)
+	return Design{
+		ID:              newID,
+		TemplateID:      d.TemplateID,
+		TemplateVersion: d.TemplateVersion,
+		Status:          DesignDraft,
+		Texts:           texts,
+		SourceAssetID:   newSourceAssetID,
+		OwnerTokenHash:  hash,
+		CustomerID:      d.CustomerID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		ExpiresAt:       now.Add(DesignRetentionUnordered),
+	}, nil
+}
+
 // TextFieldSpec describes one editable template field for runtime validation.
 type TextFieldSpec struct {
 	Key            string

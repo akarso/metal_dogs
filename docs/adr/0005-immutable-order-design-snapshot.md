@@ -1,7 +1,7 @@
 # ADR-0005: Approval freezes a `DesignVersion`; orders carry an `OrderDesignSnapshot`
 
-- **Status:** Proposed (to be Accepted at close of `C6` and `E4`)
-- **Date:** 2026-10-15
+- **Status:** Accepted for `DesignVersion` / approve (`C6`, CR-16); `OrderDesignSnapshot` remains open until `E4`
+- **Date:** 2026-10-15 (Accepted C6 portion 2026-11-10)
 - **Related slices:** `C6`, `G5`, `E2`, `E4`, `E5`, `O2`
 - **Related ADRs:** [ADR-0006](0006-design-and-job-status-model.md), [ADR-0009](0009-pod-provider-and-catalog-modelling.md)
 

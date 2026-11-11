@@ -198,6 +198,26 @@ func touchAssetDeleteAfter(ctx context.Context, db execContexter, id string, del
 	return nil
 }
 
+// extendAssetDeleteAfter never shortens delete_after (GREATEST with current stamp).
+// Returns rows matched (0 when missing or already soft-deleted).
+func extendAssetDeleteAfter(ctx context.Context, db execContexter, id string, deleteAfter time.Time) (int64, error) {
+	if id == "" || deleteAfter.IsZero() {
+		return 0, fmt.Errorf("metaldogs assets: id and delete_after required")
+	}
+	res, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_assets SET delete_after = GREATEST(delete_after, $2)
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id, deleteAfter.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("metaldogs assets extend delete_after: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 type assetScanner interface {
 	Scan(dest ...any) error
 }

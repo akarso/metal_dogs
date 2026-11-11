@@ -3,12 +3,19 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 )
+
+type designErrorBody struct {
+	Error     string `json:"error"`
+	VersionID string `json:"version_id,omitempty"`
+	DesignID  string `json:"design_id,omitempty"`
+}
 
 // DesignResponse is the customer-facing design DTO.
 type DesignResponse struct {
@@ -26,7 +33,30 @@ type DesignResponse struct {
 	ArtworkPreviewURLExpiresAt *time.Time        `json:"artwork_preview_url_expires_at,omitempty"`
 	MockupPreviewURL           string            `json:"mockup_preview_url,omitempty"`
 	MockupPreviewURLExpiresAt  *time.Time        `json:"mockup_preview_url_expires_at,omitempty"`
+	ApprovedVersionID          string            `json:"approved_version_id,omitempty"`
 	OwnerToken                 string            `json:"owner_token,omitempty"`
+}
+
+// VersionResponse is the frozen DesignVersion DTO (C6).
+type VersionResponse struct {
+	ID               string            `json:"id"`
+	DesignID         string            `json:"design_id"`
+	TemplateID       string            `json:"template_id"`
+	TemplateVersion  int               `json:"template_version"`
+	Texts            map[string]string `json:"texts"`
+	ArtworkAssetID   string            `json:"artwork_asset_id"`
+	ArtworkChecksum  string            `json:"artwork_checksum"`
+	ProductionStatus string            `json:"production_status"`
+	Provider         string            `json:"provider"`
+	Model            string            `json:"model"`
+	PromptVersion    string            `json:"prompt_version"`
+	ApprovedAt       time.Time         `json:"approved_at"`
+}
+
+// ApproveResponse is POST .../approve.
+type ApproveResponse struct {
+	Design  DesignResponse  `json:"design"`
+	Version VersionResponse `json:"version"`
 }
 
 type createDesignBody struct {
@@ -159,6 +189,75 @@ func PatchDesign(svc *application.DesignService) http.Handler {
 	})
 }
 
+// ApproveDesign handles POST /api/customizer/designs/{id}/approve.
+func ApproveDesign(svc *application.DesignService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if svc == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, application.DesignErrUnavailable)
+			return
+		}
+		if tokenInQuery(r) {
+			writeJSONError(w, http.StatusBadRequest, application.DesignErrBadRequest)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // empty body expected; bound anyway
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" || !looksLikeUUID(id) {
+			writeJSONError(w, http.StatusNotFound, application.DesignErrNotFound)
+			return
+		}
+		token, ok := bearerToken(r)
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, application.DesignErrNotFound)
+			return
+		}
+		res, err := svc.Approve(r.Context(), id, token)
+		if err != nil {
+			writeDesignError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(ApproveResponse{
+			Design:  toDesignResponse(res.Design),
+			Version: toVersionResponse(res.Version),
+		})
+	})
+}
+
+// CloneDesign handles POST /api/customizer/designs/{id}/clone.
+func CloneDesign(svc *application.DesignService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if svc == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, application.DesignErrUnavailable)
+			return
+		}
+		if tokenInQuery(r) {
+			writeJSONError(w, http.StatusBadRequest, application.DesignErrBadRequest)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" || !looksLikeUUID(id) {
+			writeJSONError(w, http.StatusNotFound, application.DesignErrNotFound)
+			return
+		}
+		token, ok := bearerToken(r)
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, application.DesignErrNotFound)
+			return
+		}
+		view, err := svc.Clone(r.Context(), id, token)
+		if err != nil {
+			writeDesignError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(toDesignResponse(view))
+	})
+}
+
 func toDesignResponse(v application.DesignView) DesignResponse {
 	texts := v.Texts
 	if texts == nil {
@@ -176,6 +275,7 @@ func toDesignResponse(v application.DesignView) DesignResponse {
 		SourcePreviewURL:  v.SourcePreviewURL,
 		ArtworkPreviewURL: v.ArtworkPreviewURL,
 		MockupPreviewURL:  v.MockupPreviewURL,
+		ApprovedVersionID: v.ApprovedVersionID,
 		OwnerToken:        v.OwnerToken,
 	}
 	if !v.SourcePreviewURLExpiresAt.IsZero() {
@@ -193,12 +293,37 @@ func toDesignResponse(v application.DesignView) DesignResponse {
 	return resp
 }
 
+func toVersionResponse(v application.VersionView) VersionResponse {
+	texts := v.Texts
+	if texts == nil {
+		texts = map[string]string{}
+	}
+	return VersionResponse{
+		ID: v.ID, DesignID: v.DesignID, TemplateID: v.TemplateID, TemplateVersion: v.TemplateVersion,
+		Texts: texts, ArtworkAssetID: v.ArtworkAssetID, ArtworkChecksum: v.ArtworkChecksum,
+		ProductionStatus: v.ProductionStatus, Provider: v.Provider, Model: v.Model,
+		PromptVersion: v.PromptVersion, ApprovedAt: v.ApprovedAt.UTC(),
+	}
+}
+
 func writeDesignError(w http.ResponseWriter, err error) {
 	var de *application.DesignError
 	if errors.As(err, &de) {
-		writeJSONError(w, designStatus(de.Code), de.Code)
+		status := designStatus(de.Code)
+		if de.Code == application.DesignErrUnavailable && de.VersionID != "" {
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(designErrorBody{
+				Error: de.Code, VersionID: de.VersionID, DesignID: de.DesignID,
+			})
+			return
+		}
+		if de.Code == application.DesignErrTooManyRequests {
+			w.Header().Set("Retry-After", "5")
+		}
+		writeJSONError(w, status, de.Code)
 		return
 	}
+	log.Printf("metaldogs.design.internal_error: %v", err)
 	writeJSONError(w, http.StatusInternalServerError, "internal_error")
 }
 
@@ -209,10 +334,13 @@ func designStatus(code string) int {
 	case application.DesignErrNotFound:
 		return http.StatusNotFound
 	case application.DesignErrTemplateUnavailable, application.DesignErrUploadUnavailable,
-		application.DesignErrUploadAlreadyAttached, application.DesignErrInvalidTexts:
+		application.DesignErrUploadAlreadyAttached, application.DesignErrInvalidTexts,
+		application.DesignErrChecksumMismatch, application.DesignErrPayloadTooLarge:
 		return http.StatusUnprocessableEntity
 	case application.DesignErrInvalidTransition, application.DesignErrConflict:
 		return http.StatusConflict
+	case application.DesignErrTooManyRequests:
+		return http.StatusTooManyRequests
 	case application.DesignErrUnavailable:
 		return http.StatusServiceUnavailable
 	default:

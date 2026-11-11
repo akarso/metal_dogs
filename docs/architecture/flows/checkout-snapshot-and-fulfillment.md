@@ -8,7 +8,7 @@ Covers [ADR-0005](../../adr/0005-immutable-order-design-snapshot.md) (immutable 
 flowchart TB
     subgraph customizer[metaldogs customizer]
         a1[Approve: freeze DesignVersion with checksum]
-        a2[Enqueue prepare_production_artwork]
+        a2[Enqueue prepare_production_artwork — C6 stub fails pending_spec; Requeue until G5]
         a3[Add to cart: verify approved and owned]
     end
 

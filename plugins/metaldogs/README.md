@@ -25,18 +25,19 @@ plugins/metaldogs/
 ├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
 ├── sync_generate.go       # generate RegisterManual (C4)
+├── sync_prepare_production.go  # prepare_production_artwork no-op (C6 → G5)
 ├── migrations.go          # plugin.Migrator + MigrationFS
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
 ├── generation/            # ImageProvider port + fake (ADR-0008 / G0)
 │   ├── eval/              # offline runner + report.json
 │   ├── validate/          # G3 output checks
 │   └── mockup/            # G4 Compose + embedded 80×100 placeholder tee
-├── httpapi/               # enabled + health + templates + uploads + designs + generate
+├── httpapi/               # enabled + health + templates + uploads + designs + generate + approve/clone
 ├── observability/         # correlation_id alias helpers
-├── domain/                # Template, Asset, Design, GenerationJob, …
+├── domain/                # Template, Asset, Design, DesignVersion, GenerationJob, …
 ├── application/           # TemplateCatalog, UploadService, DesignService, Generate*
 ├── ports/                 # Clock, IDGenerator, MetaStore, AssetStore, repos
-├── adapters/postgres/     # TemplateStore, AssetRepo, DesignRepo, GenerationJobRepo
+├── adapters/postgres/     # TemplateStore, AssetRepo, DesignRepo, GenerationJobRepo, DesignVersionRepo
 ├── adapters/mediastore/   # wrap media.SignedURLStorage (+ ReadableStorage Read)
 └── testutil/              # OpenIsolated, FakeClock, NewSeqGenerator (fakes only)
 ```
@@ -55,19 +56,21 @@ plugins/metaldogs/
 | `PATCH` | `/api/customizer/designs/{id}` | Bearer | Texts / replace photo (editable statuses only) |
 | `POST` | `/api/customizer/designs/{id}/generate` | Bearer + `Idempotency-Key` | `202` GenerationJob; enqueues sync generate |
 | `GET` | `/api/customizer/generation-jobs/{id}` | Bearer | Job status + `retry_after` |
+| `POST` | `/api/customizer/designs/{id}/approve` | Bearer | Freeze `DesignVersion`; design → `approved`; enqueue prepare (stub fails until G5; 503 + retry) |
+| `POST` | `/api/customizer/designs/{id}/clone` | Bearer | New draft + token; Put-copies source bytes |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).
 
-Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4). Platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
+Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
 
 Generation config (C4): `plugins.metaldogs.generation.provider` (fake only), `max_retries`, `max_attempts_per_design`.
 
 ## Private assets (F4 / C2 / ADR-0004)
 
-- Port: `ports.AssetStore` (`Put` / `Read` / `Head` / `SignedGetURL` / `Delete`). Writers: `UploadService` (C2), generate worker artwork + mockup (C4/C5). `Read` requires `media.ReadableStorage` (local FS).
-- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` = design UUID; unique per `(owner_ref, type)` so source + artwork + mockup can share a design; unattached `delete_after=+2h`, attached source `+7d` from activity incl. generate; sweep = O2).
-- Designs: `POST/GET/PATCH /api/customizer/designs` with ADR-0007 Bearer owner tokens (platform JWT parse skipped on `/api/customizer/*`). After generate success, DTO may include signed `artwork_preview_url` / `mockup_preview_url` (60s TTL).
+- Port: `ports.AssetStore` (`Put` / `Read` / `Head` / `SignedGetURL` / `Delete`). Writers: `UploadService` (C2), generate worker artwork + mockup (C4/C5), clone source Put-copy (C6). `Read` requires `media.ReadableStorage` (local FS).
+- Metadata: `metaldogs_assets` via `ports.AssetRepository` (`owner_ref` = design UUID; unique per `(owner_ref, type)` so source + artwork + mockup can share a design; unattached `delete_after=+2h`, attached source `+7d` from activity incl. generate; sweep = O2). Approved freeze: `metaldogs_design_versions` (C6 / ADR-0005).
+- Designs: `POST/GET/PATCH /api/customizer/designs` with ADR-0007 Bearer owner tokens (platform JWT parse skipped on `/api/customizer/*`). After generate success, DTO may include signed `artwork_preview_url` / `mockup_preview_url` (60s TTL). Approve/clone: see [`docs/architecture/api.md`](../../docs/architecture/api.md).
 - Keys: `private/blobs/metaldogs/...` via `ports.ObjectKey`; mediastore **rejects** any other key.
 - Delivery: wrap core `media.SignedURLStorage` (inline signed GET; TTL capped ≤15m). No product shim.
 - Local: `SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media` (never FileServer); `SHOPANDA_MEDIA_LOCAL_SIGN_SECRET` (≥32 bytes) outside DEV.

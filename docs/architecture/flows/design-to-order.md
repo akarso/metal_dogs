@@ -129,6 +129,7 @@ sequenceDiagram
     UI->>API: POST /designs/{id}/approve (token, idempotent)
     API->>API: freeze DesignVersion (checksum, versions)
     API->>Q: enqueue integration.sync.metaldogs.prepare_production_artwork
+    Note over Q: C6 stub fails pending_spec (not done); approve Requeues / retries enqueue until G5
     API-->>UI: approved, version_id
     Cust->>UI: choose size
     UI->>API: POST /designs/{id}/add-to-cart {variant_sku} (token)

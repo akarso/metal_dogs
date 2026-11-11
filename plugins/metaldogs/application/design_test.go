@@ -2,6 +2,8 @@ package application_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +18,14 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
+
+func sha256Sum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return application.ChecksumSHA256Prefix + hex.EncodeToString(sum[:])
+}
+
+// Minimal JPEG magic so imagemime.Sniff accepts clone copies.
+var jpegStub = []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
 
 type designMemRepo struct {
 	mu   sync.Mutex
@@ -1186,5 +1196,545 @@ func TestDesignService_Get_ArtworkAndMockupPreviews(t *testing.T) {
 	}
 	if draft.ArtworkPreviewURL != "" || draft.MockupPreviewURL != "" {
 		t.Fatalf("draft must omit generation previews: %+v", draft)
+	}
+}
+
+type versionMemRepo struct {
+	mu       sync.Mutex
+	byID     map[string]domain.DesignVersion
+	byDesign map[string]string
+	designs  *designMemRepo
+	assets   *designAssetRepo
+}
+
+func (r *versionMemRepo) GetByID(_ context.Context, id string) (domain.DesignVersion, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.byID[id]
+	if !ok {
+		return domain.DesignVersion{}, false, nil
+	}
+	cp := v
+	cp.Texts = copyTexts(v.Texts)
+	cp.ParametersJSON = append([]byte(nil), v.ParametersJSON...)
+	return cp, true, nil
+}
+
+func (r *versionMemRepo) GetByDesignID(_ context.Context, designID string) (domain.DesignVersion, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.byDesign[designID]
+	if !ok {
+		return domain.DesignVersion{}, false, nil
+	}
+	v := r.byID[id]
+	cp := v
+	cp.Texts = copyTexts(v.Texts)
+	cp.ParametersJSON = append([]byte(nil), v.ParametersJSON...)
+	return cp, true, nil
+}
+
+func (r *versionMemRepo) ApproveBound(_ context.Context, d domain.Design, v domain.DesignVersion) error {
+	if d.ID == "" || v.ID == "" || v.DesignID != d.ID || d.ApprovedVersionID != v.ID {
+		return fmt.Errorf("approve id mismatch")
+	}
+	r.designs.mu.Lock()
+	cur, ok := r.designs.byID[d.ID]
+	if !ok || cur.Status != domain.DesignPreviewReady {
+		r.designs.mu.Unlock()
+		return ports.ErrDesignConflict
+	}
+	r.designs.mu.Unlock()
+	if r.assets != nil {
+		r.assets.mu.Lock()
+		art, aok := r.assets.byID[v.ArtworkAssetID]
+		r.assets.mu.Unlock()
+		if !aok || art.DeletedAt != nil || art.Type != domain.AssetTypeArtwork ||
+			art.OwnerRef != d.ID || art.StorageKey == "" || art.Checksum != v.ArtworkChecksum {
+			return ports.ErrDesignConflict
+		}
+	}
+	r.mu.Lock()
+	if r.byID == nil {
+		r.byID = map[string]domain.DesignVersion{}
+		r.byDesign = map[string]string{}
+	}
+	if _, exists := r.byDesign[v.DesignID]; exists {
+		r.mu.Unlock()
+		return ports.ErrDesignConflict
+	}
+	cp := v
+	cp.Texts = copyTexts(v.Texts)
+	cp.ParametersJSON = append([]byte(nil), v.ParametersJSON...)
+	r.byID[v.ID] = cp
+	r.byDesign[v.DesignID] = v.ID
+	r.mu.Unlock()
+
+	r.designs.mu.Lock()
+	defer r.designs.mu.Unlock()
+	cur, ok = r.designs.byID[d.ID]
+	if !ok || cur.Status != domain.DesignPreviewReady {
+		r.mu.Lock()
+		delete(r.byID, v.ID)
+		delete(r.byDesign, v.DesignID)
+		r.mu.Unlock()
+		return ports.ErrDesignConflict
+	}
+	cur.Status = domain.DesignApproved
+	cur.ApprovedVersionID = v.ID
+	cur.UpdatedAt = d.UpdatedAt
+	cur.ExpiresAt = d.ExpiresAt
+	r.designs.byID[d.ID] = cur
+	if r.assets != nil {
+		keep := d.ExpiresAt
+		r.assets.mu.Lock()
+		for _, id := range []string{d.SourceAssetID, v.ArtworkAssetID} {
+			if a, ok := r.assets.byID[id]; ok && a.DeletedAt == nil {
+				if a.DeleteAfter.Before(keep) {
+					a.DeleteAfter = keep
+					r.assets.byID[id] = a
+				}
+			}
+		}
+		r.assets.mu.Unlock()
+	}
+	return nil
+}
+
+func TestDesignService_ApproveAndClone(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	artID := "33333333-3333-4333-8333-333333333333"
+	jobID := "55555555-5555-4555-8555-555555555555"
+	srcKey := "private/blobs/metaldogs/source/2026/11/x.jpg"
+	artBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3}
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: srcKey,
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Width: 300, Height: 300,
+			Checksum: sha256Sum(jpegStub), DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-k",
+			MimeType: "image/png", SizeBytes: int64(len(artBytes)), Width: 64, Height: 64,
+			Checksum: sha256Sum(artBytes), DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	jobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
+	versions := &versionMemRepo{designs: designs, assets: assets}
+	store := &designBlobStore{objects: map[string][]byte{srcKey: append([]byte(nil), jpegStub...), "art-k": append([]byte(nil), artBytes...)}}
+	var enqueued []string
+	svc := &application.DesignService{
+		Designs:   &bindingDesignRepo{designs: designs, assets: assets},
+		Assets:    assets,
+		Jobs:      jobs,
+		Versions:  versions,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store,
+		IDs:       testutil.NewSeqGenerator("des"),
+		Clock:     testutil.NewFakeClock(now),
+		EnqueuePrepare: func(_ context.Context, versionID, designID string) error {
+			enqueued = append(enqueued, versionID+"|"+designID)
+			return nil
+		},
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.mu.Lock()
+	art := assets.byID[artID]
+	art.OwnerRef = created.ID
+	assets.byID[artID] = art
+	assets.mu.Unlock()
+
+	_, err = svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrInvalidTransition {
+		t.Fatalf("draft approve: %v", err)
+	}
+
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	_ = designs.Insert(context.Background(), d)
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded,
+		ArtworkAssetID: artID, Provider: "fake", Model: "fake", PromptVersion: "pv1",
+		ParametersJSON: []byte(`{"n":1}`),
+	}
+
+	res, err := svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Design.Status != domain.DesignApproved || res.Version.ID == "" || res.Version.ArtworkAssetID != artID {
+		t.Fatalf("%+v", res)
+	}
+	if len(enqueued) != 1 || !strings.Contains(enqueued[0], created.ID) {
+		t.Fatalf("enqueue=%v", enqueued)
+	}
+	verID := res.Version.ID
+
+	res2, err := svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Version.ID != verID {
+		t.Fatalf("idempotent version %q want %q", res2.Version.ID, verID)
+	}
+	if len(enqueued) != 2 {
+		t.Fatalf("idempotent must re-enqueue prepare: %v", enqueued)
+	}
+
+	cloned, err := svc.Clone(context.Background(), created.ID, created.OwnerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloned.ID == created.ID || cloned.OwnerToken == "" || cloned.OwnerToken == created.OwnerToken {
+		t.Fatalf("clone identity: %+v", cloned)
+	}
+	if cloned.Status != domain.DesignDraft || cloned.Texts["dog_name"] != "Burek" || cloned.UploadID == uploadID {
+		t.Fatalf("clone fields: %+v", cloned)
+	}
+	newAsset, ok, _ := assets.GetByID(context.Background(), cloned.UploadID)
+	if !ok || newAsset.StorageKey == srcKey {
+		t.Fatalf("clone source: %+v", newAsset)
+	}
+	if _, ok := store.objects[newAsset.StorageKey]; !ok {
+		t.Fatal("clone bytes missing")
+	}
+
+	_, err = svc.Clone(context.Background(), created.ID, "wrong-token")
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrNotFound {
+		t.Fatalf("wrong token: %v", err)
+	}
+	_, err = svc.Approve(context.Background(), cloned.ID, cloned.OwnerToken)
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrInvalidTransition {
+		t.Fatalf("unapproved clone approve: %v", err)
+	}
+}
+
+func TestDesignService_Approve_EnqueueFailReturnsUnavailable(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	artID := "33333333-3333-4333-8333-333333333333"
+	jobID := "55555555-5555-4555-8555-555555555555"
+	srcKey := "src-k"
+	artBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9}
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: srcKey,
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Width: 300, Height: 300,
+			Checksum: sha256Sum(jpegStub), DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-k",
+			MimeType: "image/png", SizeBytes: int64(len(artBytes)), Width: 64, Height: 64,
+			Checksum: sha256Sum(artBytes), DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	versions := &versionMemRepo{designs: designs, assets: assets}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs: &designJobRepo{byID: map[string]domain.GenerationJob{}}, Versions: versions,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{srcKey: append([]byte(nil), jpegStub...), "art-k": append([]byte(nil), artBytes...)}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		EnqueuePrepare: func(context.Context, string, string) error { return errors.New("queue down") },
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.mu.Lock()
+	a := assets.byID[artID]
+	a.OwnerRef = created.ID
+	assets.byID[artID] = a
+	assets.mu.Unlock()
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	_ = designs.Insert(context.Background(), d)
+	svc.Jobs.(*designJobRepo).byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, ArtworkAssetID: artID,
+		Provider: "fake", Model: "fake", PromptVersion: "pv1", ParametersJSON: []byte(`{}`),
+	}
+	_, err = svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable || de.VersionID == "" {
+		t.Fatalf("want 503-shaped unavailable with version_id, got %v", err)
+	}
+	// Version committed; idempotent retry must also surface enqueue failure.
+	_, err = svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUnavailable || de.VersionID == "" {
+		t.Fatalf("idempotent enqueue fail: %v", err)
+	}
+}
+
+func TestDesignService_Approve_ChecksumMismatch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	artID := "33333333-3333-4333-8333-333333333333"
+	jobID := "55555555-5555-4555-8555-555555555555"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src",
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Checksum: sha256Sum(jpegStub),
+			DeleteAfter: now.Add(time.Hour),
+		},
+		artID: {
+			ID: artID, Type: domain.AssetTypeArtwork, StorageKey: "art-k",
+			MimeType: "image/png", SizeBytes: 3, Checksum: "sha256:deadbeef",
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs:      &designJobRepo{byID: map[string]domain.GenerationJob{}},
+		Versions:  &versionMemRepo{designs: designs, assets: assets},
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src": jpegStub, "art-k": {1, 2, 3}}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets.mu.Lock()
+	a := assets.byID[artID]
+	a.OwnerRef = created.ID
+	assets.byID[artID] = a
+	assets.mu.Unlock()
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	_ = designs.Insert(context.Background(), d)
+	svc.Jobs.(*designJobRepo).byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, ArtworkAssetID: artID,
+		Provider: "fake", Model: "fake", PromptVersion: "pv1",
+	}
+	_, err = svc.Approve(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrChecksumMismatch {
+		t.Fatalf("want checksum_mismatch got %v", err)
+	}
+}
+
+func TestDesignService_Approve_SkipsEnqueueWhenProductionReady(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src",
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Checksum: sha256Sum(jpegStub),
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	versions := &versionMemRepo{designs: designs, assets: assets}
+	enqueues := 0
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Jobs: &designJobRepo{byID: map[string]domain.GenerationJob{}}, Versions: versions,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src": jpegStub}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+		EnqueuePrepare: func(context.Context, string, string) error {
+			enqueues++
+			return nil
+		},
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignApproved
+	d.ApprovedVersionID = "ver-ready"
+	_ = designs.Insert(context.Background(), d)
+	versions.mu.Lock()
+	versions.byID = map[string]domain.DesignVersion{"ver-ready": {
+		ID: "ver-ready", DesignID: created.ID, TemplateID: tplID, TemplateVersion: 1,
+		ArtworkAssetID: "art", ArtworkChecksum: "sha256:x", ProductionStatus: domain.ProductionReady,
+		Provider: "fake", Model: "m", PromptVersion: "pv1", ApprovedAt: now,
+	}}
+	versions.byDesign = map[string]string{created.ID: "ver-ready"}
+	versions.mu.Unlock()
+	if _, err := svc.Approve(context.Background(), created.ID, created.OwnerToken); err != nil {
+		t.Fatal(err)
+	}
+	if enqueues != 0 {
+		t.Fatalf("ready production must not enqueue: %d", enqueues)
+	}
+}
+
+func TestDesignService_Clone_CleanupStopsWhenSoftDeleteFails(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src",
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Checksum: sha256Sum(jpegStub),
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	store := &designBlobStore{objects: map[string][]byte{"src": append([]byte(nil), jpegStub...)}}
+	failSoft := &failSoftDeleteAssets{inner: assets, failAfterInsert: true}
+	svc := &application.DesignService{
+		Designs:   &failCreateBound{inner: &bindingDesignRepo{designs: designs, assets: assets}},
+		Assets:    failSoft,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store, IDs: testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+	}
+	// Seed approved design without going through Create (binding would attach upload).
+	token, hash, err := application.MintOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	designID := "des-approved"
+	assets.mu.Lock()
+	a := assets.byID[uploadID]
+	a.OwnerRef = designID
+	assets.byID[uploadID] = a
+	assets.mu.Unlock()
+	_ = designs.Insert(context.Background(), domain.Design{
+		ID: designID, TemplateID: tplID, TemplateVersion: 2, Status: domain.DesignApproved,
+		Texts: map[string]string{"dog_name": "Burek", "tagline": "METAL"}, SourceAssetID: uploadID,
+		OwnerTokenHash: hash, ApprovedVersionID: "ver-1",
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(domain.DesignRetentionUnordered),
+	})
+	_, err = svc.Clone(context.Background(), designID, token)
+	if err == nil {
+		t.Fatal("want create bind failure")
+	}
+	// SoftDelete failed → blob must remain (upload rule).
+	if len(store.objects) < 2 {
+		t.Fatalf("clone Put blob must remain when SoftDelete fails: keys=%v", store.objects)
+	}
+	if _, ok := assets.byID[failSoft.lastInserted]; !ok {
+		t.Fatal("asset row must remain active when SoftDelete fails")
+	}
+	if assets.byID[failSoft.lastInserted].DeletedAt != nil {
+		t.Fatal("must not soft-delete when SoftDelete returned error")
+	}
+}
+
+type failSoftDeleteAssets struct {
+	inner           *designAssetRepo
+	failID          string
+	failAfterInsert bool
+	lastInserted    string
+}
+
+func (f *failSoftDeleteAssets) Insert(ctx context.Context, a domain.Asset) error {
+	if err := f.inner.Insert(ctx, a); err != nil {
+		return err
+	}
+	f.lastInserted = a.ID
+	return nil
+}
+func (f *failSoftDeleteAssets) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
+	return f.inner.GetByID(ctx, id)
+}
+func (f *failSoftDeleteAssets) SoftDelete(ctx context.Context, id string, at time.Time) error {
+	if f.failAfterInsert && id == f.lastInserted {
+		return errors.New("soft-delete failed")
+	}
+	if f.failID != "" && id == f.failID {
+		return errors.New("soft-delete failed")
+	}
+	return f.inner.SoftDelete(ctx, id, at)
+}
+func (f *failSoftDeleteAssets) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return f.inner.BindOwnerRef(ctx, assetID, ownerRef, deleteAfter)
+}
+func (f *failSoftDeleteAssets) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
+	return f.inner.ClearOwnerRef(ctx, assetID, ownerRef)
+}
+func (f *failSoftDeleteAssets) ClearStorageKey(ctx context.Context, assetID string) error {
+	return f.inner.ClearStorageKey(ctx, assetID)
+}
+
+type failCreateBound struct {
+	inner ports.DesignRepository
+}
+
+func (f *failCreateBound) Insert(ctx context.Context, d domain.Design) error {
+	return f.inner.Insert(ctx, d)
+}
+func (f *failCreateBound) GetByID(ctx context.Context, id string) (domain.Design, bool, error) {
+	return f.inner.GetByID(ctx, id)
+}
+func (f *failCreateBound) UpdateEditable(ctx context.Context, d domain.Design, expectedSource string, expectedUpdatedAt, deleteAfter time.Time) error {
+	return f.inner.UpdateEditable(ctx, d, expectedSource, expectedUpdatedAt, deleteAfter)
+}
+func (f *failCreateBound) CreateBound(context.Context, domain.Design, time.Time) error {
+	return errors.New("create bind failed")
+}
+func (f *failCreateBound) ReplaceSource(ctx context.Context, d domain.Design, old string, expectedUpdatedAt, deleteAfter time.Time) (string, error) {
+	return f.inner.ReplaceSource(ctx, d, old, expectedUpdatedAt, deleteAfter)
+}
+
+func TestDesignService_Clone_OwnerRefMismatch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src",
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Checksum: sha256Sum(jpegStub),
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	svc := &application.DesignService{
+		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     &designBlobStore{objects: map[string][]byte{"src": jpegStub}},
+		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+	}
+	created, err := svc.Create(context.Background(), application.CreateInput{
+		TemplateID: tplID, UploadID: uploadID, Texts: map[string]string{"dog_name": "Burek"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := designs.GetByID(context.Background(), created.ID)
+	d.Status = domain.DesignApproved
+	d.ApprovedVersionID = "ver-1"
+	_ = designs.Insert(context.Background(), d)
+	assets.mu.Lock()
+	a := assets.byID[uploadID]
+	a.OwnerRef = "other-design"
+	assets.byID[uploadID] = a
+	assets.mu.Unlock()
+	_, err = svc.Clone(context.Background(), created.ID, created.OwnerToken)
+	var de *application.DesignError
+	if err == nil || !errors.As(err, &de) || de.Code != application.DesignErrUploadUnavailable {
+		t.Fatalf("want upload_unavailable got %v", err)
 	}
 }

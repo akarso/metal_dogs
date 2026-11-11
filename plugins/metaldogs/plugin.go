@@ -139,6 +139,12 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs generate route: %w", err)
 	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/approve", httpapi.ApproveDesign(p.designs)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs approve route: %w", err)
+	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/clone", httpapi.CloneDesign(p.designs)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs clone route: %w", err)
+	}
 	if err := app.RegisterPublicRoute("GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
 	}
@@ -147,6 +153,14 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if err := registerObsPing(app); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
+	}
+	if err := registerPrepareProduction(app); err != nil {
+		return fmt.Errorf("metaldogs plugin: prepare_production_artwork: %w", err)
+	}
+	if p.designs != nil {
+		p.designs.EnqueuePrepare = func(ctx context.Context, versionID, designID string) error {
+			return enqueuePrepareProduction(app, ctx, versionID, designID)
+		}
 	}
 	// Register generate even when worker is nil (no DB) so SyncJobs list is complete;
 	// handler no-ops safely only when worker non-nil — require worker for registration.
@@ -184,10 +198,20 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 	if store == nil || db == nil || templates == nil {
 		return nil
 	}
+	versions := postgres.NewDesignVersionRepo(db)
+	if log != nil {
+		versions.OnExtendMiss = func(role, assetID string) {
+			log.Warn("metaldogs.approve.extend_delete_after_miss", map[string]interface{}{
+				"role":     role,
+				"asset_id": assetID,
+			})
+		}
+	}
 	svc := &application.DesignService{
 		Designs:   postgres.NewDesignRepo(db),
 		Assets:    postgres.NewAssetRepo(db),
 		Jobs:      postgres.NewGenerationJobRepo(db),
+		Versions:  versions,
 		Templates: templates,
 		Store:     store,
 		IDs:       ports.UUIDGenerator{},
@@ -199,6 +223,12 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 				"op":          op,
 				"asset_id":    assetID,
 				"storage_key": storageKey,
+			})
+		}
+		svc.OnPrepareEnqueueError = func(designID, versionID string, err error) {
+			log.Error("metaldogs.approve.enqueue_prepare_failed", err, map[string]interface{}{
+				"design_id":  designID,
+				"version_id": versionID,
 			})
 		}
 	}

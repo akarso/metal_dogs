@@ -113,3 +113,112 @@ func TestValidateDesignTexts(t *testing.T) {
 		t.Fatal("ascii reject !")
 	}
 }
+
+func TestDesign_Approve(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	d := domain.Design{Status: domain.DesignPreviewReady}
+	if err := d.Approve("ver-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != domain.DesignApproved || d.ApprovedVersionID != "ver-1" || !d.UpdatedAt.Equal(now) {
+		t.Fatalf("%+v", d)
+	}
+	if !d.ExpiresAt.Equal(now.Add(domain.DesignRetentionUnordered)) {
+		t.Fatalf("approve must slide expires_at: %v", d.ExpiresAt)
+	}
+	if err := d.Approve("ver-2", now); err == nil {
+		t.Fatal("second Approve from approved must fail at domain")
+	}
+	for _, st := range []string{domain.DesignDraft, domain.DesignGenerating, domain.DesignGenerationFailed, domain.DesignOrdered} {
+		bad := domain.Design{Status: st}
+		if err := bad.Approve("ver-1", now); err == nil {
+			t.Fatalf("status %s must reject Approve", st)
+		}
+	}
+	empty := domain.Design{Status: domain.DesignPreviewReady}
+	if err := empty.Approve("  ", now); err == nil {
+		t.Fatal("empty version id")
+	}
+}
+
+func TestDesign_CloneDraft(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	src := domain.Design{
+		Status: domain.DesignApproved, TemplateID: "tpl", TemplateVersion: 2,
+		Texts: map[string]string{"dog_name": "Burek"}, CustomerID: "cust",
+		SourceAssetID: "old-src", ApprovedVersionID: "ver-1", LatestJobID: "job-1",
+		GenerationAttempts: 2,
+	}
+	hash := []byte("hash-32-bytes-....................")
+	draft, err := src.CloneDraft("new-des", "new-src", hash, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Status != domain.DesignDraft || draft.ID != "new-des" || draft.SourceAssetID != "new-src" {
+		t.Fatalf("%+v", draft)
+	}
+	if draft.TemplateID != "tpl" || draft.TemplateVersion != 2 || draft.Texts["dog_name"] != "Burek" {
+		t.Fatalf("%+v", draft)
+	}
+	if draft.ApprovedVersionID != "" || draft.LatestJobID != "" || draft.GenerationAttempts != 0 {
+		t.Fatalf("cleared fields: %+v", draft)
+	}
+	if !draft.ExpiresAt.Equal(now.Add(domain.DesignRetentionUnordered)) {
+		t.Fatalf("expires %v", draft.ExpiresAt)
+	}
+	draft.Texts["dog_name"] = "mutated"
+	if src.Texts["dog_name"] != "Burek" {
+		t.Fatal("texts must be copied")
+	}
+	if _, err := src.CloneDraft("x", "y", hash, now); err != nil {
+		t.Fatalf("approved clone again: %v", err)
+	}
+	bad := domain.Design{Status: domain.DesignPreviewReady}
+	if _, err := bad.CloneDraft("a", "b", hash, now); err == nil {
+		t.Fatal("preview_ready clone rejected")
+	}
+}
+
+func TestNewDesignVersion(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	texts := map[string]string{"dog_name": "Burek"}
+	v, err := domain.NewDesignVersion(
+		"ver-1", "des-1", "tpl-1", 1, texts, "art-1", "sha256:abc",
+		"fake", "fake-model", "pv1", []byte(`{"k":1}`), now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ProductionStatus != domain.ProductionPending || v.ArtworkChecksum != "sha256:abc" {
+		t.Fatalf("%+v", v)
+	}
+	texts["dog_name"] = "x"
+	if v.Texts["dog_name"] != "Burek" {
+		t.Fatal("texts copied")
+	}
+	if _, err := domain.NewDesignVersion("", "d", "t", 1, nil, "a", "c", "p", "m", "pv", nil, now); err == nil {
+		t.Fatal("empty id")
+	}
+	if _, err := domain.NewDesignVersion("v", "d", "t", 0, nil, "a", "c", "p", "m", "pv", nil, now); err == nil {
+		t.Fatal("version < 1")
+	}
+	if _, err := domain.NewDesignVersion("v", "d", "t", 1, nil, "a", "c", "", "m", "pv", nil, now); err == nil {
+		t.Fatal("empty provider")
+	}
+}
+
+func TestProductionStatuses_GoldenADR0006(t *testing.T) {
+	t.Parallel()
+	want := []string{"pending", "preparing", "ready", "failed"}
+	if len(domain.ProductionStatuses) != len(want) {
+		t.Fatalf("len=%d", len(domain.ProductionStatuses))
+	}
+	for i := range want {
+		if domain.ProductionStatuses[i] != want[i] {
+			t.Fatalf("[%d]=%q", i, domain.ProductionStatuses[i])
+		}
+	}
+}

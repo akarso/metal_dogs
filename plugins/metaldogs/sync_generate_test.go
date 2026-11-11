@@ -2,22 +2,49 @@ package metaldogs
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
+	"github.com/akarso/shopanda/internal/platform/apperror"
 )
 
 type conflictAdmin struct {
 	mu        sync.Mutex
 	requeued  bool
+	retried   bool
 	status    jobs.Status
 	updatedAt time.Time
 	hookCalls int
+	attempts  int
+	retryHook func(*conflictAdmin) error
 }
 
-func (a *conflictAdmin) Retry(context.Context, string) error  { return nil }
+func (a *conflictAdmin) Retry(_ context.Context, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.retryHook != nil {
+		return a.retryHook(a)
+	}
+	switch a.status {
+	case jobs.StatusFailed:
+		a.status = jobs.StatusPending
+		a.attempts = 0
+		a.retried = true
+		return nil
+	case jobs.StatusProcessing:
+		if time.Since(a.updatedAt) < jobs.DefaultStaleProcessingLease {
+			return apperror.Conflict("job is currently processing and younger than the stale lease")
+		}
+		a.status = jobs.StatusPending
+		a.retried = true
+		return nil
+	default:
+		return apperror.Conflict(fmt.Sprintf("job is %s, not failed", a.status))
+	}
+}
 func (a *conflictAdmin) Cancel(context.Context, string) error { return nil }
 func (a *conflictAdmin) Requeue(_ context.Context, _ string, lease time.Duration) (bool, error) {
 	a.mu.Lock()
@@ -32,6 +59,22 @@ func (a *conflictAdmin) Requeue(_ context.Context, _ string, lease time.Duration
 	a.requeued = true
 	a.hookCalls++ // simulates OnRequeued inside Requeue
 	return true, nil
+}
+func (a *conflictAdmin) Get(_ context.Context, id string) (*jobs.Detail, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return &jobs.Detail{Summary: jobs.Summary{
+		ID: id, Status: a.status, UpdatedAt: a.updatedAt, Attempts: a.attempts,
+	}}, nil
+}
+func (a *conflictAdmin) List(context.Context, jobs.ListFilter) ([]jobs.Summary, error) {
+	return nil, nil
+}
+func (a *conflictAdmin) CountsByStatus(context.Context) (map[jobs.Status]int, error) {
+	return nil, nil
+}
+func (a *conflictAdmin) CountsByType(context.Context, string) (map[jobs.Status]int, error) {
+	return nil, nil
 }
 
 type queueWithAdmin struct {
