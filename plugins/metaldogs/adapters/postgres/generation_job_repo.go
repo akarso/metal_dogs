@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -72,7 +73,7 @@ func (r *GenerationJobRepo) GetActiveByDesign(ctx context.Context, designID stri
 	return scanGenerationJob(row)
 }
 
-func (r *GenerationJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error {
+func (r *GenerationJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("metaldogs generation_jobs begin: %w", err)
@@ -87,7 +88,10 @@ func (r *GenerationJobRepo) BeginGenerating(ctx context.Context, j domain.Genera
 		    updated_at = $5, expires_at = $6
 		WHERE id = $1
 		  AND status IN ('draft', 'generation_failed', 'preview_ready')
-	`, d.ID, d.Status, d.GenerationAttempts, d.LatestJobID, d.UpdatedAt.UTC(), d.ExpiresAt.UTC())
+		  AND generation_attempts = $7
+		  AND latest_job_id IS NOT DISTINCT FROM NULLIF($8, '')::uuid
+	`, d.ID, d.Status, d.GenerationAttempts, d.LatestJobID, d.UpdatedAt.UTC(), d.ExpiresAt.UTC(),
+		expectedAttempts, strings.TrimSpace(expectedLatestJobID))
 	if err != nil {
 		return fmt.Errorf("metaldogs designs mark generating: %w", err)
 	}

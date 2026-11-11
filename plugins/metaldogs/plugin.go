@@ -83,8 +83,12 @@ func (p *Plugin) Init(app *plugin.App) error {
 		maxAttempts = 3
 	}
 	cooldownSecs := genCfg.CooldownSeconds
-	if cooldownSecs <= 0 {
-		cooldownSecs = int(domain.DefaultGenerationCooldown / time.Second)
+	if cooldownSecs < 0 {
+		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be >= 0")
+	}
+	maxCooldownSecs := int(domain.MaxGenerationCooldown / time.Second)
+	if cooldownSecs > maxCooldownSecs {
+		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be <= %d", maxCooldownSecs)
 	}
 
 	registerCLICommands(app)
@@ -110,7 +114,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
 		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
-		p.designs = newDesignService(store, app.Bootstrap.DB, templates, maxAttempts, app.Logger)
+		p.designs = newDesignService(store, app.Bootstrap.DB, templates, maxAttempts, cooldownSecs, app.Logger)
 		var genErr error
 		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts, cooldownSecs, app.Logger)
 		if genErr != nil {
@@ -200,7 +204,7 @@ func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *ap
 	return svc
 }
 
-func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, maxAttempts int, log logger.Logger) *application.DesignService {
+func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, maxAttempts, cooldownSecs int, log logger.Logger) *application.DesignService {
 	if store == nil || db == nil || templates == nil {
 		return nil
 	}
@@ -223,6 +227,7 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 		IDs:         ports.UUIDGenerator{},
 		Clock:       ports.SystemClock{},
 		MaxAttempts: maxAttempts,
+		Cooldown:    time.Duration(cooldownSecs) * time.Second,
 	}
 	if log != nil {
 		svc.OnCleanupError = func(op, assetID, storageKey string, err error) {
@@ -284,10 +289,6 @@ func newGenerateServices(
 	enqueue := func(ctx context.Context, generationJobID, designID string) error {
 		return enqueueGenerateIdempotent(app, ctx, generationJobID, designID)
 	}
-	cooldown := time.Duration(cooldownSecs) * time.Second
-	if cooldown <= 0 {
-		cooldown = domain.DefaultGenerationCooldown
-	}
 	svc := &application.GenerateService{
 		Designs:     designs,
 		Jobs:        jobs,
@@ -297,7 +298,7 @@ func newGenerateServices(
 		Enqueue:     enqueue,
 		Provider:    prov.Name(),
 		MaxAttempts: maxAttempts,
-		Cooldown:    cooldown,
+		Cooldown:    time.Duration(cooldownSecs) * time.Second, // 0 disables
 	}
 	return svc, worker, nil
 }

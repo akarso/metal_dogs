@@ -94,7 +94,7 @@ func (m *genJobRepo) GetActiveByDesign(_ context.Context, designID string) (doma
 	return j, ok, nil
 }
 
-func (m *genJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error {
+func (m *genJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.insertLocked(j); err != nil {
@@ -104,6 +104,9 @@ func (m *genJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, 
 	defer m.designs.mu.Unlock()
 	cur, ok := m.designs.byID[d.ID]
 	if !ok || !cur.CanRequestGeneration() {
+		return ports.ErrDesignConflict
+	}
+	if cur.GenerationAttempts != expectedAttempts || cur.LatestJobID != expectedLatestJobID {
 		return ports.ErrDesignConflict
 	}
 	cur.Status = d.Status
@@ -884,8 +887,8 @@ func (f *failGetJobRepo) GetByIdempotency(ctx context.Context, designID, key str
 func (f *failGetJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
 	return f.inner.GetActiveByDesign(ctx, designID)
 }
-func (f *failGetJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time) error {
-	return f.inner.BeginGenerating(ctx, j, d, sourceDeleteAfter)
+func (f *failGetJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, sourceDeleteAfter time.Time, expectedAttempts int, expectedLatestJobID string) error {
+	return f.inner.BeginGenerating(ctx, j, d, sourceDeleteAfter, expectedAttempts, expectedLatestJobID)
 }
 func (f *failGetJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
 	return f.inner.ClaimForWork(ctx, id, lease)
@@ -930,7 +933,7 @@ func TestGenerateService_MissingIdempotencyKey(t *testing.T) {
 func TestGenerateService_FourthAttemptLimitReached(t *testing.T) {
 	t.Parallel()
 	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
-	svc.Cooldown = time.Millisecond // disable practical cooldown for limit path
+	svc.Cooldown = domain.DefaultGenerationCooldown
 	for i := 1; i <= 3; i++ {
 		view, err := svc.RequestGenerate(context.Background(), designID, token, fmt.Sprintf("lim-%d", i), "")
 		if err != nil {
@@ -949,12 +952,18 @@ func TestGenerateService_FourthAttemptLimitReached(t *testing.T) {
 		jobs.byID[view.ID] = j
 		delete(jobs.active, designID)
 		jobs.mu.Unlock()
-		clock.Advance(time.Second)
+		clock.Advance(domain.DefaultGenerationCooldown) // clear cooldown between budgeted attempts
 	}
+	// Still inside a would-be cooldown window from the 3rd finish, but budget is spent.
+	clock.Advance(time.Second)
+	beforeJobs := len(jobs.byID)
 	_, err := svc.RequestGenerate(context.Background(), designID, token, "lim-4", "")
 	var ge *application.GenerateError
 	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrLimitReached {
 		t.Fatalf("want limit_reached, got %v", err)
+	}
+	if ge.RetryAfter != 0 {
+		t.Fatalf("limit_reached must not set RetryAfter, got %d", ge.RetryAfter)
 	}
 	designs.mu.Lock()
 	d := designs.byID[designID]
@@ -962,8 +971,36 @@ func TestGenerateService_FourthAttemptLimitReached(t *testing.T) {
 	if d.GenerationAttempts != 3 || d.Status != domain.DesignPreviewReady {
 		t.Fatalf("design must stay at 3 attempts / preview_ready: %+v", d)
 	}
-	if len(jobs.byID) != 3 {
+	if len(jobs.byID) != beforeJobs {
 		t.Fatalf("4th attempt must not create a job; jobs=%d", len(jobs.byID))
+	}
+}
+
+func TestGenerateService_LimitReachedInsideCooldownWindow(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 3
+	d.LatestJobID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	finished := clock.Now().Add(-time.Second)
+	jobs.mu.Lock()
+	jobs.byID[d.LatestJobID] = domain.GenerationJob{
+		ID: d.LatestJobID, DesignID: designID, Status: domain.JobSucceeded,
+		QueuedAt: finished.Add(-time.Minute), FinishedAt: &finished, Attempt: 3,
+	}
+	jobs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "lim-window", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrLimitReached {
+		t.Fatalf("want limit_reached inside cooldown window, got %v", err)
+	}
+	if len(jobs.byID) != 1 {
+		t.Fatalf("no new job: %d", len(jobs.byID))
 	}
 }
 
@@ -989,14 +1026,41 @@ func TestGenerateService_CooldownBetweenAttempts(t *testing.T) {
 	delete(jobs.active, designID)
 	jobs.mu.Unlock()
 
+	jobsBefore := len(jobs.byID)
 	_, err = svc.RequestGenerate(context.Background(), designID, token, "cd-2", "")
 	var ge *application.GenerateError
 	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrCooldown || ge.RetryAfter < 1 {
 		t.Fatalf("want cooldown, got %v", err)
 	}
+	if len(jobs.byID) != jobsBefore {
+		t.Fatalf("cooldown must not insert a job; jobs=%d", len(jobs.byID))
+	}
+	// Same-key replay during cooldown still returns the prior job (idempotency before cooldown).
+	replay, err := svc.RequestGenerate(context.Background(), designID, token, "cd-1", "")
+	if err != nil || replay.ID != view.ID {
+		t.Fatalf("same-key replay during cooldown: %v %+v", err, replay)
+	}
 	clock.Advance(30 * time.Second)
-	if _, err := svc.RequestGenerate(context.Background(), designID, token, "cd-2", ""); err != nil {
+	if _, err := svc.RequestGenerate(context.Background(), designID, token, "cd-2b", ""); err != nil {
 		t.Fatalf("after cooldown: %v", err)
+	}
+}
+
+func TestGenerateService_MissingLatestJobFailClosed(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, _, _, _, _, _, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "missing-latest", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable {
+		t.Fatalf("want unavailable, got %v", err)
 	}
 }
 

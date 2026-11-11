@@ -309,7 +309,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 
 
-#### G4 · Mockup compositing — size S — **DONE** (CR-15)
+#### G4 · Mockup compositing — size S — **partial** (CR-15; web-sized base still open)
 
 - **Goal:** Compose validated artwork onto a prepared black-tee mockup image within a defined print area, producing a web-sized preview PNG/WebP. No customer interaction with placement.
 - **Scope (partial):** `generation/mockup.Compose` (contain-scale + center; dimension cap; longest-edge ≤1024 when base exceeds it). Embedded fixture is still an **80×100 placeholder** — not a real web-sized garment base; template `output_config.print_area` not yet driving placement. Close when a real web-sized base lands (or docs stop calling the preview web-sized).
@@ -359,7 +359,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** Flagged; provider `fake` unless `plugins.metaldogs.generation.provider` set (C4 accepts only `fake`).
 - **Docs:** `architecture/flows/generation-pipeline.md`; runbook `generation-job-stuck-or-failed.md` → real content; ADR-0003 Accepted.
 
-#### C5 · Preview assets — size S — **DONE** (CR-15)
+#### C5 · Preview assets — size S — **partial** (CR-15; blocked on G4 web-sized base)
 
 - **Goal:** Design response includes signed URLs (short TTL) for `artwork_preview` and `mockup_preview`; mockup produced in the generate job after validation (G4).
 - **Scope (partial):** Worker persists artwork before mockup (`PersistArtwork`); compose/key/decode permanent; mockup Put transient; prior mockup/artwork blobs deleted after soft-delete; design GET signs only when job.DesignID, asset owner_ref, and type match (lookup I/O → 500). Still blocked on G4 web-sized base for customer-quality mockups.
@@ -377,8 +377,8 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### C7 · Regeneration limits — size S — **DONE** (CR-17)
 
 - **Goal:** Max attempts per design (config, default 3) enforced in the domain; UI-visible remaining count; cooldown between attempts; exceeding → `429` with `limit_reached` code.
-- **Scope:** Design DTO exposes `generation_attempts` / `generation_attempts_remaining` / `max_generation_attempts`; config `plugins.metaldogs.generation.cooldown_seconds` (default 30); regenerate while cooling down → `429` `cooldown` + `Retry-After`; 4th attempt → `429` `limit_reached` and no job row.
-- **Tests:** Unit: limit boundary + cooldown helper; feature: 4th attempt rejected; cooldown then success; HTTP `429` mapping.
+- **Scope:** Design DTO exposes attempt budget + `retry_after`; config `cooldown_seconds` (default 30, `0` disables); hard cap checked before cooldown; spent budget → `429` `limit_reached` (no `Retry-After`); cooling down → `429` `cooldown` with header + JSON `retry_after`. **Policy:** every `RequestGeneration` (including after `generation_failed`) consumes budget and cooldown; provider-fault refunds are a follow-up.
+- **Tests:** Unit: limit boundary + cooldown helpers; feature: 4th attempt inside cooldown window → `limit_reached`; cooldown then success; missing latest job fail-closed; HTTP mappings.
 - **Safe delivery:** Lower risk once enabled; purely restrictive.
 
 ### Track S — Storefront

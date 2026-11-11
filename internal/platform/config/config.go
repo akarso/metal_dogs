@@ -683,6 +683,7 @@ type MetalDogsGenerationConfig struct {
 	MaxRetries           int    `yaml:"max_retries"`
 	MaxAttemptsPerDesign int    `yaml:"max_attempts_per_design"`
 	// CooldownSeconds is the minimum gap between customer generation attempts (C7; default 30).
+	// 0 disables the wait; negatives / values above 24h are rejected at plugin Init.
 	CooldownSeconds int `yaml:"cooldown_seconds"`
 }
 

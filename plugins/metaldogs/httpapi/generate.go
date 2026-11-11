@@ -31,9 +31,10 @@ type GenerationJobResponse struct {
 }
 
 type generateErrorBody struct {
-	Error    string `json:"error"`
-	JobID    string `json:"job_id,omitempty"`
-	DesignID string `json:"design_id,omitempty"`
+	Error      string `json:"error"`
+	JobID      string `json:"job_id,omitempty"`
+	DesignID   string `json:"design_id,omitempty"`
+	RetryAfter int    `json:"retry_after,omitempty"`
 }
 
 // GenerateDesign handles POST /api/customizer/designs/{id}/generate.
@@ -125,12 +126,23 @@ func writeGenerateError(w http.ResponseWriter, err error) {
 	var ge *application.GenerateError
 	if errors.As(err, &ge) {
 		status := generateStatus(ge.Code)
-		if status == http.StatusTooManyRequests {
+		if ge.Code == application.GenerateErrCooldown {
 			retryAfter := ge.RetryAfter
-			if retryAfter <= 0 {
-				retryAfter = 60
+			if retryAfter < 1 {
+				retryAfter = 1
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(generateErrorBody{
+				Error: ge.Code, DesignID: ge.DesignID, RetryAfter: retryAfter,
+			})
+			return
+		}
+		if ge.Code == application.GenerateErrLimitReached {
+			// Permanent for this design — do not advertise Retry-After.
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(generateErrorBody{Error: ge.Code, DesignID: ge.DesignID})
+			return
 		}
 		if ge.JobID != "" && (ge.Code == application.GenerateErrConflict ||
 			ge.Code == application.GenerateErrInvalidTransition ||

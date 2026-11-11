@@ -62,7 +62,7 @@ func TestGenerationJobRepo_BeginIdempotencyAndMutex(t *testing.T) {
 	}
 	digest := domain.TextsDigestFor(d.Texts)
 	job := domain.NewQueuedJob(jobID, designID, "idem-a", "fake", d.GenerationAttempts, now, "corr", d.SourceAssetID, d.TemplateVersion, digest)
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -80,13 +80,13 @@ func TestGenerationJobRepo_BeginIdempotencyAndMutex(t *testing.T) {
 	d2 := d
 	d2.GenerationAttempts = 2
 	d2.LatestJobID = job2.ID
-	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention)); !errors.Is(err, ports.ErrGenerationJobConflict) {
+	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention), d2.GenerationAttempts-1, ""); !errors.Is(err, ports.ErrGenerationJobConflict) {
 		t.Fatalf("idempotency conflict: %v", err)
 	}
 
 	// Active mutex conflict (different key)
 	job3 := domain.NewQueuedJob("ffffffff-ffff-4fff-8fff-ffffffffffff", designID, "idem-b", "fake", 2, now, "", d.SourceAssetID, d.TemplateVersion, digest)
-	if err := jobs.BeginGenerating(ctx, job3, d2, now.Add(domain.SourceAttachedRetention)); !errors.Is(err, ports.ErrGenerationJobConflict) {
+	if err := jobs.BeginGenerating(ctx, job3, d2, now.Add(domain.SourceAttachedRetention), d2.GenerationAttempts-1, ""); !errors.Is(err, ports.ErrGenerationJobConflict) {
 		t.Fatalf("active mutex: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestInvalidateClaimExec_BumpsActive(t *testing.T) {
 	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	_ = d.RequestGeneration(jobID, 3, now)
 	job := domain.NewQueuedJob(jobID, designID, "idem-inv", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
@@ -162,7 +162,7 @@ func TestInvalidateClaimExec_ActiveUnmatchedErrors(t *testing.T) {
 	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	_ = d.RequestGeneration(jobID, 3, now)
 	job := domain.NewQueuedJob(jobID, designID, "idem-unmatched", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +187,7 @@ func TestGenerationJobRepo_PersistArtworkAndCompleteSuccessMockup(t *testing.T) 
 	jobID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	_ = d.RequestGeneration(jobID, 3, now)
 	job := domain.NewQueuedJob(jobID, designID, "idem-mock", "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
-	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
@@ -262,7 +262,7 @@ func TestGenerationJobRepo_PersistArtworkAndCompleteSuccessMockup(t *testing.T) 
 	job2ID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	_ = d2.RequestGeneration(job2ID, 3, now.Add(time.Second))
 	job2 := domain.NewQueuedJob(job2ID, designID, "idem-mock-2", "fake", 2, now.Add(time.Second), "", d2.SourceAssetID, d2.TemplateVersion, domain.TextsDigestFor(d2.Texts))
-	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention)); err != nil {
+	if err := jobs.BeginGenerating(ctx, job2, d2, now.Add(domain.SourceAttachedRetention), d2.GenerationAttempts-1, ""); err != nil {
 		t.Fatal(err)
 	}
 	claimed2, err := jobs.ClaimForWork(ctx, job2ID, time.Minute)

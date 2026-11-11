@@ -19,11 +19,17 @@ import (
 // Reuse lightweight fakes from designs_test via duplicated minimal wiring.
 
 type gJobRepo struct {
-	job domain.GenerationJob
+	job   domain.GenerationJob
+	byID  map[string]domain.GenerationJob
+	nJobs int
 }
 
 func (g *gJobRepo) Insert(context.Context, domain.GenerationJob) error { return nil }
 func (g *gJobRepo) GetByID(_ context.Context, id string) (domain.GenerationJob, bool, error) {
+	if g.byID != nil {
+		j, ok := g.byID[id]
+		return j, ok, nil
+	}
 	if g.job.ID == id {
 		return g.job, true, nil
 	}
@@ -38,8 +44,12 @@ func (g *gJobRepo) GetByIdempotency(_ context.Context, designID, key string) (do
 func (g *gJobRepo) GetActiveByDesign(context.Context, string) (domain.GenerationJob, bool, error) {
 	return domain.GenerationJob{}, false, nil
 }
-func (g *gJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, _ domain.Design, _ time.Time) error {
+func (g *gJobRepo) BeginGenerating(_ context.Context, j domain.GenerationJob, _ domain.Design, _ time.Time, _ int, _ string) error {
 	g.job = j
+	g.nJobs++
+	if g.byID != nil {
+		g.byID[j.ID] = j
+	}
 	return nil
 }
 func (g *gJobRepo) ClaimForWork(_ context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
@@ -175,20 +185,28 @@ func TestGenerateDesign_LimitReached(t *testing.T) {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	designID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	uploadID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	jobID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	token, hash, err := application.MintOwnerToken()
 	if err != nil {
 		t.Fatal(err)
 	}
+	finished := now.Add(-time.Second)
+	jobs := &gJobRepo{byID: map[string]domain.GenerationJob{
+		jobID: {
+			ID: jobID, DesignID: designID, Status: domain.JobSucceeded, Attempt: 3,
+			QueuedAt: now.Add(-time.Minute), FinishedAt: &finished,
+		},
+	}}
 	svc := &application.GenerateService{
 		Designs: &dDesignRepo{byID: map[string]domain.Design{
 			designID: {
 				ID: designID, Status: domain.DesignPreviewReady, SourceAssetID: uploadID,
 				OwnerTokenHash: hash, Texts: map[string]string{"dog_name": "Burek"},
 				ExpiresAt: now.Add(time.Hour), UpdatedAt: now, CreatedAt: now,
-				TemplateID: "t1", TemplateVersion: 1, GenerationAttempts: 3,
+				TemplateID: "t1", TemplateVersion: 1, GenerationAttempts: 3, LatestJobID: jobID,
 			},
 		}},
-		Jobs: &gJobRepo{},
+		Jobs: jobs,
 		Assets: &dAssetRepo{byID: map[string]domain.Asset{
 			uploadID: {
 				ID: uploadID, Type: domain.AssetTypeSource,
@@ -197,9 +215,9 @@ func TestGenerateDesign_LimitReached(t *testing.T) {
 				DeleteAfter: now.Add(time.Hour), OwnerRef: designID,
 			},
 		}},
-		IDs: &testutil.FixedGenerator{ID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}, Clock: testutil.NewFakeClock(now),
+		IDs: &testutil.FixedGenerator{ID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}, Clock: testutil.NewFakeClock(now),
 		Enqueue:  func(context.Context, string, string) error { return nil },
-		Provider: "fake", MaxAttempts: 3,
+		Provider: "fake", MaxAttempts: 3, Cooldown: domain.DefaultGenerationCooldown,
 	}
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(svc))
@@ -211,11 +229,88 @@ func TestGenerateDesign_LimitReached(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), application.GenerateErrLimitReached) {
-		t.Fatalf("body=%s", rec.Body.String())
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
 	}
-	if rec.Header().Get("Retry-After") == "" {
-		t.Fatal("missing Retry-After")
+	if body["error"] != application.GenerateErrLimitReached {
+		t.Fatalf("body=%v", body)
+	}
+	if _, ok := body["retry_after"]; ok {
+		t.Fatalf("limit_reached must omit retry_after: %v", body)
+	}
+	if rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("limit_reached must omit Retry-After header, got %q", rec.Header().Get("Retry-After"))
+	}
+	if jobs.nJobs != 0 || len(jobs.byID) != 1 {
+		t.Fatalf("no new job: nJobs=%d len=%d", jobs.nJobs, len(jobs.byID))
+	}
+}
+
+func TestGenerateDesign_Cooldown(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	designID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	uploadID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	jobID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	token, hash, err := application.MintOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := now.Add(-5 * time.Second)
+	jobs := &gJobRepo{byID: map[string]domain.GenerationJob{
+		jobID: {
+			ID: jobID, DesignID: designID, Status: domain.JobSucceeded, Attempt: 1,
+			QueuedAt: now.Add(-time.Minute), FinishedAt: &finished,
+		},
+	}}
+	svc := &application.GenerateService{
+		Designs: &dDesignRepo{byID: map[string]domain.Design{
+			designID: {
+				ID: designID, Status: domain.DesignPreviewReady, SourceAssetID: uploadID,
+				OwnerTokenHash: hash, Texts: map[string]string{"dog_name": "Burek"},
+				ExpiresAt: now.Add(time.Hour), UpdatedAt: now, CreatedAt: now,
+				TemplateID: "t1", TemplateVersion: 1, GenerationAttempts: 1, LatestJobID: jobID,
+			},
+		}},
+		Jobs: jobs,
+		Assets: &dAssetRepo{byID: map[string]domain.Asset{
+			uploadID: {
+				ID: uploadID, Type: domain.AssetTypeSource,
+				StorageKey: "private/blobs/metaldogs/source/2026/11/" + uploadID + ".jpg",
+				MimeType:   "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
+				DeleteAfter: now.Add(time.Hour), OwnerRef: designID,
+			},
+		}},
+		IDs: &testutil.FixedGenerator{ID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}, Clock: testutil.NewFakeClock(now),
+		Enqueue:  func(context.Context, string, string) error { return nil },
+		Provider: "fake", MaxAttempts: 3, Cooldown: 30 * time.Second,
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(svc))
+	req := httptest.NewRequest(http.MethodPost, "/api/customizer/designs/"+designID+"/generate", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "idem-cd")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "25" {
+		t.Fatalf("Retry-After=%q want 25", got)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != application.GenerateErrCooldown {
+		t.Fatalf("body=%v", body)
+	}
+	if int(body["retry_after"].(float64)) != 25 {
+		t.Fatalf("retry_after=%v", body["retry_after"])
+	}
+	if jobs.nJobs != 0 || len(jobs.byID) != 1 {
+		t.Fatalf("no new job: nJobs=%d len=%d", jobs.nJobs, len(jobs.byID))
 	}
 }
 

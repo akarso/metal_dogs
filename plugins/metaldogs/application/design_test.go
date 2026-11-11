@@ -933,7 +933,7 @@ func (r *designJobRepo) GetByIdempotency(context.Context, string, string) (domai
 func (r *designJobRepo) GetActiveByDesign(context.Context, string) (domain.GenerationJob, bool, error) {
 	return domain.GenerationJob{}, false, nil
 }
-func (r *designJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time) error {
+func (r *designJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time, int, string) error {
 	return nil
 }
 func (r *designJobRepo) ClaimForWork(context.Context, string, time.Duration) (domain.GenerationJob, error) {
@@ -992,8 +992,8 @@ func (r *errDesignJobRepo) GetByIdempotency(ctx context.Context, designID, key s
 func (r *errDesignJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
 	return r.inner.GetActiveByDesign(ctx, designID)
 }
-func (r *errDesignJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time) error {
-	return r.inner.BeginGenerating(ctx, j, d, at)
+func (r *errDesignJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time, expectedAttempts int, expectedLatestJobID string) error {
+	return r.inner.BeginGenerating(ctx, j, d, at, expectedAttempts, expectedLatestJobID)
 }
 func (r *errDesignJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
 	return r.inner.ClaimForWork(ctx, id, lease)

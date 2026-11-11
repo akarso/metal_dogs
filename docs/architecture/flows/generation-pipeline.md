@@ -42,7 +42,7 @@ flowchart LR
 
     r1 --> r2 -- yes --> r3 -- yes --> r4 --> r5 --> r6 --> r7
     r2 -- no --> x1[409 invalid_transition]
-    r3 -- no --> x2[429 limit_reached or 503 temporarily_unavailable]
+    r3 -- no --> x2[429 limit_reached / cooldown or 503 unavailable]
     r6 -.-> w0 --> w1 --> w2 --> w3 --> w4
     w4 -- error --> w5 --> w6
     w6 -- yes --> w7 -.-> w0

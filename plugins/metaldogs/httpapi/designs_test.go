@@ -247,6 +247,31 @@ func designSvc(t *testing.T, tplID, uploadID string, tplStatus string) (*applica
 	return svc, key
 }
 
+func TestDesigns_NonDefaultMaxAttempts(t *testing.T) {
+	t.Parallel()
+	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
+	uploadID := "aaaaaaaa-bbbb-4ccc-8ddd-222222222222"
+	svc, _ := designSvc(t, tplID, uploadID, domain.TemplatePublished)
+	svc.MaxAttempts = 5
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs", httpapi.CreateDesign(svc))
+	body, _ := json.Marshal(map[string]any{
+		"template_id": tplID, "upload_id": uploadID, "texts": map[string]string{"dog_name": "Burek"},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/customizer/designs", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.MaxGenerationAttempts != 5 || created.GenerationAttemptsRemaining != 5 {
+		t.Fatalf("%+v", created)
+	}
+}
+
 func TestDesigns_CreateGetAuthPatch(t *testing.T) {
 	t.Parallel()
 	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
@@ -275,7 +300,7 @@ func TestDesigns_CreateGetAuthPatch(t *testing.T) {
 	if created.OwnerToken == "" || created.ID == "" || created.SourcePreviewURL == "" {
 		t.Fatalf("%+v", created)
 	}
-	if created.GenerationAttempts != 0 || created.GenerationAttemptsRemaining != 3 || created.MaxGenerationAttempts != 3 {
+	if created.GenerationAttempts != 0 || created.GenerationAttemptsRemaining != 3 || created.MaxGenerationAttempts != 3 || created.RetryAfter != 0 {
 		t.Fatalf("attempt budget: %+v", created)
 	}
 
@@ -522,7 +547,7 @@ func (r *dJobRepo) GetByIdempotency(context.Context, string, string) (domain.Gen
 func (r *dJobRepo) GetActiveByDesign(context.Context, string) (domain.GenerationJob, bool, error) {
 	return domain.GenerationJob{}, false, nil
 }
-func (r *dJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time) error {
+func (r *dJobRepo) BeginGenerating(context.Context, domain.GenerationJob, domain.Design, time.Time, int, string) error {
 	return nil
 }
 func (r *dJobRepo) ClaimForWork(context.Context, string, time.Duration) (domain.GenerationJob, error) {

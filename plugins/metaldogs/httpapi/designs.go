@@ -38,6 +38,7 @@ type DesignResponse struct {
 	GenerationAttempts          int               `json:"generation_attempts"`
 	GenerationAttemptsRemaining int               `json:"generation_attempts_remaining"`
 	MaxGenerationAttempts       int               `json:"max_generation_attempts"`
+	RetryAfter                  int               `json:"retry_after"`
 }
 
 // VersionResponse is the frozen DesignVersion DTO (C6).
@@ -283,6 +284,7 @@ func toDesignResponse(v application.DesignView) DesignResponse {
 		GenerationAttempts:          v.GenerationAttempts,
 		GenerationAttemptsRemaining: v.GenerationAttemptsRemaining,
 		MaxGenerationAttempts:       v.MaxGenerationAttempts,
+		RetryAfter:                  v.RetryAfter,
 	}
 	if !v.SourcePreviewURLExpiresAt.IsZero() {
 		t := v.SourcePreviewURLExpiresAt.UTC()

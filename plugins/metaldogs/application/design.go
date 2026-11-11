@@ -65,6 +65,7 @@ type DesignView struct {
 	GenerationAttempts          int
 	GenerationAttemptsRemaining int
 	MaxGenerationAttempts       int
+	RetryAfter                  int // seconds until regenerate is allowed (0 = now)
 }
 
 // DesignService coordinates design create/get/patch/approve/clone with ownership tokens.
@@ -79,6 +80,8 @@ type DesignService struct {
 	Clock     ports.Clock
 	// MaxAttempts is plugins.metaldogs.generation.max_attempts_per_design (C7 remaining count).
 	MaxAttempts int
+	// Cooldown is plugins.metaldogs.generation.cooldown_seconds (0 disables).
+	Cooldown time.Duration
 	// EnqueuePrepare schedules prepare_production_artwork after approve (optional).
 	EnqueuePrepare ports.PrepareProductionEnqueue
 	// MaxInFlightClones caps concurrent Clone calls; 0 → DefaultMaxConcurrentUploads.
@@ -352,6 +355,27 @@ func (s *DesignService) attemptBudget(d domain.Design) (attempts, remaining, max
 	return attempts, domain.GenerationAttemptsRemaining(attempts, max), max
 }
 
+func (s *DesignService) regenerateRetryAfter(ctx context.Context, d domain.Design, remaining int, now time.Time) int {
+	if remaining <= 0 || d.GenerationAttempts == 0 || s.Cooldown <= 0 || s.Jobs == nil {
+		return 0
+	}
+	latestID := strings.TrimSpace(d.LatestJobID)
+	if latestID == "" {
+		return 0
+	}
+	job, ok, err := s.Jobs.GetByID(ctx, latestID)
+	if err != nil || !ok {
+		return 0
+	}
+	if err := domain.CheckGenerationCooldown(domain.GenerationJobLastAttemptAt(job), s.Cooldown, now); err != nil {
+		var cd *domain.ErrCooldown
+		if errors.As(err, &cd) {
+			return domain.CooldownRetryAfterSeconds(cd.RetryAfter, s.Cooldown)
+		}
+	}
+	return 0
+}
+
 func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, now time.Time) DesignView {
 	view, err := s.toView(ctx, d, now)
 	if err != nil {
@@ -360,6 +384,7 @@ func (s *DesignService) viewAfterCommit(ctx context.Context, d domain.Design, no
 			ID: d.ID, Status: d.Status, TemplateID: d.TemplateID, TemplateVersion: d.TemplateVersion,
 			Texts: d.Texts, UploadID: d.SourceAssetID, CreatedAt: d.CreatedAt, ExpiresAt: d.ExpiresAt,
 			GenerationAttempts: attempts, GenerationAttemptsRemaining: remaining, MaxGenerationAttempts: max,
+			RetryAfter: s.regenerateRetryAfter(ctx, d, remaining, now),
 		}
 	}
 	return view
@@ -383,6 +408,7 @@ func (s *DesignService) toView(ctx context.Context, d domain.Design, now time.Ti
 		GenerationAttempts:          attempts,
 		GenerationAttemptsRemaining: remaining,
 		MaxGenerationAttempts:       max,
+		RetryAfter:                  s.regenerateRetryAfter(ctx, d, remaining, now),
 	}
 	if s.Assets == nil || s.Store == nil {
 		return view, nil

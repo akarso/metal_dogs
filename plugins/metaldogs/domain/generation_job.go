@@ -59,12 +59,11 @@ type ErrCooldown struct {
 }
 
 func (e *ErrCooldown) Error() string {
-	secs := int(e.RetryAfter.Round(time.Second) / time.Second)
-	if secs < 1 {
-		secs = 1
-	}
-	return fmt.Sprintf("cooldown: retry after %ds", secs)
+	return fmt.Sprintf("cooldown: retry after %ds", CooldownRetryAfterSeconds(e.RetryAfter, 0))
 }
+
+// MaxGenerationCooldown is the upper bound accepted for configured cooldown.
+const MaxGenerationCooldown = 24 * time.Hour
 
 // NormalizeMaxAttempts returns maxAttempts or the product default (3).
 func NormalizeMaxAttempts(maxAttempts int) int {
@@ -88,7 +87,8 @@ func GenerationAttemptsRemaining(attempts, maxAttempts int) int {
 }
 
 // CheckGenerationCooldown returns ErrCooldown when now is still inside the cooldown
-// window after lastAttemptAt. Zero lastAttemptAt or non-positive cooldown → OK.
+// window after lastAttemptAt. Zero lastAttemptAt or non-positive cooldown → OK
+// (cooldown_seconds: 0 disables the wait).
 func CheckGenerationCooldown(lastAttemptAt time.Time, cooldown time.Duration, now time.Time) error {
 	if cooldown <= 0 || lastAttemptAt.IsZero() {
 		return nil
@@ -97,7 +97,29 @@ func CheckGenerationCooldown(lastAttemptAt time.Time, cooldown time.Duration, no
 	if elapsed >= cooldown {
 		return nil
 	}
-	return &ErrCooldown{RetryAfter: cooldown - elapsed}
+	wait := cooldown - elapsed
+	if wait > cooldown {
+		wait = cooldown // future lastAttemptAt
+	}
+	return &ErrCooldown{RetryAfter: wait}
+}
+
+// CooldownRetryAfterSeconds ceilings wait to whole seconds and clamps to cooldown when > 0.
+func CooldownRetryAfterSeconds(retryAfter, cooldown time.Duration) int {
+	if retryAfter <= 0 {
+		return 1
+	}
+	secs := int((retryAfter + time.Second - 1) / time.Second)
+	if cooldown > 0 {
+		maxSecs := int((cooldown + time.Second - 1) / time.Second)
+		if secs > maxSecs {
+			secs = maxSecs
+		}
+	}
+	if secs < 1 {
+		return 1
+	}
+	return secs
 }
 
 // GenerationJobLastAttemptAt is the timestamp used for regeneration cooldown
