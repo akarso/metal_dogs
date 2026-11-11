@@ -245,3 +245,17 @@ Do not weaken or delete a valid test merely to make a change pass.
 - Failure, retry, idempotency, privacy, and cost implications have been considered.
 - Public contracts and documentation are updated.
 - No secrets, generated artifacts, private photos, or local IDE files are included.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix), recorded as a `Status:` line in issue files. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
