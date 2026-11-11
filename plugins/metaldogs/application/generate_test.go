@@ -868,8 +868,9 @@ func (g *gatedProvider) Generate(ctx context.Context, req generation.GenerationR
 }
 
 type failGetJobRepo struct {
-	inner  *genJobRepo
-	failID string
+	inner     *genJobRepo
+	failID    string
+	alwaysErr error // when set with failID match, return this instead of "db down"
 }
 
 func (f *failGetJobRepo) Insert(ctx context.Context, j domain.GenerationJob) error {
@@ -877,6 +878,9 @@ func (f *failGetJobRepo) Insert(ctx context.Context, j domain.GenerationJob) err
 }
 func (f *failGetJobRepo) GetByID(ctx context.Context, id string) (domain.GenerationJob, bool, error) {
 	if id == f.failID {
+		if f.alwaysErr != nil {
+			return domain.GenerationJob{}, false, f.alwaysErr
+		}
 		return domain.GenerationJob{}, false, errors.New("db down")
 	}
 	return f.inner.GetByID(ctx, id)
@@ -1061,6 +1065,85 @@ func TestGenerateService_MissingLatestJobFailClosed(t *testing.T) {
 	var ge *application.GenerateError
 	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable {
 		t.Fatalf("want unavailable, got %v", err)
+	}
+}
+
+func TestGenerateService_CooldownJobLookupErrorPreservesCause(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, _, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	boom := errors.New("postgres dial timeout")
+	jobID := "cccccccc-cccc-4ccc-8ccc-aaaaaaaaaaaa"
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	svc.Jobs = &failGetJobRepo{inner: jobs, failID: jobID, alwaysErr: boom}
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "job-io", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable {
+		t.Fatalf("want unavailable, got %v", err)
+	}
+	if ge.DesignID != designID || ge.JobID != jobID {
+		t.Fatalf("want design_id/job_id, got design=%q job=%q", ge.DesignID, ge.JobID)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("want wrapped cause %v, got %v", boom, err)
+	}
+}
+
+func TestGenerateService_TerminalMissingFinishedAtUnavailable(t *testing.T) {
+	t.Parallel()
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = domain.DefaultGenerationCooldown
+	jobID := "cccccccc-cccc-4ccc-8ccc-eeeeeeeeeeee"
+	jobs.mu.Lock()
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: designID, Status: domain.JobSucceeded, Attempt: 1,
+		QueuedAt: clock.Now().Add(-time.Minute), FinishedAt: nil,
+	}
+	jobs.mu.Unlock()
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "null-finished", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrUnavailable || ge.JobID != jobID {
+		t.Fatalf("want unavailable with job_id, got %v", err)
+	}
+}
+
+func TestGenerateService_ActiveLatestJobCooldownIncludesJobID(t *testing.T) {
+	t.Parallel()
+	// Status allows generate, but latest job is still active (inconsistent / race) → 429 + job_id.
+	svc, _, designs, jobs, _, _, _, clock, designID, token, _ := genFixture(t)
+	svc.Cooldown = 30 * time.Second
+	jobID := "cccccccc-cccc-4ccc-8ccc-ffffffffffff"
+	jobs.mu.Lock()
+	jobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: designID, Status: domain.JobRunning, Attempt: 1,
+		QueuedAt: clock.Now().Add(-time.Second),
+	}
+	jobs.active[designID] = jobID
+	jobs.mu.Unlock()
+	designs.mu.Lock()
+	d := designs.byID[designID]
+	d.Status = domain.DesignPreviewReady
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[designID] = d
+	designs.mu.Unlock()
+	_, err := svc.RequestGenerate(context.Background(), designID, token, "inflight", "")
+	var ge *application.GenerateError
+	if err == nil || !errors.As(err, &ge) || ge.Code != application.GenerateErrCooldown || ge.JobID != jobID || ge.RetryAfter != 30 {
+		t.Fatalf("want cooldown with job_id + full window, got %v", err)
 	}
 }
 

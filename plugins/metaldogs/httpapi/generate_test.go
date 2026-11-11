@@ -309,8 +309,74 @@ func TestGenerateDesign_Cooldown(t *testing.T) {
 	if int(body["retry_after"].(float64)) != 25 {
 		t.Fatalf("retry_after=%v", body["retry_after"])
 	}
+	if body["job_id"] != jobID {
+		t.Fatalf("cooldown body missing job_id: %v", body)
+	}
 	if jobs.nJobs != 0 || len(jobs.byID) != 1 {
 		t.Fatalf("no new job: nJobs=%d len=%d", jobs.nJobs, len(jobs.byID))
+	}
+}
+
+func TestGenerateDesign_InFlightCooldownIncludesJobID(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	designID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbb01"
+	uploadID := "dddddddd-dddd-4ddd-8ddd-dddddddddd01"
+	jobID := "cccccccc-cccc-4ccc-8ccc-cccccccccc01"
+	token, hash, err := application.MintOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := &gJobRepo{byID: map[string]domain.GenerationJob{
+		jobID: {
+			ID: jobID, DesignID: designID, Status: domain.JobRunning, Attempt: 1,
+			QueuedAt: now.Add(-time.Second),
+		},
+	}}
+	svc := &application.GenerateService{
+		Designs: &dDesignRepo{byID: map[string]domain.Design{
+			designID: {
+				ID: designID, Status: domain.DesignPreviewReady, SourceAssetID: uploadID,
+				OwnerTokenHash: hash, Texts: map[string]string{"dog_name": "Burek"},
+				ExpiresAt: now.Add(time.Hour), UpdatedAt: now, CreatedAt: now,
+				TemplateID: "t1", TemplateVersion: 1, GenerationAttempts: 1, LatestJobID: jobID,
+			},
+		}},
+		Jobs: jobs,
+		Assets: &dAssetRepo{byID: map[string]domain.Asset{
+			uploadID: {
+				ID: uploadID, Type: domain.AssetTypeSource,
+				StorageKey: "private/blobs/metaldogs/source/2026/11/" + uploadID + ".jpg",
+				MimeType:   "image/jpeg", SizeBytes: 10, Width: 64, Height: 64, Checksum: "sha256:x",
+				DeleteAfter: now.Add(time.Hour), OwnerRef: designID,
+			},
+		}},
+		IDs: &testutil.FixedGenerator{ID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeee01"}, Clock: testutil.NewFakeClock(now),
+		Enqueue:  func(context.Context, string, string) error { return nil },
+		Provider: "fake", MaxAttempts: 3, Cooldown: 30 * time.Second,
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(svc))
+	req := httptest.NewRequest(http.MethodPost, "/api/customizer/designs/"+designID+"/generate", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "idem-inflight")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "30" {
+		t.Fatalf("Retry-After=%q want 30", got)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != application.GenerateErrCooldown || body["job_id"] != jobID {
+		t.Fatalf("inflight cooldown body=%v", body)
+	}
+	if int(body["retry_after"].(float64)) != 30 {
+		t.Fatalf("retry_after=%v", body["retry_after"])
 	}
 }
 

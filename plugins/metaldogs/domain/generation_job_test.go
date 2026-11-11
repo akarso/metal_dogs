@@ -164,20 +164,6 @@ func TestCheckGenerationCooldown(t *testing.T) {
 	}
 }
 
-func TestGenerationJobLastAttemptAt(t *testing.T) {
-	t.Parallel()
-	queued := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	finished := queued.Add(2 * time.Minute)
-	j := domain.GenerationJob{QueuedAt: queued}
-	if got := domain.GenerationJobLastAttemptAt(j); !got.Equal(queued) {
-		t.Fatalf("queued=%v", got)
-	}
-	j.FinishedAt = &finished
-	if got := domain.GenerationJobLastAttemptAt(j); !got.Equal(finished) {
-		t.Fatalf("finished=%v", got)
-	}
-}
-
 func TestGenerationJobCooldownAnchor(t *testing.T) {
 	t.Parallel()
 	queued := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -185,6 +171,9 @@ func TestGenerationJobCooldownAnchor(t *testing.T) {
 	j := domain.GenerationJob{Status: domain.JobRunning, QueuedAt: queued, FinishedAt: &finished}
 	if _, ok := domain.GenerationJobCooldownAnchor(j); ok {
 		t.Fatal("running must not anchor")
+	}
+	if !j.IsActive() {
+		t.Fatal("running must be active")
 	}
 	j.Status = domain.JobSucceeded
 	got, ok := domain.GenerationJobCooldownAnchor(j)

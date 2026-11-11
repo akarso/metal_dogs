@@ -125,6 +125,10 @@ func GetGenerationJob(svc *application.GenerateService) http.Handler {
 func writeGenerateError(w http.ResponseWriter, err error) {
 	var ge *application.GenerateError
 	if errors.As(err, &ge) {
+		if ge.Code == application.GenerateErrUnavailable && ge.JobID != "" {
+			log.Printf("metaldogs.generate.error code=%s design_id=%s job_id=%s: %v",
+				ge.Code, ge.DesignID, ge.JobID, err)
+		}
 		status := generateStatus(ge.Code)
 		if ge.Code == application.GenerateErrCooldown {
 			retryAfter := ge.RetryAfter
@@ -134,7 +138,7 @@ func writeGenerateError(w http.ResponseWriter, err error) {
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(generateErrorBody{
-				Error: ge.Code, DesignID: ge.DesignID, RetryAfter: retryAfter,
+				Error: ge.Code, DesignID: ge.DesignID, JobID: ge.JobID, RetryAfter: retryAfter,
 			})
 			return
 		}

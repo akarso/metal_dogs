@@ -122,19 +122,9 @@ func CooldownRetryAfterSeconds(retryAfter, cooldown time.Duration) int {
 	return secs
 }
 
-// GenerationJobLastAttemptAt is the timestamp used for regeneration cooldown
-// (finished when known, otherwise queued). Prefer GenerationJobCooldownAnchor for
-// customer regenerate UX — in-flight jobs must not look "free" via queued_at age.
-func GenerationJobLastAttemptAt(j GenerationJob) time.Time {
-	if j.FinishedAt != nil && !j.FinishedAt.IsZero() {
-		return j.FinishedAt.UTC()
-	}
-	return j.QueuedAt.UTC()
-}
-
 // GenerationJobCooldownAnchor returns the finished_at of a terminal job.
-// ok is false while the job is still active or finished_at is missing — callers
-// must treat that as still locked (not free to regenerate).
+// ok is false while the job is still active. Terminal jobs without finished_at
+// are a data error — callers should fail closed (503), not advertise a cooldown.
 func GenerationJobCooldownAnchor(j GenerationJob) (time.Time, bool) {
 	switch j.Status {
 	case JobSucceeded, JobFailed, JobCancelled:

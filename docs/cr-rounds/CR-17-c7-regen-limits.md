@@ -19,7 +19,7 @@
 
 | Item | Result |
 | --- | --- |
-| Domain remaining + cooldown + LastAttemptAt | Pass locally |
+| Domain remaining + cooldown + CooldownAnchor | Pass locally |
 | Limit inside cooldown window | Pass locally |
 | Cooldown then success / same-key replay | Pass locally |
 | HTTP limit (no Retry-After) + cooldown mapping | Pass locally |
@@ -30,10 +30,11 @@
 
 ## Tests added
 
-- `domain/generation_job_test.go` — remaining, cooldown, ceil/clamp, LastAttemptAt, CooldownAnchor
-- `application/generate_test.go` — fourth attempt; limit inside window; cooldown; missing latest
-- `httpapi/generate_test.go` — `429` limit without Retry-After; `429` cooldown with `retry_after=25`
-- `httpapi/designs_test.go` — attempt budget; GET retry_after cooldown + spent budget
+- `domain/generation_job_test.go` — remaining, cooldown, ceil/clamp, CooldownAnchor (finished_at only)
+- `application/generate_test.go` — fourth attempt; limit inside window; cooldown; missing latest; terminal null finished_at; in-flight job_id
+- `application/design_test.go` — approve view cooldown / cooldown-disabled preview I/O → 503 + version_id; PATCH post-commit view includes committed design + cause; GetByID error preserves cause
+- `httpapi/generate_test.go` — `429` limit without Retry-After; `429` cooldown/`job_id` for finished_at wait and in-flight
+- `httpapi/designs_test.go` — attempt budget; GET retry_after; GET+PATCH missing latest → 503; approve view-fail 503 has `version_id` and no `design`
 - `adapters/postgres/generation_job_repo_test.go` — stale `latest_job_id` fence; PersistArtwork replace under claim
 - `plugin_test.go` — Init cooldown bounds
 

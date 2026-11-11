@@ -30,15 +30,22 @@ type GenerateError struct {
 	Message    string
 	JobID      string // set on conflict when an active/prior job exists
 	DesignID   string
-	RetryAfter int // seconds; set for cooldown / limit hints
+	RetryAfter int   // seconds; set for cooldown / limit hints
+	Cause      error // optional wrapped infra cause (logged; not serialized)
 }
 
 func (e *GenerateError) Error() string {
-	if e.Message != "" {
-		return e.Message
+	msg := e.Message
+	if msg == "" {
+		msg = e.Code
 	}
-	return e.Code
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", msg, e.Cause)
+	}
+	return msg
 }
+
+func (e *GenerateError) Unwrap() error { return e.Cause }
 
 // JobView is the customer-facing generation job projection.
 type JobView struct {
@@ -302,25 +309,35 @@ func (s *GenerateService) checkCooldown(ctx context.Context, d domain.Design, no
 	}
 	job, ok, err := s.Jobs.GetByID(ctx, latestID)
 	if err != nil {
-		return fmt.Errorf("generate: cooldown job: %w", err)
+		return &GenerateError{
+			Code: GenerateErrUnavailable, Message: "latest generation job unreadable",
+			DesignID: d.ID, JobID: latestID,
+			Cause: fmt.Errorf("generate: cooldown job: %w", err),
+		}
 	}
-	if !ok {
-		return &GenerateError{Code: GenerateErrUnavailable, Message: "latest generation job missing", DesignID: d.ID}
+	if !ok || job.DesignID != d.ID {
+		return &GenerateError{
+			Code: GenerateErrUnavailable, Message: "latest generation job missing",
+			DesignID: d.ID, JobID: latestID,
+		}
+	}
+	if job.IsActive() {
+		return &GenerateError{
+			Code: GenerateErrCooldown, Message: "cooldown: prior attempt still in flight",
+			DesignID: d.ID, JobID: job.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cooldown, cooldown),
+		}
 	}
 	anchor, ok := domain.GenerationJobCooldownAnchor(job)
 	if !ok {
-		// In-flight or terminal without finished_at — not free; advertise full cooldown.
-		return &GenerateError{
-			Code: GenerateErrCooldown, Message: "cooldown: prior attempt still locking regenerate",
-			DesignID: d.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cooldown, cooldown),
-		}
+		// Terminal without finished_at never clears — fail closed, do not 429 forever.
+		return &GenerateError{Code: GenerateErrUnavailable, Message: "latest generation job missing finished_at", DesignID: d.ID, JobID: job.ID}
 	}
 	if err := domain.CheckGenerationCooldown(anchor, cooldown, now); err != nil {
 		var cd *domain.ErrCooldown
 		if errors.As(err, &cd) {
 			return &GenerateError{
 				Code: GenerateErrCooldown, Message: cd.Error(),
-				DesignID: d.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cd.RetryAfter, cooldown),
+				DesignID: d.ID, JobID: job.ID, RetryAfter: domain.CooldownRetryAfterSeconds(cd.RetryAfter, cooldown),
 			}
 		}
 		return err

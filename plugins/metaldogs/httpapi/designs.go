@@ -12,9 +12,11 @@ import (
 )
 
 type designErrorBody struct {
-	Error     string `json:"error"`
-	VersionID string `json:"version_id,omitempty"`
-	DesignID  string `json:"design_id,omitempty"`
+	Error     string          `json:"error"`
+	VersionID string          `json:"version_id,omitempty"`
+	DesignID  string          `json:"design_id,omitempty"`
+	JobID     string          `json:"job_id,omitempty"`
+	Design    *DesignResponse `json:"design,omitempty"`
 }
 
 // DesignResponse is the customer-facing design DTO.
@@ -317,16 +319,25 @@ func toVersionResponse(v application.VersionView) VersionResponse {
 func writeDesignError(w http.ResponseWriter, err error) {
 	var de *application.DesignError
 	if errors.As(err, &de) {
-		status := designStatus(de.Code)
-		if de.Code == application.DesignErrUnavailable && de.VersionID != "" {
-			w.WriteHeader(status)
-			_ = json.NewEncoder(w).Encode(designErrorBody{
-				Error: de.Code, VersionID: de.VersionID, DesignID: de.DesignID,
-			})
-			return
+		if de.Code == application.DesignErrUnavailable && de.JobID != "" {
+			log.Printf("metaldogs.design.error code=%s design_id=%s job_id=%s version_id=%s: %v",
+				de.Code, de.DesignID, de.JobID, de.VersionID, err)
 		}
+		status := designStatus(de.Code)
 		if de.Code == application.DesignErrTooManyRequests {
 			w.Header().Set("Retry-After", "5")
+		}
+		if de.VersionID != "" || de.Design.ID != "" || de.JobID != "" || de.DesignID != "" {
+			body := designErrorBody{
+				Error: de.Code, VersionID: de.VersionID, DesignID: de.DesignID, JobID: de.JobID,
+			}
+			if de.Design.ID != "" {
+				resp := toDesignResponse(de.Design)
+				body.Design = &resp
+			}
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(body)
+			return
 		}
 		writeJSONError(w, status, de.Code)
 		return

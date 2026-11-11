@@ -356,6 +356,109 @@ func TestDesigns_GetRetryAfterCooldownAndLimit(t *testing.T) {
 	}
 }
 
+func TestDesigns_GetRetryAfterActiveJobAndMissingLatest(t *testing.T) {
+	t.Parallel()
+	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaa3"
+	uploadID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaa4"
+	svc, _ := designSvc(t, tplID, uploadID, domain.TemplatePublished)
+	svc.MaxAttempts = 3
+	svc.Cooldown = 30 * time.Second
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	svc.Clock = testutil.NewFakeClock(now)
+	jobID := "cccccccc-cccc-4ccc-8ccc-dddddddddddd"
+	svc.Jobs = &dJobRepo{byID: map[string]domain.GenerationJob{}}
+	designs := svc.Designs.(*dDesignRepo)
+
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs", httpapi.CreateDesign(svc))
+	mux.Handle("GET /api/customizer/designs/{id}", httpapi.GetDesign(svc))
+	mux.Handle("PATCH /api/customizer/designs/{id}", httpapi.PatchDesign(svc))
+
+	body, _ := json.Marshal(map[string]any{
+		"template_id": tplID, "upload_id": uploadID, "texts": map[string]string{"dog_name": "Burek"},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/customizer/designs", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	designs.mu.Lock()
+	d := designs.byID[created.ID]
+	d.Status = domain.DesignGenerating
+	d.GenerationAttempts = 1
+	d.LatestJobID = jobID
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+	svc.Jobs.(*dJobRepo).byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobQueued, Attempt: 1,
+		QueuedAt: now.Add(-time.Second),
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/customizer/designs/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("active get %d %s", rec.Code, rec.Body.String())
+	}
+	var got httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RetryAfter != 30 {
+		t.Fatalf("active job retry_after want 30 got %+v", got)
+	}
+
+	delete(svc.Jobs.(*dJobRepo).byID, jobID)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/customizer/designs/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing latest get %d %s", rec.Code, rec.Body.String())
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if errBody["error"] != application.DesignErrUnavailable {
+		t.Fatalf("get error body: %v", errBody)
+	}
+
+	// Missing latest fails closed before UpdateEditable — texts must not change.
+	designs.mu.Lock()
+	d = designs.byID[created.ID]
+	d.Status = domain.DesignPreviewReady
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+
+	patchBody, _ := json.Marshal(map[string]any{"texts": map[string]string{"dog_name": "Reksio"}})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/api/customizer/designs/"+created.ID, bytes.NewReader(patchBody))
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing latest patch %d %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if errBody["error"] != application.DesignErrUnavailable {
+		t.Fatalf("patch error body: %v", errBody)
+	}
+	designs.mu.Lock()
+	if designs.byID[created.ID].Texts["dog_name"] != "Burek" {
+		t.Fatalf("patch must not persist texts when cooldown preflight fails: %+v", designs.byID[created.ID].Texts)
+	}
+	designs.mu.Unlock()
+}
+
 func TestDesigns_CreateGetAuthPatch(t *testing.T) {
 	t.Parallel()
 	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-111111111111"
@@ -865,6 +968,342 @@ func TestDesigns_ApproveAndClone(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("no bearer clone want 404 got %d", rec.Code)
+	}
+}
+
+type countdownDJobRepo struct {
+	inner     *dJobRepo
+	failAfter int
+	n         int
+	mu        sync.Mutex
+}
+
+func (r *countdownDJobRepo) GetByID(ctx context.Context, id string) (domain.GenerationJob, bool, error) {
+	r.mu.Lock()
+	r.n++
+	n := r.n
+	r.mu.Unlock()
+	if n > r.failAfter {
+		return domain.GenerationJob{}, false, nil
+	}
+	return r.inner.GetByID(ctx, id)
+}
+func (r *countdownDJobRepo) Insert(ctx context.Context, j domain.GenerationJob) error {
+	return r.inner.Insert(ctx, j)
+}
+func (r *countdownDJobRepo) GetByIdempotency(ctx context.Context, designID, key string) (domain.GenerationJob, bool, error) {
+	return r.inner.GetByIdempotency(ctx, designID, key)
+}
+func (r *countdownDJobRepo) GetActiveByDesign(ctx context.Context, designID string) (domain.GenerationJob, bool, error) {
+	return r.inner.GetActiveByDesign(ctx, designID)
+}
+func (r *countdownDJobRepo) BeginGenerating(ctx context.Context, j domain.GenerationJob, d domain.Design, at time.Time, expectedAttempts int, expectedLatestJobID string) error {
+	return r.inner.BeginGenerating(ctx, j, d, at, expectedAttempts, expectedLatestJobID)
+}
+func (r *countdownDJobRepo) ClaimForWork(ctx context.Context, id string, lease time.Duration) (domain.GenerationJob, error) {
+	return r.inner.ClaimForWork(ctx, id, lease)
+}
+func (r *countdownDJobRepo) ClaimLeaseExpired(ctx context.Context, id string, lease time.Duration) (bool, error) {
+	return r.inner.ClaimLeaseExpired(ctx, id, lease)
+}
+func (r *countdownDJobRepo) InvalidateClaim(ctx context.Context, id string) error {
+	return r.inner.InvalidateClaim(ctx, id)
+}
+func (r *countdownDJobRepo) Update(ctx context.Context, j domain.GenerationJob, expected string) error {
+	return r.inner.Update(ctx, j, expected)
+}
+func (r *countdownDJobRepo) PersistArtwork(ctx context.Context, j domain.GenerationJob, artwork domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return r.inner.PersistArtwork(ctx, j, artwork)
+}
+func (r *countdownDJobRepo) CompleteSuccess(ctx context.Context, j domain.GenerationJob, mockup domain.Asset, design domain.Design) ([]ports.DeletedBlobRef, error) {
+	return r.inner.CompleteSuccess(ctx, j, mockup, design)
+}
+func (r *countdownDJobRepo) FinalizeSuccess(ctx context.Context, j domain.GenerationJob, design domain.Design, mockup domain.Asset) ([]ports.DeletedBlobRef, error) {
+	return r.inner.FinalizeSuccess(ctx, j, design, mockup)
+}
+func (r *countdownDJobRepo) CompleteFailure(ctx context.Context, j domain.GenerationJob, design domain.Design) error {
+	return r.inner.CompleteFailure(ctx, j, design)
+}
+func (r *countdownDJobRepo) FailActive(ctx context.Context, id, designID, terminalReason, errorCode string, claimToken int64, at time.Time) error {
+	return r.inner.FailActive(ctx, id, designID, terminalReason, errorCode, claimToken, at)
+}
+
+type failIDAssetRepo struct {
+	inner  *dAssetRepo
+	failID string
+	err    error
+}
+
+func (r *failIDAssetRepo) Insert(ctx context.Context, a domain.Asset) error {
+	return r.inner.Insert(ctx, a)
+}
+func (r *failIDAssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
+	if id == r.failID {
+		return domain.Asset{}, false, r.err
+	}
+	return r.inner.GetByID(ctx, id)
+}
+func (r *failIDAssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) error {
+	return r.inner.SoftDelete(ctx, id, at)
+}
+func (r *failIDAssetRepo) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return r.inner.BindOwnerRef(ctx, assetID, ownerRef, deleteAfter)
+}
+func (r *failIDAssetRepo) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
+	return r.inner.ClearOwnerRef(ctx, assetID, ownerRef)
+}
+func (r *failIDAssetRepo) ClearStorageKey(ctx context.Context, assetID string) error {
+	return r.inner.ClearStorageKey(ctx, assetID)
+}
+
+func TestDesigns_Get_ArtworkLookup503NoDesign(t *testing.T) {
+	t.Parallel()
+	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaa11111111"
+	uploadID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaa22222222"
+	artID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaa33333333"
+	jobID := "aaaaaaaa-bbbb-4ccc-8ddd-aaaa55555555"
+	svc, key := designSvc(t, tplID, uploadID, domain.TemplatePublished)
+	assets := svc.Assets.(*dAssetRepo)
+	designs := svc.Designs.(*dDesignRepo)
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	svc.Clock = testutil.NewFakeClock(now)
+	svc.Cooldown = 0
+	finished := now.Add(-time.Minute)
+	boom := errors.New("postgres dial timeout")
+
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs", httpapi.CreateDesign(svc))
+	mux.Handle("GET /api/customizer/designs/{id}", httpapi.GetDesign(svc))
+
+	body, _ := json.Marshal(map[string]any{
+		"template_id": tplID, "upload_id": uploadID, "texts": map[string]string{"dog_name": "Burek"},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/customizer/designs", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	assets.mu.Lock()
+	assets.byID[artID] = domain.Asset{
+		ID: artID, Type: domain.AssetTypeArtwork, OwnerRef: created.ID, StorageKey: key + ".art",
+		MimeType: "image/png", SizeBytes: 1, Checksum: "sha256:art", DeleteAfter: now.Add(time.Hour),
+	}
+	assets.mu.Unlock()
+	designs.mu.Lock()
+	d := designs.byID[created.ID]
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+	svc.Jobs = &dJobRepo{byID: map[string]domain.GenerationJob{
+		jobID: {
+			ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, Attempt: 1,
+			ArtworkAssetID: artID, FinishedAt: &finished,
+		},
+	}}
+	svc.Assets = &failIDAssetRepo{inner: assets, failID: artID, err: boom}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/customizer/designs/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 got %d %s", rec.Code, rec.Body.String())
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if errBody["error"] != application.DesignErrUnavailable {
+		t.Fatalf("body=%+v", errBody)
+	}
+	if errBody["design_id"] != created.ID || errBody["job_id"] != jobID {
+		t.Fatalf("want design_id/job_id, body=%+v", errBody)
+	}
+	if _, ok := errBody["design"]; ok {
+		t.Fatalf("GET artwork I/O 503 must omit design: %+v", errBody)
+	}
+}
+
+func TestDesigns_Approve_SourceLookupAfterCommit500NoVersionID(t *testing.T) {
+	t.Parallel()
+	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb11111113"
+	uploadID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb22222224"
+	artID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb33333335"
+	jobID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb55555557"
+	svc, key := designSvc(t, tplID, uploadID, domain.TemplatePublished)
+	assets := svc.Assets.(*dAssetRepo)
+	designs := svc.Designs.(*dDesignRepo)
+	store := svc.Store.(*dBlob)
+	store.objects[key] = append([]byte(nil), httpJPEG...)
+	assets.mu.Lock()
+	src := assets.byID[uploadID]
+	src.SizeBytes = int64(len(httpJPEG))
+	src.Checksum = httpSHA(httpJPEG)
+	assets.byID[uploadID] = src
+	assets.mu.Unlock()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	svc.Clock = testutil.NewFakeClock(now)
+	finished := now.Add(-time.Minute)
+	innerJobs := &dJobRepo{byID: map[string]domain.GenerationJob{}}
+	versions := &dVersionRepo{designs: designs, assets: assets}
+	svc.Jobs, svc.Versions = innerJobs, versions
+	svc.EnqueuePrepare = func(context.Context, string, string) error { return nil }
+	svc.IDs = ports.UUIDGenerator{}
+	// Fail source GetByID only — artwork load before ApproveBound still succeeds.
+	svc.Assets = &failIDAssetRepo{inner: assets, failID: uploadID, err: errors.New("postgres dial timeout")}
+
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs", httpapi.CreateDesign(svc))
+	mux.Handle("POST /api/customizer/designs/{id}/approve", httpapi.ApproveDesign(svc))
+
+	// Create uses soft preview path; temporarily restore Assets for create bind/preview soft-fail.
+	svc.Assets = assets
+	body, _ := json.Marshal(map[string]any{
+		"template_id": tplID, "upload_id": uploadID, "texts": map[string]string{"dog_name": "Burek"},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/customizer/designs", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created httpapi.DesignResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	designs.mu.Lock()
+	d := designs.byID[created.ID]
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+	artKey := key + ".art"
+	store.objects[artKey] = append([]byte(nil), httpPNG...)
+	assets.mu.Lock()
+	assets.byID[artID] = domain.Asset{
+		ID: artID, Type: domain.AssetTypeArtwork, OwnerRef: created.ID, StorageKey: artKey,
+		MimeType: "image/png", SizeBytes: int64(len(httpPNG)), Checksum: httpSHA(httpPNG),
+		DeleteAfter: time.Now().Add(time.Hour),
+	}
+	assets.mu.Unlock()
+	innerJobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, ArtworkAssetID: artID,
+		Provider: "fake", Model: "m", PromptVersion: "pv1", ParametersJSON: []byte(`{}`),
+		FinishedAt: &finished,
+	}
+	svc.Assets = &failIDAssetRepo{inner: assets, failID: uploadID, err: errors.New("postgres dial timeout")}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/customizer/designs/"+created.ID+"/approve", nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 got %d %s", rec.Code, rec.Body.String())
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatal(err)
+	}
+	if errBody["error"] != "internal_error" {
+		t.Fatalf("body=%+v", errBody)
+	}
+	if _, ok := errBody["version_id"]; ok {
+		t.Fatalf("source I/O 500 must omit version_id: %+v", errBody)
+	}
+	d2, ok := designs.byID[created.ID]
+	if !ok || d2.Status != domain.DesignApproved || d2.ApprovedVersionID == "" {
+		t.Fatalf("approve must still commit: %+v", d2)
+	}
+}
+
+func TestDesigns_Approve_ViewFail503HasVersionIDNoDesign(t *testing.T) {
+	t.Parallel()
+	tplID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb11111112"
+	uploadID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb22222223"
+	artID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb33333334"
+	jobID := "aaaaaaaa-bbbb-4ccc-8ddd-bbbb55555556"
+	svc, key := designSvc(t, tplID, uploadID, domain.TemplatePublished)
+	assets := svc.Assets.(*dAssetRepo)
+	designs := svc.Designs.(*dDesignRepo)
+	store := svc.Store.(*dBlob)
+	store.objects[key] = append([]byte(nil), httpJPEG...)
+	assets.mu.Lock()
+	src := assets.byID[uploadID]
+	src.SizeBytes = int64(len(httpJPEG))
+	src.Checksum = httpSHA(httpJPEG)
+	assets.byID[uploadID] = src
+	assets.mu.Unlock()
+	innerJobs := &dJobRepo{byID: map[string]domain.GenerationJob{}}
+	jobs := &countdownDJobRepo{inner: innerJobs, failAfter: 1} // approve load ok; view cooldown missing
+	versions := &dVersionRepo{designs: designs, assets: assets}
+	svc.Jobs, svc.Versions = jobs, versions
+	svc.Cooldown = 30 * time.Second
+	svc.MaxAttempts = 3
+	svc.EnqueuePrepare = func(context.Context, string, string) error { return nil }
+	svc.IDs = ports.UUIDGenerator{}
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	svc.Clock = testutil.NewFakeClock(now)
+	finished := now.Add(-time.Minute)
+
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/customizer/designs", httpapi.CreateDesign(svc))
+	mux.Handle("POST /api/customizer/designs/{id}/approve", httpapi.ApproveDesign(svc))
+
+	body, _ := json.Marshal(map[string]any{
+		"template_id": tplID, "upload_id": uploadID, "texts": map[string]string{"dog_name": "Burek"},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/customizer/designs", bytes.NewReader(body)))
+	var created httpapi.DesignResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	designs.mu.Lock()
+	d := designs.byID[created.ID]
+	d.Status = domain.DesignPreviewReady
+	d.LatestJobID = jobID
+	d.GenerationAttempts = 1
+	designs.byID[created.ID] = d
+	designs.mu.Unlock()
+	artKey := key + ".art"
+	store.objects[artKey] = append([]byte(nil), httpPNG...)
+	assets.mu.Lock()
+	assets.byID[artID] = domain.Asset{
+		ID: artID, Type: domain.AssetTypeArtwork, OwnerRef: created.ID, StorageKey: artKey,
+		MimeType: "image/png", SizeBytes: int64(len(httpPNG)), Checksum: httpSHA(httpPNG),
+		DeleteAfter: time.Now().Add(time.Hour),
+	}
+	assets.mu.Unlock()
+	innerJobs.byID[jobID] = domain.GenerationJob{
+		ID: jobID, DesignID: created.ID, Status: domain.JobSucceeded, ArtworkAssetID: artID,
+		Provider: "fake", Model: "m", PromptVersion: "pv1", ParametersJSON: []byte(`{}`),
+		FinishedAt: &finished,
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/customizer/designs/"+created.ID+"/approve", nil)
+	req.Header.Set("Authorization", "Bearer "+created.OwnerToken)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("want 503 got %d %s", rec.Code, rec.Body.String())
+	}
+	var errBody map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &errBody)
+	if errBody["error"] != application.DesignErrUnavailable {
+		t.Fatalf("body=%+v", errBody)
+	}
+	if errBody["version_id"] == nil || errBody["version_id"] == "" {
+		t.Fatalf("want version_id, body=%+v", errBody)
+	}
+	if _, ok := errBody["design"]; ok {
+		t.Fatalf("view-fail 503 must omit design: %+v", errBody)
 	}
 }
 

@@ -378,7 +378,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 - **Goal:** Max attempts per design (config, default 3) enforced in the domain; UI-visible remaining count; cooldown between attempts; exceeding → `429` with `limit_reached` code.
 - **Scope:** Design DTO exposes attempt budget + `retry_after`; config `cooldown_seconds` (default 30, `0` disables); hard cap checked before cooldown; spent budget → `429` `limit_reached` (no `Retry-After`); cooling down → `429` `cooldown` with header + JSON `retry_after`. **Policy:** every `RequestGeneration` (including after `generation_failed`) consumes budget and cooldown; provider-fault refunds are a follow-up.
-- **Tests:** Unit: limit boundary + cooldown helpers; feature: 4th attempt inside cooldown window → `limit_reached`; cooldown then success; missing latest job fail-closed; HTTP mappings.
+- **Tests:** Unit: limit boundary + cooldown helpers (`finished_at` anchor only); feature: 4th attempt inside cooldown window → `limit_reached`; cooldown then success; missing latest / null `finished_at` → `503`; design GET/PATCH fail-closed + active `retry_after`; approve view / PATCH post-commit honesty; HTTP `429` bodies include `job_id`.
 - **Safe delivery:** Lower risk once enabled; purely restrictive.
 
 ### Track S — Storefront
