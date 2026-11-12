@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,7 +37,22 @@ var (
 // DSN may be a postgres(ql):// URL or a libpq keyword/value string; both are
 // accepted via pgx.ParseConfig. Any search_path in SHOPANDA_TEST_DSN is
 // ignored — OpenIsolated always forces the dedicated schema.
+//
+// Catalog tests that call the storefront need OpenIsolatedWithCore.
 func OpenIsolated(t *testing.T, packageSlug string) *sql.DB {
+	t.Helper()
+	return openIsolated(t, packageSlug, false)
+}
+
+// OpenIsolatedWithCore opens an isolated schema, applies Shopanda core
+// migrations, then Metal Dogs plugin migrations, and drops the schema on cleanup.
+// Skip when SHOPANDA_TEST_DSN is unset, same as OpenIsolated.
+func OpenIsolatedWithCore(t *testing.T, packageSlug string) *sql.DB {
+	t.Helper()
+	return openIsolated(t, packageSlug, true)
+}
+
+func openIsolated(t *testing.T, packageSlug string, core bool) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("SHOPANDA_TEST_DSN")
 	if dsn == "" {
@@ -75,6 +92,32 @@ func OpenIsolated(t *testing.T, packageSlug string) *sql.DB {
 		t.Fatalf("ping isolated db: %v", err)
 	}
 
+	var current string
+	if err := db.QueryRow(`SELECT current_schema()`).Scan(&current); err != nil {
+		_ = db.Close()
+		dropSchemaBestEffort(t, dsn, schema)
+		t.Fatalf("current_schema: %v", err)
+	}
+	if current != schema {
+		_ = db.Close()
+		dropSchemaBestEffort(t, dsn, schema)
+		t.Fatalf("isolated search_path: current_schema=%q want %q", current, schema)
+	}
+
+	if core {
+		dir, err := coreMigrationsDir()
+		if err != nil {
+			_ = db.Close()
+			dropSchemaBestEffort(t, dsn, schema)
+			t.Fatalf("core migrations dir: %v", err)
+		}
+		if _, err := migrate.Run(db, dir); err != nil {
+			_ = db.Close()
+			dropSchemaBestEffort(t, dsn, schema)
+			t.Fatalf("core migrations: %v", err)
+		}
+	}
+
 	if _, err := migrate.RunPluginFS(context.Background(), db, metaldogs.PluginName, metaldogs.MigrationFS(), metaldogs.MigrationDir); err != nil {
 		_ = db.Close()
 		dropSchemaBestEffort(t, dsn, schema)
@@ -86,6 +129,24 @@ func OpenIsolated(t *testing.T, packageSlug string) *sql.DB {
 		dropSchemaBestEffort(t, dsn, schema)
 	})
 	return db
+}
+
+// coreMigrationsDir is the Shopanda core migrations directory. Resolved from
+// this file so callers in other packages do not depend on the test process cwd.
+func coreMigrationsDir() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("locate testutil source")
+	}
+	dir := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", "migrations"))
+	st, err := os.Stat(dir)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", dir)
+	}
+	return dir, nil
 }
 
 func uniqueSchemaName(slug string) string {

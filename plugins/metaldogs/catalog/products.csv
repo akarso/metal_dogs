@@ -1,0 +1,6 @@
+name,slug,parent_sku,sku,type,status,variant_name,size
+Metal Dogs custom tee,mdogs-tee,MDOGS-TEE,MDOGS-TEE-S,configurable,draft,S,S
+Metal Dogs custom tee,mdogs-tee,MDOGS-TEE,MDOGS-TEE-M,configurable,draft,M,M
+Metal Dogs custom tee,mdogs-tee,MDOGS-TEE,MDOGS-TEE-L,configurable,draft,L,L
+Metal Dogs custom tee,mdogs-tee,MDOGS-TEE,MDOGS-TEE-XL,configurable,draft,XL,XL
+Metal Dogs custom tee,mdogs-tee,MDOGS-TEE,MDOGS-TEE-XXL,configurable,draft,XXL,XXL

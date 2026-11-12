@@ -12,6 +12,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/catalog"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
@@ -24,11 +25,18 @@ const PluginName = "metaldogs"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets   ports.AssetStore
-	uploads  *application.UploadService
-	designs  *application.DesignService
-	generate *application.GenerateService
-	worker   *application.GenerateWorker
+	assets       ports.AssetStore
+	uploads      *application.UploadService
+	designs      *application.DesignService
+	generate     *application.GenerateService
+	worker       *application.GenerateWorker
+	catalogRepos func(*sql.DB) (catalog.Repos, error)
+}
+
+// UseCatalogRepos supplies catalog repositories for metaldogs:catalog-seed.
+// The plugin cannot import infrastructure adapters (PR-1017); the composition root builds them.
+func (p *Plugin) UseCatalogRepos(open func(*sql.DB) (catalog.Repos, error)) {
+	p.catalogRepos = open
 }
 
 // New returns the Metal Dogs plugin.
@@ -91,7 +99,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be <= %d", maxCooldownSecs)
 	}
 
-	registerCLICommands(app)
+	registerCLICommands(app, p)
 
 	store, err := resolveAssetStore(app)
 	if err != nil {

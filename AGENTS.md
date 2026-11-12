@@ -169,6 +169,16 @@ When the Go application is introduced:
 - Prefer concrete types at call sites and interfaces at dependency boundaries.
 - Run the repository's formatter, vet/linter, and test commands before completing a change.
 
+## Code comments
+
+- Default to no comment; names and structure should explain the code.
+- Comment only the *why*: a hidden constraint, workaround, compatibility reason, non-obvious decision (link the ADR/ticket), or a trap (ordering, concurrency, units, time zones).
+- One line; two or three at most. Never half a screen.
+- Do not narrate what the next line does, repeat the name or parameters, describe the change ("added", "now", "updated"), leave commented-out code, or use banner/section/bullet comments.
+- Exported identifiers keep a short godoc sentence (1–2 sentences) only where it adds information beyond the name.
+- Do not add comments to code you are not changing, and do not strip existing comments in unrelated diffs.
+- Test: if deleting the comment loses nothing the code does not already say, delete it.
+
 ## Testing
 
 Every behavior change should be covered at the lowest useful level and at important system boundaries.
@@ -235,3 +245,17 @@ Do not weaken or delete a valid test merely to make a change pass.
 - Failure, retry, idempotency, privacy, and cost implications have been considered.
 - Public contracts and documentation are updated.
 - No secrets, generated artifacts, private photos, or local IDE files are included.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix), recorded as a `Status:` line in issue files. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
