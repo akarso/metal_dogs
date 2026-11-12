@@ -6,7 +6,7 @@
 
 ## What shipped
 
-- Merged explicit upstream SHA [`a8cbcb18`](https://github.com/akarso/shopanda/commit/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512) (`upstream/dev` tip; **not** on `upstream/main` yet).
+- Merged explicit upstream SHA `a8cbcb18` (`upstream/dev` tip at the time; **not** on `upstream/main` yet).
 - Absorbs [shopanda#568](https://github.com/akarso/shopanda/pull/568), [#570](https://github.com/akarso/shopanda/pull/570), [#571](https://github.com/akarso/shopanda/pull/571), plus [#566](https://github.com/akarso/shopanda/pull/566) product-packaging (`sitekit`, `scripts/product-init`, `scripts/ci`).
 - Kept Metal Dogs docs stubs (no vendored upstream guides, diagrams, or phase trees).
 - CR follow-up harden: re-listed F3 residuals (`BoundQueue`, sync reinjection, cache-control, product registration tests); fail-closed `release.yml` image name; reserve `metaldogs` slug; `make docs-policy` → MD hardened checker; previous-pin full-SHA + bare `guides/` link scans; absorb canary script.

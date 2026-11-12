@@ -2,7 +2,7 @@
 
 Shopanda extends through **in-process Go plugins** — no separate services, no dynamic discovery in v1.
 
-This document describes the **three-tier model**, extension boundaries, and what authors can do today. For step-by-step integration, see [Developer Guide](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEVELOPER.md). The original Phase 1 authoring dump lives on the `dev` branch under `docs/phase-1-core/specs/PLUGINS.md`.
+This document describes the **three-tier model**, extension boundaries, and what authors can do today. For step-by-step integration, see [Developer Guide](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/DEVELOPER.md). The original Phase 1 authoring dump lives on the `dev` branch under `docs/phase-1-core/specs/PLUGINS.md`.
 
 ---
 
@@ -90,7 +90,7 @@ This is an **in-module** plugin model (same Go module, compile-time registration
 
 ## Extension mechanisms
 
-Not sure which mechanism fits your task? [EXTENSION_POINTS.md](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/EXTENSION_POINTS.md) is a decision guide with a picker, real code snippets, and the full registry catalog. This section is the flat API reference once you already know what you're looking for.
+Not sure which mechanism fits your task? [EXTENSION_POINTS.md](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/EXTENSION_POINTS.md) is a decision guide with a picker, real code snippets, and the full registry catalog. This section is the flat API reference once you already know what you're looking for.
 
 Available today through `plugin.App`:
 
@@ -111,7 +111,7 @@ Available today through `plugin.App`:
 | **Asset manifest** | `Assets(registrant).Register(manifest)` | Route-gated CSS/JS in layout head/footer without theme forks |
 | **Promotion rule evaluators** | `PromotionRules(registrant).RegisterCatalogCondition/Action` (+ cart variants) | Custom JSON `"type"` values for catalog/cart promotions (PR-862) |
 | **Plugin schema** | `plugin.Migrator` (`Migration() MigrationSpec`) | One embed FS per plugin. Collected **without** `Init` by `app migrate` / `setup`; applied by `InitAll` before `Init` when `Bootstrap.DB` is set (PR-1086). Versions are `plugin:{Name()}:{basename}`. Set `Options.AdoptBareBasenames` only for a frozen legacy allowlist. |
-| **Outbound sync jobs** | `app.Integration(slug).RegisterSyncJob` or `pluginsdk` `RegisterCron` / `RegisterOnEvent` / `RegisterManual` + `Enqueue` | Cron / event / manual → **`integration.sync.{slug}.{name}` only** (no free-form `{slug}.*` job types). **Event-driven:** `RegisterOnEvent` (envelope `trigger=event`). **Run-now:** `Enqueue` after composition-root `BindQueue` (envelope `trigger=manual`). Handlers must be idempotent. Do not use Manual+`OnAsync`→`Enqueue` as the default event path — that stamps every run as manual. Bus enqueue failures are not retried. Observability (`request_id` injection, attempts on `SyncJobContext`, job duration metrics, `CountsByType`): [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/SYNC_JOB_OBSERVABILITY.md). |
+| **Outbound sync jobs** | `app.Integration(slug).RegisterSyncJob` or `pluginsdk` `RegisterCron` / `RegisterOnEvent` / `RegisterManual` + `Enqueue` | Cron / event / manual → **`integration.sync.{slug}.{name}` only** (no free-form `{slug}.*` job types). **Event-driven:** `RegisterOnEvent` (envelope `trigger=event`). **Run-now:** `Enqueue` after composition-root `BindQueue` (envelope `trigger=manual`). Handlers must be idempotent. Do not use Manual+`OnAsync`→`Enqueue` as the default event path — that stamps every run as manual. Bus enqueue failures are not retried. Observability (`request_id` injection, attempts on `SyncJobContext`, job duration metrics, `CountsByType`): [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/SYNC_JOB_OBSERVABILITY.md). |
 
 **Plugin-owned tables:** implement `plugin.Migrator` once. Do not call `migrate.RunPluginFS` from `Init` — `InitAllContext` applies the same spec on boot (`PluginMigrateApply`), or verifies pending versions (`PluginMigrateVerify` for short-lived CLIs). Prefer `app migrate` / `setup` before processes start; that path never calls `InitAll`. Calling `Init` directly does **not** create tables. A `depends_on` sort error with any Migrator registered fails every `InitAll` caller (Failed=Registered) — check `plugin.InitSummaryError`. Do not use raw `migrate.RunFS` (shared basename namespace, no lock).
 
@@ -169,13 +169,13 @@ app.Slots("acme/badges").RegisterRenderer("pdp.info", slots.PlacementAppend, 100
 
 Theme markers use `{{slot_container "anchor"}}…{{/slot_container}}` or explicit `{{slot . "anchor" "placement"}}`. Nested `slot_container` blocks are supported (depth-aware matching). Missing markers are a silent no-op — plugins do not auto-inject. Global CSS/JS belongs in the **asset manifest**, not slots.
 
-**Stable v0 contracts:** use [`pkg/extapi`](pkg/extapi) for hook/slot names, placements, and handler types (`HookHandler`, `SlotRenderer`). See [Extension API guide](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/EXTENSION_API.md). Theme authors: [Theme slots & inheritance guide](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/THEME_SLOTS.md) (`parent:` in `theme.yaml`, partials, preserving anchors).
+**Stable v0 contracts:** use [`pkg/extapi`](pkg/extapi) for hook/slot names, placements, and handler types (`HookHandler`, `SlotRenderer`). See [Extension API guide](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/EXTENSION_API.md). Theme authors: [Theme slots & inheritance guide](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/THEME_SLOTS.md) (`parent:` in `theme.yaml`, partials, preserving anchors).
 
 **Reference plugin:** [plugins/slotsdemo](plugins/slotsdemo/README.md) — layout + PDP slot renderers with integration tests.
 
-For combining multiple plugins (ordering, shared context, cart/import/ERP patterns): [Multi-Plugin Composition](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/PLUGIN_COMPOSITION.md).
+For combining multiple plugins (ordering, shared context, cart/import/ERP patterns): [Multi-Plugin Composition](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/PLUGIN_COMPOSITION.md).
 
-**Integrator / ERP work:** cart rules, CSV import transforms, SAP-style inbound REST, warehouse/PIM sync — see [Integrator Platform spec](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/INTEGRATOR_PLATFORM.md). Use explicit ports and pipeline hooks; do not fork core importers or patch `main.go` when `RegisterPublicRoute` suffices.
+**Integrator / ERP work:** cart rules, CSV import transforms, SAP-style inbound REST, warehouse/PIM sync — see [Integrator Platform spec](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/INTEGRATOR_PLATFORM.md). Use explicit ports and pipeline hooks; do not fork core importers or patch `main.go` when `RegisterPublicRoute` suffices.
 
 ---
 
@@ -200,19 +200,19 @@ plugins:
     enabled: true              # default: false — read-only catalog API at POST /api/v1/graphql
 ```
 
-See `configs/config.example.yaml` and [Deployment Guide](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEPLOYMENT.md).
+See `configs/config.example.yaml` and [Deployment Guide](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/DEPLOYMENT.md).
 
 ---
 
 ## Product sites
 
-For a separate product repository (own `origin`, Shopanda as fetch-only `upstream`, optional sample CI), see [PRODUCT_SITES](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/PRODUCT_SITES.md) and run:
+For a separate product repository (own `origin`, Shopanda as fetch-only `upstream`, optional sample CI), see [PRODUCT_SITES](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/PRODUCT_SITES.md) and run:
 
 ```bash
 bash scripts/product-init.sh --slug myproduct
 ```
 
-Reference scaffold output (unregistered): [`plugins/sitekit/`](plugins/sitekit/). Job types remain `integration.sync.{slug}.{name}` only — see [PLUGIN_RUNTIME_CONTRACT](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/PLUGIN_RUNTIME_CONTRACT.md).
+Reference scaffold output (unregistered): [`plugins/sitekit/`](plugins/sitekit/). Job types remain `integration.sync.{slug}.{name}` only — see [PLUGIN_RUNTIME_CONTRACT](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/PLUGIN_RUNTIME_CONTRACT.md).
 
 ## Add an external plugin
 
@@ -273,13 +273,13 @@ Plugin settings (string, int, bool) can be registered with `RegisterConfig` and 
 
 ## Reference links
 
-- [Developer Guide](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEVELOPER.md) — architecture, examples, API usage
-- [Integrator Platform spec](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/INTEGRATOR_PLATFORM.md) — cart/pricing, CSV import hooks, ERP integration
+- [Developer Guide](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/DEVELOPER.md) — architecture, examples, API usage
+- [Integrator Platform spec](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/INTEGRATOR_PLATFORM.md) — cart/pricing, CSV import hooks, ERP integration
 - [Example external plugin](plugins/example/README.md) — pricing step, event listener, permission
 - [Promotion rule reference plugin](plugins/promodemo/README.md) — custom catalog promotion JSON rule types (PR-862)
 - [Commercial licensing](docs/COMMERCIAL.md) — OSS vs B2B module boundary
 - [B2B plugin scaffold](plugins/b2b/README.md)
-- [C4 component diagram](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/diagrams/c4-component.md) — registry wiring
+- [C4 component diagram](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/diagrams/c4-component.md) — registry wiring
 - Working history (phase roadmaps, PR-544 research, historical specs): the `dev` branch under `docs/phase-*` (those paths are not on `main`)
 
 ---

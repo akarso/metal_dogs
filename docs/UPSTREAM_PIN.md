@@ -6,9 +6,9 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512` |
-| Pinned subject | Merge pull request #571 from akarso/pr-570-media-harden-followup |
-| Verified locally | 2026-11-08 (absorb #568 + #570 + #571; explicit `upstream/dev` tip — not yet on `upstream/main`) |
+| Pinned commit | `43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b` |
+| Pinned subject | Merge pull request #574 from akarso/dev |
+| Verified locally | 2026-11-12 (explicit `upstream/main`; tree delta from `a8cbcb18` is #573 public catalog price and stock) |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
 
@@ -22,5 +22,7 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 - [shopanda#570](https://github.com/akarso/shopanda/pull/570) — local SignedURLStorage / `BindMediaStorage` / `PrivateBlobsPrefix` (`50f812d6`)
 - [shopanda#571](https://github.com/akarso/shopanda/pull/571) — media harden follow-up (`a8cbcb18`, includes `39684035`)
 - [shopanda#566](https://github.com/akarso/shopanda/pull/566) — product-packaging (`sitekit`, `scripts/product-init`, `scripts/ci`)
+- [shopanda#573](https://github.com/akarso/shopanda/pull/573) — public catalog price and on-hand stock (`479e4c44`)
+- [shopanda#574](https://github.com/akarso/shopanda/pull/574) — promote that `dev` tip onto `main` (`43f0a1ed`)
 
 **Still Metal Dogs–only** (do not claim full F3 absorb): `App.BoundQueue()`, sync-handler `request_id`→ctx reinjection, plus registration/cache-control wiring — listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`.
