@@ -208,12 +208,17 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `scripts/product-init/reserved-slugs.txt` | Includes `metaldogs` so `--force` cannot clobber the product plugin | CR-06 |
 | `internal/platform/plugin/providers.go` (+ test) | `App.BoundQueue()` — prefer `BindQueue` over `RegisterQueue` for health/read paths | F3 residual (not in upstream #568) |
 | `internal/application/integration/sync_runtime.go` (+ test) | Sync handler re-injects payload `request_id` into ctx when worker ctx has none | F3 residual (not in upstream #568) |
+| `cmd/api/job_queue_bind.go`, `cmd/api/jobs_cli.go`, `cmd/api/bind_queue_test.go` | Enabled plugin installs the generate claim fence on the bound queue (HTTP and `jobs:retry`) | C4 |
+| `cmd/api/main.go` | `jobs:retry` help includes reclaim of stale processing | C4 |
+| `internal/domain/jobs/job.go`, `worker.go` (+ `worker_test.go`) | Delivery fence: `Complete`/`Fail` take the dequeued attempt; `ErrSkipOutcome` does not write a platform outcome | C4 |
+| `internal/domain/jobs/admin.go` | `Requeue`, and `Retry` reclaims processing older than `DefaultStaleProcessingLease` | C4 |
+| `internal/application/integration/sync_manual_roundtrip_test.go`, `internal/platform/plugin/sync_job_test.go`, `internal/platform/runtime/scheduler_test.go` | Call sites follow the attempts fence | C4 |
 | `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go`, `config_test.go` MetalDogs cases | Product registration / migrate / config coverage | F1+ |
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Depends on residual `BoundQueue` + sync reinjection above | F3 |
 | `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; C2 `UploadService` Put + `metaldogs_assets` | F4 / C2 |
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
 | `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
 
-**Pin absorb honesty:** #568 / #570 / #571 platform *merges* are in tree at `a8cbcb18`, but F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
+**Pin absorb honesty:** #568 / #570 / #571 platform merges landed at `a8cbcb18` and remain at pin `43f0a1ed`. F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). C4 still carries the generate claim fence and the attempts delivery fence on `jobs.Queue`. The #573 delta did not touch those files. Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface. G0 adds offline `metaldogs:eval` (fake provider).
