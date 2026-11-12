@@ -150,6 +150,69 @@ func TestCatalogSeed_DotDecimal(t *testing.T) {
 	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 8049)
 }
 
+func TestCatalogSeed_ProductRepoWithoutWithTxWritesNothing(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_notx")
+	err := runCatalogSeedErrRepos(t, db, repoCatalogDir(t), func(db *sql.DB) (mdcatalog.Repos, error) {
+		repos, err := openCatalogRepos(db)
+		if err != nil {
+			return mdcatalog.Repos{}, err
+		}
+		repos.Products = productRepoNoTx{ProductRepository: repos.Products}
+		return repos, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support WithTx") {
+		t.Fatalf("err = %v", err)
+	}
+
+	activateCatalogProduct(t, db)
+	srv := newCatalogStorefront(t, db)
+	if products := listCatalogProducts(t, srv); len(products) != 0 {
+		t.Fatalf("import without WithTx visible: %+v", products)
+	}
+	if status := catalogGET(t, srv, "/api/v1/products/mdogs-tee"); status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+}
+
+func TestCatalogSeed_ExistingProductMissingParentSKU(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent_existing")
+	dir := repoCatalogDir(t)
+	runCatalogSeed(t, db, dir)
+
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := catalog.WithOperatorProductReadScope(context.Background())
+	product, err := repo.FindBySlug(ctx, "mdogs-tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product == nil {
+		t.Fatal("product mdogs-tee missing")
+	}
+	delete(product.Attributes, "parent_sku")
+	if err := repo.Update(ctx, product); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM variants WHERE sku = $1`, "MDOGS-TEE-XXL"); err != nil {
+		t.Fatal(err)
+	}
+
+	runCatalogSeed(t, db, dir)
+	activateCatalogProduct(t, db)
+
+	srv := newCatalogStorefront(t, db)
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 || products[0].Attributes["parent_sku"] != "MDOGS-TEE" {
+		t.Fatalf("product = %+v", products)
+	}
+	if products[0].CreatedAt == "" || products[0].CreatedAt == products[0].UpdatedAt {
+		t.Fatalf("existing product was recreated: created %s updated %s", products[0].CreatedAt, products[0].UpdatedAt)
+	}
+	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 8049)
+}
+
 func TestCatalogSeed_ParentSKUWrittenWithProduct(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent_insert")
 	runCatalogSeed(t, db, repoCatalogDir(t))
@@ -298,10 +361,15 @@ func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 
 func runCatalogSeedErr(t *testing.T, db *sql.DB, dir string) error {
 	t.Helper()
+	return runCatalogSeedErrRepos(t, db, dir, openCatalogRepos)
+}
+
+func runCatalogSeedErrRepos(t *testing.T, db *sql.DB, dir string, open func(*sql.DB) (mdcatalog.Repos, error)) error {
+	t.Helper()
 	app := testApp(t, true)
 	reg := plugin.NewRegistry(app.Logger)
 	plug := metaldogs.New()
-	plug.UseCatalogRepos(openCatalogRepos)
+	plug.UseCatalogRepos(open)
 	reg.Register(plug)
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
@@ -408,6 +476,11 @@ func seedPLNStore(t *testing.T, stores *postgres.StoreRepo) {
 	if err := stores.Create(context.Background(), &s); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Embedding the interface drops ProductRepo.WithTx from the method set.
+type productRepoNoTx struct {
+	catalog.ProductRepository
 }
 
 func openCatalogRepos(db *sql.DB) (mdcatalog.Repos, error) {

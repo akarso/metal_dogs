@@ -95,23 +95,30 @@ func Seed(ctx context.Context, repos Repos, dir string) error {
 		if err != nil {
 			return fmt.Errorf("metaldogs:catalog-seed: find product %q: %w", slug, err)
 		}
+		if stored != nil {
+			if err := ensureParentSKU(opCtx, productRepo, slug, rows[0].parentSKU); err != nil {
+				return err
+			}
+		}
 		body, err := productCSV(fresh, stored == nil)
 		if err != nil {
 			return err
 		}
-		result, err := importer.NewProductImporter(
-			productsWithParentSKU(productRepo, map[string]string{slug: rows[0].parentSKU}),
-			variantRepo,
-			db,
-		).Import(ctx, bytes.NewReader(body))
+		productWriter, err := productsWithParentSKU(productRepo, map[string]string{slug: rows[0].parentSKU})
+		if err != nil {
+			return err
+		}
+		result, err := importer.NewProductImporter(productWriter, variantRepo, db).Import(ctx, bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("metaldogs:catalog-seed: products: %w", err)
 		}
 		if err := resultErrors("products", result.Errors); err != nil {
 			return err
 		}
-		if err := ensureParentSKU(opCtx, productRepo, slug, rows[0].parentSKU); err != nil {
-			return err
+		if stored == nil {
+			if err := ensureParentSKU(opCtx, productRepo, slug, rows[0].parentSKU); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -183,18 +190,15 @@ type parentSKUProducts struct {
 	bySlug map[string]string
 }
 
-func productsWithParentSKU(inner domcat.ProductRepository, bySlug map[string]string) domcat.ProductRepository {
-	wrapped := parentSKUProducts{ProductRepository: inner, bySlug: bySlug}
-	if binder, ok := inner.(productTxBinder); ok {
-		wrapped.bind = binder.WithTx
+func productsWithParentSKU(inner domcat.ProductRepository, bySlug map[string]string) (domcat.ProductRepository, error) {
+	binder, ok := inner.(productTxBinder)
+	if !ok {
+		return nil, fmt.Errorf("metaldogs:catalog-seed: product repository does not support WithTx")
 	}
-	return wrapped
+	return parentSKUProducts{ProductRepository: inner, bind: binder.WithTx, bySlug: bySlug}, nil
 }
 
 func (p parentSKUProducts) WithTx(tx *sql.Tx) domcat.ProductRepository {
-	if p.bind == nil {
-		return p
-	}
 	return parentSKUProducts{ProductRepository: p.bind(tx), bind: p.bind, bySlug: p.bySlug}
 }
 
