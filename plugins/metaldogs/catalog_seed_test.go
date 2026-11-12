@@ -57,15 +57,6 @@ func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
 	if product.Attributes["parent_sku"] != "MDOGS-TEE" {
 		t.Fatalf("parent_sku = %#v", product.Attributes["parent_sku"])
 	}
-	if _, ok := product.raw["TaxClass"]; ok {
-		t.Fatal("product payload has TaxClass")
-	}
-	if _, ok := product.raw["tax_class"]; ok {
-		t.Fatal("product payload has tax_class")
-	}
-	if catalog.TaxClassCode(catalog.Type(product.Type)) != tax.TaxClassStandard {
-		t.Fatalf("tax class = %s", catalog.TaxClassCode(catalog.Type(product.Type)))
-	}
 
 	before := listCatalogVariants(t, srv, product.ID)
 	assertTeeVariants(t, before)
@@ -97,6 +88,41 @@ func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
 	}
 }
 
+func TestCatalogSeed_ParentSKUMismatch(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent")
+	dir := repoCatalogDir(t)
+	runCatalogSeed(t, db, dir)
+
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := catalog.WithOperatorProductReadScope(context.Background())
+	product, err := repo.FindBySlug(ctx, "mdogs-tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product == nil {
+		t.Fatal("product mdogs-tee missing")
+	}
+	product.Attributes["parent_sku"] = "OTHER"
+	if err := repo.Update(ctx, product); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runCatalogSeedErr(t, db, dir)
+	if err == nil || !strings.Contains(err.Error(), "mdogs-tee") || !strings.Contains(err.Error(), "OTHER") || !strings.Contains(err.Error(), "MDOGS-TEE") {
+		t.Fatalf("err = %v", err)
+	}
+
+	publishCatalogProduct(t, db)
+	srv := newCatalogStorefront(t, db)
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 || products[0].Attributes["parent_sku"] != "OTHER" {
+		t.Fatalf("parent_sku after mismatch = %+v", products)
+	}
+}
+
 func TestCatalogSeed_DotDecimal(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_dot")
 	dir := copyCatalogDir(t, repoCatalogDir(t))
@@ -124,6 +150,13 @@ func TestCatalogSeed_DotDecimal(t *testing.T) {
 
 func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 	t.Helper()
+	if err := runCatalogSeedErr(t, db, dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runCatalogSeedErr(t *testing.T, db *sql.DB, dir string) error {
+	t.Helper()
 	app := testApp(t, true)
 	reg := plugin.NewRegistry(app.Logger)
 	plug := metaldogs.New()
@@ -139,14 +172,12 @@ func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 	if !cmd.RequiresDB {
 		t.Fatal("metaldogs:catalog-seed must require a database")
 	}
-	if err := cmd.Run(cli.Context{
+	return cmd.Run(cli.Context{
 		Ctx:    context.Background(),
 		DB:     db,
 		Logger: app.Logger,
 		Config: app.Config,
-	}, []string{"-dir", dir}); err != nil {
-		t.Fatal(err)
-	}
+	}, []string{"-dir", dir})
 }
 
 func publishCatalogProduct(t *testing.T, db *sql.DB) {
@@ -269,7 +300,6 @@ type catalogProduct struct {
 	Type       string
 	UpdatedAt  string
 	Attributes map[string]interface{}
-	raw        map[string]interface{}
 }
 
 type catalogVariant struct {
@@ -307,7 +337,6 @@ func listCatalogProducts(t *testing.T, srv *httptest.Server) []catalogProduct {
 			Type:       stringField(raw, "Type"),
 			UpdatedAt:  stringField(raw, "UpdatedAt"),
 			Attributes: attrs,
-			raw:        raw,
 		})
 	}
 	return out

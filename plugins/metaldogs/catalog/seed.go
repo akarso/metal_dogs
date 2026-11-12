@@ -175,14 +175,20 @@ func ensureParentSKU(ctx context.Context, products domcat.ProductRepository, slu
 	if product == nil {
 		return fmt.Errorf("metaldogs:catalog-seed: product %q not found", slug)
 	}
-	if product.Attributes[parentSKUAttribute] == parentSKU {
-		return nil
-	}
 	if product.Attributes == nil {
 		product.Attributes = map[string]interface{}{}
 	}
-	if _, exists := product.Attributes[parentSKUAttribute]; exists {
-		return nil
+	raw, exists := product.Attributes[parentSKUAttribute]
+	if exists && raw != nil {
+		got, ok := raw.(string)
+		if ok && got == parentSKU {
+			return nil
+		}
+		shown := got
+		if !ok {
+			shown = fmt.Sprint(raw)
+		}
+		return fmt.Errorf("metaldogs:catalog-seed: product %q parent_sku is %q, catalog file has %q", slug, shown, parentSKU)
 	}
 	product.Attributes[parentSKUAttribute] = parentSKU
 	if err := products.Update(ctx, product); err != nil {

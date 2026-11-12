@@ -128,3 +128,17 @@ export METALDOGS_OPENAI_API_KEY=sk-...
 ```
 
 See [`docs/architecture/generation-quality.md`](../../docs/architecture/generation-quality.md).
+
+## Catalog (E1)
+
+Manual command only. Migrations and startup do not run it.
+
+```bash
+./app metaldogs:catalog-seed -dir plugins/metaldogs/catalog
+```
+
+Files: `products.csv`, `prices.csv`, `stock.csv`. Prices are net minor units after parsing (`80,49` PLN → `8049`). Gross is `net + net × rate / 10000` (basis points); the placeholder is 99,00 PLN at the standard 23% rate and is not stored.
+
+Shopanda assigns the tax class from the product type. `configurable` maps to the standard class in core (`catalog.TaxClassCode`). This command writes no tax setting.
+
+`parent_sku` is a product attribute written after the product importer commits. A later run fills it when it is missing. A stored value that differs from the CSV is an error and is left unchanged.
