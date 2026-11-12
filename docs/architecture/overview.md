@@ -214,6 +214,6 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
 | `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
 
-**Pin absorb honesty:** #568 / #570 / #571 platform *merges* are in tree at `a8cbcb18`, but F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
+**Pin absorb honesty:** #568 / #570 / #571 platform merges landed at `a8cbcb18` and remain at pin `43f0a1ed`. F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). The #573 delta did not touch those files. Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface. G0 adds offline `metaldogs:eval` (fake provider).

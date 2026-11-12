@@ -85,7 +85,7 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 #   (--out: no non-dot entries; outputs photo.ext.png + report.json)
 ```
 
-For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/a8cbcb18c5054178ba5e5f0e4980f82b0a7ed512/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
+For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
 
 ### Why stock `.env.example` alone fails
 
