@@ -153,20 +153,15 @@ func TestCatalogSeed_DotDecimal(t *testing.T) {
 func TestCatalogSeed_ParentSKUWrittenWithProduct(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent_insert")
 	runCatalogSeed(t, db, repoCatalogDir(t))
+	activateCatalogProduct(t, db)
 
-	repo, err := postgres.NewProductRepo(db)
-	if err != nil {
-		t.Fatal(err)
+	srv := newCatalogStorefront(t, db)
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 || products[0].Attributes["parent_sku"] != "MDOGS-TEE" {
+		t.Fatalf("product = %+v", products)
 	}
-	product, err := repo.FindBySlug(catalog.WithOperatorProductReadScope(context.Background()), "mdogs-tee")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if product == nil || product.Attributes["parent_sku"] != "MDOGS-TEE" {
-		t.Fatalf("product = %+v", product)
-	}
-	if !product.CreatedAt.Equal(product.UpdatedAt) {
-		t.Fatalf("parent_sku written after insert: created %s updated %s", product.CreatedAt, product.UpdatedAt)
+	if products[0].CreatedAt == "" || products[0].CreatedAt != products[0].UpdatedAt {
+		t.Fatalf("parent_sku written after insert: created %s updated %s", products[0].CreatedAt, products[0].UpdatedAt)
 	}
 }
 
@@ -190,7 +185,9 @@ func TestCatalogSeed_ThousandsPrices(t *testing.T) {
 
 func TestCatalogSeed_BadPriceWritesNothing(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_bad_price")
-	runCatalogSeed(t, db, repoCatalogDir(t))
+	seeded := copyCatalogDir(t, repoCatalogDir(t))
+	setCatalogAmounts(t, seeded, func(string) (string, bool) { return "90,00", true })
+	runCatalogSeed(t, db, seeded)
 	publishCatalogProduct(t, db)
 	srv := newCatalogStorefront(t, db)
 	beforeProducts := listCatalogProducts(t, srv)
@@ -198,7 +195,7 @@ func TestCatalogSeed_BadPriceWritesNothing(t *testing.T) {
 		t.Fatalf("products = %d, want 1", len(beforeProducts))
 	}
 	before := listCatalogVariants(t, srv, beforeProducts[0].ID)
-	assertTeeVariants(t, before, 8049)
+	assertTeeVariants(t, before, 9000)
 
 	const sku = "MDOGS-TEE-L"
 	for _, amount := range []string{"80,499", "80 zł", "80 PLN", "-5", "0", "0,00", "", "abc", "1.234"} {
@@ -248,6 +245,50 @@ func TestCatalogSeed_BadPriceWritesNothing(t *testing.T) {
 	}
 }
 
+func TestCatalogSeed_BadPriceOnEmptyDBWritesNothing(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_bad_empty")
+	dir := copyCatalogDir(t, repoCatalogDir(t))
+	setCatalogAmounts(t, dir, func(rowSKU string) (string, bool) {
+		if rowSKU == "MDOGS-TEE-L" {
+			return "80,499", true
+		}
+		return "", false
+	})
+	err := runCatalogSeedErr(t, db, dir)
+	if err == nil {
+		t.Fatal("expected non-zero command result")
+	}
+	msg := err.Error()
+	for _, part := range []string{"prices.csv", "row 4", "column amount", "80,499"} {
+		if !strings.Contains(msg, part) {
+			t.Fatalf("error %q missing %q", msg, part)
+		}
+	}
+
+	activateCatalogProduct(t, db)
+	srv := newCatalogStorefront(t, db)
+	if products := listCatalogProducts(t, srv); len(products) != 0 {
+		t.Fatalf("failed import visible: %+v", products)
+	}
+	if status := catalogGET(t, srv, "/api/v1/products/mdogs-tee"); status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+
+	good := copyCatalogDir(t, repoCatalogDir(t))
+	setCatalogAmounts(t, good, func(string) (string, bool) { return "90,00", true })
+	runCatalogSeed(t, db, good)
+	activateCatalogProduct(t, db)
+
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 || products[0].Attributes["parent_sku"] != "MDOGS-TEE" {
+		t.Fatalf("product = %+v", products)
+	}
+	if products[0].CreatedAt == "" || products[0].CreatedAt != products[0].UpdatedAt {
+		t.Fatalf("product existed before the good seed: created %s updated %s", products[0].CreatedAt, products[0].UpdatedAt)
+	}
+	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 9000)
+}
+
 func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 	t.Helper()
 	if err := runCatalogSeedErr(t, db, dir); err != nil {
@@ -278,6 +319,14 @@ func runCatalogSeedErr(t *testing.T, db *sql.DB, dir string) error {
 		Logger: app.Logger,
 		Config: app.Config,
 	}, []string{"-dir", dir})
+}
+
+// ProductRepo.Update rewrites updated_at, which would hide a later parent_sku write.
+func activateCatalogProduct(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(), `UPDATE products SET status = 'active' WHERE slug = $1`, "mdogs-tee"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func publishCatalogProduct(t *testing.T, db *sql.DB) {
@@ -398,6 +447,7 @@ type catalogProduct struct {
 	Slug       string
 	Status     string
 	Type       string
+	CreatedAt  string
 	UpdatedAt  string
 	Attributes map[string]interface{}
 }
@@ -435,6 +485,7 @@ func listCatalogProducts(t *testing.T, srv *httptest.Server) []catalogProduct {
 			Slug:       stringField(raw, "Slug"),
 			Status:     stringField(raw, "Status"),
 			Type:       stringField(raw, "Type"),
+			CreatedAt:  stringField(raw, "CreatedAt"),
 			UpdatedAt:  stringField(raw, "UpdatedAt"),
 			Attributes: attrs,
 		})
