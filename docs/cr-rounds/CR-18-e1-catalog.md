@@ -20,8 +20,8 @@
 
 | Item | Result |
 | --- | --- |
-| `go test ./plugins/metaldogs/... -count=1` | Exit 0 at `bc13e24e82e57e67aa37b323c39048272e4e8c7d`. DSN `postgres://shopanda:changeme@127.0.0.1:5433/shopanda_task_e1?sslmode=disable` |
-| Docs policy | `check-product-docs-links.sh` exit 0; `check-upstream-deviations.sh` exit 0 (pin `43f0a1ed`, 24 allowlisted paths). These two commands are the `make docs-policy` target |
+| `go test ./plugins/metaldogs/... -count=1` | Exit 0 at `c9911a68866b5b944e0812f9eb8d91978d23e014` (clean worktree). DSN `postgres://shopanda:changeme@127.0.0.1:5433/shopanda_task_e1?sslmode=disable` |
+| `make docs-policy` | Exit 0 at `c9911a68866b5b944e0812f9eb8d91978d23e014` (same clean worktree). Pin `43f0a1ed`, 24 allowlisted paths |
 | Known red on the upgrade base, not part of this run | `TestImportBoundary` (`job_fence.go`), `store_credit`, notification dedupe, OpenAI smoke |
 
 Log: [`evidence/CR-18-e1-catalog-test.log`](evidence/CR-18-e1-catalog-test.log).
