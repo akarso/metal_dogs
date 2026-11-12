@@ -1,0 +1,419 @@
+package metaldogs_test
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/akarso/shopanda/internal/application/composition"
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/domain/store"
+	"github.com/akarso/shopanda/internal/domain/tax"
+	"github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
+	"github.com/akarso/shopanda/internal/platform/cli"
+	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/plugins/metaldogs"
+	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
+)
+
+func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed")
+	runCatalogSeed(t, db, repoCatalogDir(t))
+
+	srv := newCatalogStorefront(t, db)
+	if products := listCatalogProducts(t, srv); len(products) != 0 {
+		t.Fatalf("draft catalog visible: %d products", len(products))
+	}
+	if status := catalogGET(t, srv, "/api/v1/products/mdogs-tee"); status != http.StatusNotFound {
+		t.Fatalf("draft product status = %d, want 404", status)
+	}
+
+	publishCatalogProduct(t, db)
+
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 {
+		t.Fatalf("products = %d, want 1", len(products))
+	}
+	product := products[0]
+	if product.Name != "Metal Dogs custom tee" || product.Slug != "mdogs-tee" || product.Type != "configurable" || product.Status != "active" {
+		t.Fatalf("product = %+v", product)
+	}
+	if product.Attributes["parent_sku"] != "MDOGS-TEE" {
+		t.Fatalf("parent_sku = %#v", product.Attributes["parent_sku"])
+	}
+	if _, ok := product.raw["TaxClass"]; ok {
+		t.Fatal("product payload has TaxClass")
+	}
+	if _, ok := product.raw["tax_class"]; ok {
+		t.Fatal("product payload has tax_class")
+	}
+	if catalog.TaxClassCode(catalog.Type(product.Type)) != tax.TaxClassStandard {
+		t.Fatalf("tax class = %s", catalog.TaxClassCode(catalog.Type(product.Type)))
+	}
+
+	before := listCatalogVariants(t, srv, product.ID)
+	assertTeeVariants(t, before)
+
+	runCatalogSeed(t, db, repoCatalogDir(t))
+
+	afterProducts := listCatalogProducts(t, srv)
+	if len(afterProducts) != 1 || afterProducts[0].ID != product.ID || afterProducts[0].Status != "active" {
+		t.Fatalf("after second run = %+v", afterProducts)
+	}
+	after := listCatalogVariants(t, srv, product.ID)
+	if len(after.byID) != len(before.byID) {
+		t.Fatalf("variants = %d, want %d", len(after.byID), len(before.byID))
+	}
+	for id, variant := range before.byID {
+		got, ok := after.byID[id]
+		if !ok || got.SKU != variant.SKU {
+			t.Fatalf("variant %s changed: %+v", id, got)
+		}
+		if after.offers[id] != before.offers[id] {
+			t.Fatalf("offer %s = %+v, want %+v", id, after.offers[id], before.offers[id])
+		}
+	}
+}
+
+func TestCatalogSeed_DotDecimal(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_dot")
+	dir := copyCatalogDir(t, repoCatalogDir(t))
+	prices := filepath.Join(dir, "prices.csv")
+	body, err := os.ReadFile(prices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := strings.ReplaceAll(string(body), `"80,49"`, "80.49")
+	if replaced == string(body) {
+		t.Fatal("prices.csv has no quoted 80,49 placeholder")
+	}
+	if err := os.WriteFile(prices, []byte(replaced), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCatalogSeed(t, db, dir)
+	publishCatalogProduct(t, db)
+	srv := newCatalogStorefront(t, db)
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 {
+		t.Fatalf("products = %d, want 1", len(products))
+	}
+	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID))
+}
+
+func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
+	t.Helper()
+	app := testApp(t, true)
+	reg := plugin.NewRegistry(app.Logger)
+	reg.Register(metaldogs.New())
+	if summary := reg.InitAll(app); summary.Failed > 0 {
+		t.Fatalf("InitAll: %+v", summary)
+	}
+	cmd, found := reg.CLIRegistry().Get(metaldogs.CommandCatalogSeed)
+	if !found {
+		t.Fatal("metaldogs:catalog-seed not registered")
+	}
+	if !cmd.RequiresDB {
+		t.Fatal("metaldogs:catalog-seed must require a database")
+	}
+	if err := cmd.Run(cli.Context{
+		Ctx:    context.Background(),
+		DB:     db,
+		Logger: app.Logger,
+		Config: app.Config,
+	}, []string{"-dir", dir}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func publishCatalogProduct(t *testing.T, db *sql.DB) {
+	t.Helper()
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := catalog.WithOperatorProductReadScope(context.Background())
+	product, err := repo.FindBySlug(ctx, "mdogs-tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product == nil {
+		t.Fatal("product mdogs-tee missing")
+	}
+	product.Status = catalog.StatusActive
+	if err := repo.Update(ctx, product); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newCatalogStorefront(t *testing.T, db *sql.DB) *httptest.Server {
+	t.Helper()
+	products, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prices, err := postgres.NewPriceRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stock, err := postgres.NewStockRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	components, err := postgres.NewBundleComponentRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	productHandler := storefront.NewProductHandler(
+		products,
+		composition.NewPipeline[composition.ProductContext](),
+		composition.NewPipeline[composition.ListingContext](),
+		nil,
+	)
+	variantHandler := storefront.NewVariantHandler(products, variants, nil).WithOffers(composition.OfferSources{
+		Variants:   variants,
+		Prices:     prices,
+		Stock:      stock,
+		Stocks:     stock,
+		Products:   products,
+		Components: components,
+	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/products", productHandler.List())
+	mux.HandleFunc("GET /api/v1/products/{id}", productHandler.Get())
+	mux.HandleFunc("GET /api/v1/products/{id}/variants", variantHandler.List())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := store.WithStore(r.Context(), &store.Store{Currency: "PLN", Country: "PL"})
+		mux.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+type catalogProduct struct {
+	ID         string
+	Name       string
+	Slug       string
+	Status     string
+	Type       string
+	Attributes map[string]interface{}
+	raw        map[string]interface{}
+}
+
+type catalogVariant struct {
+	SKU        string
+	Attributes map[string]interface{}
+}
+
+type catalogOffer struct {
+	Amount   int64
+	Currency string
+	InStock  bool
+}
+
+type catalogVariantPage struct {
+	byID   map[string]catalogVariant
+	offers map[string]catalogOffer
+}
+
+func listCatalogProducts(t *testing.T, srv *httptest.Server) []catalogProduct {
+	t.Helper()
+	body := catalogBody(t, srv, "/api/v1/products", http.StatusOK)
+	var payload struct {
+		Products []map[string]interface{} `json:"products"`
+	}
+	decodeData(t, body, &payload)
+	out := make([]catalogProduct, 0, len(payload.Products))
+	for _, raw := range payload.Products {
+		attrs, _ := raw["Attributes"].(map[string]interface{})
+		out = append(out, catalogProduct{
+			ID:         stringField(raw, "ID"),
+			Name:       stringField(raw, "Name"),
+			Slug:       stringField(raw, "Slug"),
+			Status:     stringField(raw, "Status"),
+			Type:       stringField(raw, "Type"),
+			Attributes: attrs,
+			raw:        raw,
+		})
+	}
+	return out
+}
+
+func listCatalogVariants(t *testing.T, srv *httptest.Server, productID string) catalogVariantPage {
+	t.Helper()
+	body := catalogBody(t, srv, "/api/v1/products/"+productID+"/variants", http.StatusOK)
+	var payload struct {
+		Variants []struct {
+			ID         string                 `json:"ID"`
+			SKU        string                 `json:"SKU"`
+			Attributes map[string]interface{} `json:"Attributes"`
+		} `json:"variants"`
+		Offers map[string]struct {
+			Amount   *int64 `json:"amount"`
+			Currency string `json:"currency"`
+			InStock  bool   `json:"in_stock"`
+		} `json:"offers"`
+	}
+	decodeData(t, body, &payload)
+	page := catalogVariantPage{
+		byID:   map[string]catalogVariant{},
+		offers: map[string]catalogOffer{},
+	}
+	for _, variant := range payload.Variants {
+		page.byID[variant.ID] = catalogVariant{SKU: variant.SKU, Attributes: variant.Attributes}
+		offer := payload.Offers[variant.ID]
+		if offer.Amount == nil {
+			t.Fatalf("sku %s has no offer amount", variant.SKU)
+		}
+		page.offers[variant.ID] = catalogOffer{
+			Amount:   *offer.Amount,
+			Currency: offer.Currency,
+			InStock:  offer.InStock,
+		}
+	}
+	return page
+}
+
+func assertTeeVariants(t *testing.T, page catalogVariantPage) {
+	t.Helper()
+	want := map[string]string{
+		"MDOGS-TEE-S":   "S",
+		"MDOGS-TEE-M":   "M",
+		"MDOGS-TEE-L":   "L",
+		"MDOGS-TEE-XL":  "XL",
+		"MDOGS-TEE-XXL": "XXL",
+	}
+	if len(page.byID) != len(want) {
+		t.Fatalf("variants = %d, want %d", len(page.byID), len(want))
+	}
+	seen := map[string]struct{}{}
+	for id, variant := range page.byID {
+		size, ok := want[variant.SKU]
+		if !ok {
+			t.Fatalf("unexpected sku %s", variant.SKU)
+		}
+		if variant.Attributes["size"] != size {
+			t.Fatalf("sku %s size = %#v", variant.SKU, variant.Attributes["size"])
+		}
+		offer := page.offers[id]
+		if offer.Amount != 8049 || offer.Currency != "PLN" || offer.InStock {
+			t.Fatalf("sku %s offer = %+v", variant.SKU, offer)
+		}
+		seen[variant.SKU] = struct{}{}
+		assertPlaceholderGross(t, offer.Amount)
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("skus = %v", seen)
+	}
+}
+
+func assertPlaceholderGross(t *testing.T, netMinor int64) {
+	t.Helper()
+	net, err := shared.NewMoney(netMinor, "PLN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shop seed standard rate is 2300 basis points (23%). Stored amounts are net.
+	vat, err := tax.Calculate(net, tax.TaxRate{Class: tax.TaxClassStandard, Rate: 2300}, tax.ModeExclusive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gross := net.Amount() + vat.Amount()
+	if gross != 9900 {
+		t.Fatalf("gross = %d, want 9900 (net %d)", gross, netMinor)
+	}
+}
+
+func catalogGET(t *testing.T, srv *httptest.Server, path string) int {
+	t.Helper()
+	resp, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+func catalogBody(t *testing.T, srv *httptest.Server, path string, want int) []byte {
+	t.Helper()
+	resp, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != want {
+		t.Fatalf("%s status = %d, body = %s", path, resp.StatusCode, body)
+	}
+	return body
+}
+
+func decodeData(t *testing.T, body []byte, dest interface{}) {
+	t.Helper()
+	var envelope struct {
+		Data  json.RawMessage `json:"data"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		t.Fatalf("error = %s", envelope.Error)
+	}
+	if err := json.Unmarshal(envelope.Data, dest); err != nil {
+		t.Fatalf("data: %v body=%s", err, body)
+	}
+}
+
+func stringField(raw map[string]interface{}, key string) string {
+	v, _ := raw[key].(string)
+	return v
+}
+
+func repoCatalogDir(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Join(filepath.Dir(file), "catalog")
+}
+
+func copyCatalogDir(t *testing.T, src string) string {
+	t.Helper()
+	dst := t.TempDir()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".csv") {
+			continue
+		}
+		in, err := os.ReadFile(filepath.Join(src, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, entry.Name()), in, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dst
+}

@@ -1,6 +1,7 @@
 package metaldogs
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -13,14 +14,16 @@ import (
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/catalog"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/eval"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 // Command names registered by the Metal Dogs plugin.
 const (
-	CommandEval      = "metaldogs:eval"
-	CommandTemplates = "metaldogs:templates"
+	CommandEval        = "metaldogs:eval"
+	CommandTemplates   = "metaldogs:templates"
+	CommandCatalogSeed = "metaldogs:catalog-seed"
 )
 
 func registerCLICommands(app *plugin.App) {
@@ -69,6 +72,34 @@ func registerCLICommands(app *plugin.App) {
 		RequiresDB:  false,
 		Run:         runTemplates,
 	})
+
+	app.RegisterCommand(cli.Command{
+		Name:        CommandCatalogSeed,
+		Description: "Load the Metal Dogs catalog CSV (draft product, idempotent by SKU)",
+		RequiresDB:  true,
+		Run:         runCatalogSeed,
+	})
+}
+
+func runCatalogSeed(ctx cli.Context, args []string) error {
+	fs := flag.NewFlagSet(CommandCatalogSeed, flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+	dir := fs.String("dir", "plugins/metaldogs/catalog", "directory with products.csv, prices.csv, and stock.csv")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if ctx.DB == nil {
+		return fmt.Errorf("%s: database required", CommandCatalogSeed)
+	}
+	c := ctx.Ctx
+	if c == nil {
+		c = context.Background()
+	}
+	if err := catalog.Seed(c, ctx.DB, *dir); err != nil {
+		return err
+	}
+	fmt.Println("metaldogs:catalog-seed: ok")
+	return nil
 }
 
 func openCLIDatabase(ctx cli.Context) (*sql.DB, func(), error) {
