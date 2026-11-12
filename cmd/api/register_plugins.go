@@ -12,7 +12,6 @@ import (
 	"github.com/akarso/shopanda/plugins/importdemo"
 	"github.com/akarso/shopanda/plugins/integrationdemo"
 	"github.com/akarso/shopanda/plugins/maildemo"
-	"github.com/akarso/shopanda/plugins/metaldogs"
 	"github.com/akarso/shopanda/plugins/pimdemo"
 	"github.com/akarso/shopanda/plugins/promodemo"
 	"github.com/akarso/shopanda/plugins/slotsdemo"
@@ -62,6 +61,6 @@ func registerPlugins(registry *plugin.Registry, cfg *config.Config) {
 		registry.Register(b2b.New())
 	}
 	if cfg.Plugins.MetalDogs.Enabled {
-		registry.Register(metaldogs.New())
+		registerMetalDogs(registry)
 	}
 }

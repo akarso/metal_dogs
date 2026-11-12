@@ -26,7 +26,7 @@ const (
 	CommandCatalogSeed = "metaldogs:catalog-seed"
 )
 
-func registerCLICommands(app *plugin.App) {
+func registerCLICommands(app *plugin.App, p *Plugin) {
 	app.RegisterCommand(cli.Command{
 		Name:        CommandEval,
 		Description: "Offline generation eval (template + photos → PNGs + report.json); providers fake|openai",
@@ -77,11 +77,11 @@ func registerCLICommands(app *plugin.App) {
 		Name:        CommandCatalogSeed,
 		Description: "Load the Metal Dogs catalog CSV (draft product, idempotent by SKU)",
 		RequiresDB:  true,
-		Run:         runCatalogSeed,
+		Run:         p.runCatalogSeed,
 	})
 }
 
-func runCatalogSeed(ctx cli.Context, args []string) error {
+func (p *Plugin) runCatalogSeed(ctx cli.Context, args []string) error {
 	fs := flag.NewFlagSet(CommandCatalogSeed, flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 	dir := fs.String("dir", "plugins/metaldogs/catalog", "directory with products.csv, prices.csv, and stock.csv")
@@ -95,7 +95,14 @@ func runCatalogSeed(ctx cli.Context, args []string) error {
 	if c == nil {
 		c = context.Background()
 	}
-	if err := catalog.Seed(c, ctx.DB, *dir); err != nil {
+	if p == nil || p.catalogRepos == nil {
+		return fmt.Errorf("%s: catalog repositories are not configured", CommandCatalogSeed)
+	}
+	repos, err := p.catalogRepos(ctx.DB)
+	if err != nil {
+		return err
+	}
+	if err := catalog.Seed(c, repos, *dir); err != nil {
 		return err
 	}
 	fmt.Println("metaldogs:catalog-seed: ok")

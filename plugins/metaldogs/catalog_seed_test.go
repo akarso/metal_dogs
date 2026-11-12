@@ -19,12 +19,18 @@ import (
 	"github.com/akarso/shopanda/internal/domain/store"
 	"github.com/akarso/shopanda/internal/domain/tax"
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
+	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
 	"github.com/akarso/shopanda/internal/platform/cli"
+	"github.com/akarso/shopanda/internal/platform/id"
+	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs"
+	mdcatalog "github.com/akarso/shopanda/plugins/metaldogs/catalog"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
+
+const catalogPLNHost = "pl.metal-dogs.test"
 
 func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed")
@@ -70,6 +76,9 @@ func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
 	if len(afterProducts) != 1 || afterProducts[0].ID != product.ID || afterProducts[0].Status != "active" {
 		t.Fatalf("after second run = %+v", afterProducts)
 	}
+	if product.UpdatedAt == "" || afterProducts[0].UpdatedAt != product.UpdatedAt {
+		t.Fatalf("product UpdatedAt = %q, want %q", afterProducts[0].UpdatedAt, product.UpdatedAt)
+	}
 	after := listCatalogVariants(t, srv, product.ID)
 	if len(after.byID) != len(before.byID) {
 		t.Fatalf("variants = %d, want %d", len(after.byID), len(before.byID))
@@ -78,6 +87,9 @@ func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
 		got, ok := after.byID[id]
 		if !ok || got.SKU != variant.SKU {
 			t.Fatalf("variant %s changed: %+v", id, got)
+		}
+		if got.UpdatedAt == "" || got.UpdatedAt != variant.UpdatedAt {
+			t.Fatalf("variant %s UpdatedAt = %q, want %q", id, got.UpdatedAt, variant.UpdatedAt)
 		}
 		if after.offers[id] != before.offers[id] {
 			t.Fatalf("offer %s = %+v, want %+v", id, after.offers[id], before.offers[id])
@@ -114,7 +126,9 @@ func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 	t.Helper()
 	app := testApp(t, true)
 	reg := plugin.NewRegistry(app.Logger)
-	reg.Register(metaldogs.New())
+	plug := metaldogs.New()
+	plug.UseCatalogRepos(openCatalogRepos)
+	reg.Register(plug)
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
 	}
@@ -195,12 +209,56 @@ func newCatalogStorefront(t *testing.T, db *sql.DB) *httptest.Server {
 	mux.HandleFunc("GET /api/v1/products", productHandler.List())
 	mux.HandleFunc("GET /api/v1/products/{id}", productHandler.Get())
 	mux.HandleFunc("GET /api/v1/products/{id}/variants", variantHandler.List())
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := store.WithStore(r.Context(), &store.Store{Currency: "PLN", Country: "PL"})
-		mux.ServeHTTP(w, r.WithContext(ctx))
-	}))
+	stores, err := postgres.NewStoreRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedPLNStore(t, stores)
+	srv := httptest.NewServer(httpshared.StoreMiddleware(stores, logger.NewWithWriter(io.Discard, "error"))(mux))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func seedPLNStore(t *testing.T, stores *postgres.StoreRepo) {
+	t.Helper()
+	s, err := store.NewStore(id.New(), "pl", "Poland", "PLN", "PL", "pl", catalogPLNHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stores.Create(context.Background(), &s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func openCatalogRepos(db *sql.DB) (mdcatalog.Repos, error) {
+	products, err := postgres.NewProductRepo(db)
+	if err != nil {
+		return mdcatalog.Repos{}, err
+	}
+	variants, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		return mdcatalog.Repos{}, err
+	}
+	prices, err := postgres.NewPriceRepo(db)
+	if err != nil {
+		return mdcatalog.Repos{}, err
+	}
+	history, err := postgres.NewPriceHistoryRepo(db)
+	if err != nil {
+		return mdcatalog.Repos{}, err
+	}
+	stock, err := postgres.NewStockRepo(db)
+	if err != nil {
+		return mdcatalog.Repos{}, err
+	}
+	return mdcatalog.Repos{
+		Products: products,
+		Variants: variants,
+		Prices:   prices,
+		History:  history,
+		Stock:    stock,
+		DB:       db,
+	}, nil
 }
 
 type catalogProduct struct {
@@ -209,12 +267,14 @@ type catalogProduct struct {
 	Slug       string
 	Status     string
 	Type       string
+	UpdatedAt  string
 	Attributes map[string]interface{}
 	raw        map[string]interface{}
 }
 
 type catalogVariant struct {
 	SKU        string
+	UpdatedAt  string
 	Attributes map[string]interface{}
 }
 
@@ -245,6 +305,7 @@ func listCatalogProducts(t *testing.T, srv *httptest.Server) []catalogProduct {
 			Slug:       stringField(raw, "Slug"),
 			Status:     stringField(raw, "Status"),
 			Type:       stringField(raw, "Type"),
+			UpdatedAt:  stringField(raw, "UpdatedAt"),
 			Attributes: attrs,
 			raw:        raw,
 		})
@@ -259,6 +320,7 @@ func listCatalogVariants(t *testing.T, srv *httptest.Server, productID string) c
 		Variants []struct {
 			ID         string                 `json:"ID"`
 			SKU        string                 `json:"SKU"`
+			UpdatedAt  string                 `json:"UpdatedAt"`
 			Attributes map[string]interface{} `json:"Attributes"`
 		} `json:"variants"`
 		Offers map[string]struct {
@@ -273,7 +335,7 @@ func listCatalogVariants(t *testing.T, srv *httptest.Server, productID string) c
 		offers: map[string]catalogOffer{},
 	}
 	for _, variant := range payload.Variants {
-		page.byID[variant.ID] = catalogVariant{SKU: variant.SKU, Attributes: variant.Attributes}
+		page.byID[variant.ID] = catalogVariant{SKU: variant.SKU, UpdatedAt: variant.UpdatedAt, Attributes: variant.Attributes}
 		offer := payload.Offers[variant.ID]
 		if offer.Amount == nil {
 			t.Fatalf("sku %s has no offer amount", variant.SKU)
@@ -339,7 +401,7 @@ func assertPlaceholderGross(t *testing.T, netMinor int64) {
 
 func catalogGET(t *testing.T, srv *httptest.Server, path string) int {
 	t.Helper()
-	resp, err := http.Get(srv.URL + path)
+	resp, err := catalogRequest(t, srv, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +412,7 @@ func catalogGET(t *testing.T, srv *httptest.Server, path string) int {
 
 func catalogBody(t *testing.T, srv *httptest.Server, path string, want int) []byte {
 	t.Helper()
-	resp, err := http.Get(srv.URL + path)
+	resp, err := catalogRequest(t, srv, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,6 +425,16 @@ func catalogBody(t *testing.T, srv *httptest.Server, path string, want int) []by
 		t.Fatalf("%s status = %d, body = %s", path, resp.StatusCode, body)
 	}
 	return body
+}
+
+func catalogRequest(t *testing.T, srv *httptest.Server, path string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = catalogPLNHost
+	return srv.Client().Do(req)
 }
 
 func decodeData(t *testing.T, body []byte, dest interface{}) {

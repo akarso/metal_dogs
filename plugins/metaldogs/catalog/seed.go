@@ -14,9 +14,20 @@ import (
 
 	"github.com/akarso/shopanda/internal/application/importer"
 	domcat "github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/domain/pricing"
 	"github.com/akarso/shopanda/internal/domain/shared"
-	"github.com/akarso/shopanda/internal/infrastructure/postgres"
 )
+
+// Repos are the core catalog ports Seed writes through. DB begins importer transactions.
+type Repos struct {
+	Products domcat.ProductRepository
+	Variants domcat.VariantRepository
+	Prices   pricing.PriceRepository
+	History  pricing.PriceHistoryRepository
+	Stock    inventory.StockRepository
+	DB       *sql.DB
+}
 
 const (
 	productsFile = "products.csv"
@@ -26,39 +37,23 @@ const (
 	parentSKUAttribute = "parent_sku"
 )
 
-// Seed loads products, prices, and stock from dir through the core importers.
-// Existing variant SKUs are omitted before the product importer runs. Prices
-// and stock that already match are not written again. Status of an existing
-// product is left unchanged. The product is created as draft.
-func Seed(ctx context.Context, db *sql.DB, dir string) error {
-	if db == nil {
-		return fmt.Errorf("metaldogs:catalog-seed: database required")
+// Seed loads products, prices and stock from dir through the core importers.
+// Existing SKUs are skipped and status of an existing product is never changed.
+func Seed(ctx context.Context, repos Repos, dir string) error {
+	if err := repos.ready(); err != nil {
+		return err
 	}
 	products, prices, stocks, err := loadDir(dir)
 	if err != nil {
 		return err
 	}
 
-	productRepo, err := postgres.NewProductRepo(db)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: product repo: %w", err)
-	}
-	variantRepo, err := postgres.NewVariantRepo(db)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: variant repo: %w", err)
-	}
-	priceRepo, err := postgres.NewPriceRepo(db)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: price repo: %w", err)
-	}
-	historyRepo, err := postgres.NewPriceHistoryRepo(db)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: price history repo: %w", err)
-	}
-	stockRepo, err := postgres.NewStockRepo(db)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: stock repo: %w", err)
-	}
+	productRepo := repos.Products
+	variantRepo := repos.Variants
+	priceRepo := repos.Prices
+	historyRepo := repos.History
+	stockRepo := repos.Stock
+	db := repos.DB
 
 	skus := make([]string, len(products))
 	for i, row := range products {
@@ -155,6 +150,16 @@ func Seed(ctx context.Context, db *sql.DB, dir string) error {
 	return nil
 }
 
+func (r Repos) ready() error {
+	if r.DB == nil {
+		return fmt.Errorf("metaldogs:catalog-seed: database required")
+	}
+	if r.Products == nil || r.Variants == nil || r.Prices == nil || r.History == nil || r.Stock == nil {
+		return fmt.Errorf("metaldogs:catalog-seed: catalog repositories required")
+	}
+	return nil
+}
+
 func resultErrors(kind string, errs []string) error {
 	if len(errs) == 0 {
 		return nil
@@ -162,7 +167,7 @@ func resultErrors(kind string, errs []string) error {
 	return fmt.Errorf("metaldogs:catalog-seed: %s: %s", kind, strings.Join(errs, "; "))
 }
 
-func ensureParentSKU(ctx context.Context, products *postgres.ProductRepo, slug, parentSKU string) error {
+func ensureParentSKU(ctx context.Context, products domcat.ProductRepository, slug, parentSKU string) error {
 	product, err := products.FindBySlug(ctx, slug)
 	if err != nil {
 		return fmt.Errorf("metaldogs:catalog-seed: find product %q: %w", slug, err)
@@ -212,7 +217,7 @@ func productCSV(rows []productRow, includeStatus bool) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func priceCSV(ctx context.Context, prices *postgres.PriceRepo, variants map[string]*domcat.Variant, rows []priceRow) ([]byte, error) {
+func priceCSV(ctx context.Context, prices pricing.PriceRepository, variants map[string]*domcat.Variant, rows []priceRow) ([]byte, error) {
 	var pending []priceRow
 	for _, row := range rows {
 		variant := variants[row.sku]
@@ -248,7 +253,7 @@ func priceCSV(ctx context.Context, prices *postgres.PriceRepo, variants map[stri
 	return buf.Bytes(), nil
 }
 
-func stockCSV(ctx context.Context, stocks *postgres.StockRepo, variants map[string]*domcat.Variant, rows []stockRow) ([]byte, error) {
+func stockCSV(ctx context.Context, stocks inventory.StockRepository, variants map[string]*domcat.Variant, rows []stockRow) ([]byte, error) {
 	var pending []stockRow
 	for _, row := range rows {
 		variant := variants[row.sku]
