@@ -26,7 +26,7 @@ Inspected against Shopanda source at pin [`43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a
 | SSR storefront with themes, UI slots, asset manifest | Inspected at pin | Cart and checkout pages are reused from Shopanda; only the customizer is custom ([ADR-0002](adr/0002-storefront-customizer-and-shopanda-checkout.md)) |
 | `order.created` / `order.failed` published | Inspected at pin (PR-1088) | Prefer `order.paid` for fulfilment; tolerate `order.created` followed by `order.failed` if checkout compensates |
 | Plugin shipment status update | Inspected at pin (PR-1400) | `IntegrationShipmentStatusUpdater.ApplyShipmentStatus` for POD status sync (track P) |
-| Public catalog price and on-hand stock | Inspected at pin ([shopanda#573](https://github.com/akarso/shopanda/pull/573)) | Guest product and variant reads include a `PublicOffer` sibling (`amount` in minor units or `null`, `currency`, `in_stock`, `variant_id` only when `amount` is set). List and category lists use `meta.offers[<product id>]`; product detail uses `meta.offer`; variant list uses `offers[<variant id>]`; variant detail uses `offer`. Search and admin reads omit offers. E1 can read price and stock from these public catalog responses. |
+| Public catalog price and on-hand stock | Inspected at pin ([shopanda#573](https://github.com/akarso/shopanda/pull/573)); E1 guest product and variant offer reads contract-tested (CR-18) | Guest product and variant reads include a `PublicOffer` sibling (`amount` in minor units or `null`, `currency`, `in_stock`, `variant_id` only when `amount` is set). List and category lists use `meta.offers[<product id>]`; product detail uses `meta.offer`; variant list uses `offers[<variant id>]`; variant detail uses `offer`. Search and admin reads omit offers. E1 feature tests read the custom tee through these guest responses (PLN host; `amount` is the stored net price; stock 0 is `in_stock: false`). |
 
 Product assumptions still open (section 10 of the project description) are resolved by slices `G1`, `P0`, `O1`, and `S6`; each closes with an ADR.
 
@@ -423,11 +423,12 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 
 ### Track E — Commerce integration
 
-#### E1 · Catalog product and variants — size S
+#### E1 · Catalog product and variants — size S — **DONE** (CR-18, 2026-11-12)
 
 - **Goal:** One Shopanda product "Metal Dogs custom tee" with size variants and SKUs, pricing, tax class, and stock policy (ADR-0009). Delivered as a seed/CSV import and documented, not hand-edited in admin.
 - **Tests:** Import script idempotent; feature test reads variants through Shopanda API.
-- **Safe delivery:** Product unpublished/hidden in Shopanda until M3.
+- **Safe delivery:** Product unpublished/hidden in Shopanda until M3. Draft status and zero stock are independent protections; launch clears both.
+- **Docs:** [ADR-0009](adr/0009-pod-provider-and-catalog-modelling.md) catalog modelling Accepted (fulfilment stays Proposed until P0); plugin README catalog section; [CR-18](cr-rounds/CR-18-e1-catalog.md).
 
 #### E2 · Cart line design attach — size M
 

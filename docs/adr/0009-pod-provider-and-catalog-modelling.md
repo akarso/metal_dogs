@@ -1,7 +1,7 @@
 # ADR-0009: POD provider, production file specification, and catalog modelling
 
-- **Status:** Proposed — provider and spec to be decided at close of `P0`; catalog modelling to be Accepted at close of `E1`
-- **Date:** 2026-10-15
+- **Status:** Catalog modelling **Accepted** (E1, CR-18, 2026-11-12). Fulfilment provider and production file specification remain **Proposed** until `P0`.
+- **Date:** 2026-10-15 (catalog modelling accepted 2026-11-12)
 - **Related slices:** `P0`, `P1`, `P2`, `G5`, `E1`, `E2`, `X2`
 - **Related ADRs:** [ADR-0005](0005-immutable-order-design-snapshot.md)
 
@@ -15,6 +15,10 @@ Fulfilment is print-on-demand. The production file must meet the provider's tech
 2. Price is per garment type and size, not per template, at MVP. Template-dependent pricing, if ever needed, is a pricing-pipeline step, not a variant explosion.
 3. Inventory: POD garments are treated as unlimited stock or a high reservable quantity, configured in Shopanda; the plugin does not manage stock.
 4. Catalog setup is delivered as a repeatable seed/CSV import checked into the repository, not manual admin edits.
+
+### E1 close (CR-18)
+
+Catalog modelling above is Accepted. `plugins/metaldogs/catalog/` plus `metaldogs:catalog-seed` create one configurable product, "Metal Dogs custom tee" (slug `mdogs-tee`, parent SKU `MDOGS-TEE`), with variants S, M, L, XL and XXL (SKUs `MDOGS-TEE-S` … `MDOGS-TEE-XXL`, attribute `size`). Prices are net PLN. The product is created as `draft` with stock quantity 0. Point 3 (unlimited stock or a high reservable quantity) is the M3 choice; this seed does not load it. The command does not set status to `active`. The fulfilment table below stays Proposed until `P0`.
 
 ## Decision (fulfilment, to be filled at P0)
 

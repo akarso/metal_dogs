@@ -21,7 +21,8 @@ Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also regist
 ```text
 plugins/metaldogs/
 ├── plugin.go              # Init + Name + AssetStore wiring
-├── cli.go                 # metaldogs:eval (G0)
+├── cli.go                 # metaldogs:eval, templates, catalog-seed
+├── catalog/               # products.csv, prices.csv, stock.csv + seed loader
 ├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
 ├── sync_generate.go       # generate RegisterManual (C4)
@@ -131,14 +132,64 @@ See [`docs/architecture/generation-quality.md`](../../docs/architecture/generati
 
 ## Catalog (E1)
 
-Manual command only. Migrations and startup do not run it.
+Manual command only. Migrations and startup do not run it. The plugin must be enabled (`plugins.metaldogs.enabled` or `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`). The command needs a database. It does not need media storage.
 
 ```bash
 ./app metaldogs:catalog-seed -dir plugins/metaldogs/catalog
 ```
 
-Files: `products.csv`, `prices.csv`, `stock.csv`. Prices are net minor units after parsing (`80,49` PLN → `8049`). Gross is `net + net × rate / 10000` (basis points); the placeholder is 99,00 PLN at the standard 23% rate and is not stored.
+Data files in [`catalog/`](catalog/):
 
-Shopanda assigns the tax class from the product type. `configurable` maps to the standard class in core (`catalog.TaxClassCode`). This command writes no tax setting.
+| File | Role |
+| --- | --- |
+| `products.csv` | One product, five size rows. Name "Metal Dogs custom tee", slug `mdogs-tee`, parent SKU `MDOGS-TEE`, type `configurable`, status `draft`. Variant SKUs `MDOGS-TEE-S` … `MDOGS-TEE-XXL`. Column `size` is the variant attribute `size`. |
+| `prices.csv` | One net price per SKU, currency `PLN`, no store. Placeholder `80,49`, marked placeholder in the `note` column. |
+| `stock.csv` | Quantity `0` for every SKU. |
+
+The loader checks all three files before it writes. A bad file exits non-zero and names the file, row and column. Existing variant SKUs are not inserted again. Status of a product that already exists is left as it is, including `active` after a later publish. A price or stock row is written when the stored value differs from the file; an equal value is skipped. A second run with unchanged files writes nothing.
 
 `parent_sku` is written in the same insert when the product is created. On a product that already exists, a missing `parent_sku` is written before any new variants, as its own update (not in the variant transaction). A stored value that differs from the CSV is an error and is left unchanged.
+
+Shopanda assigns the tax class from the product type. `configurable` maps to the standard class (`catalog.TaxClassCode`). This command writes no tax setting. The shop seed's standard rate for PL is 2300 basis points (23%).
+
+### Price format
+
+The CSV holds a human decimal. The command converts it to minor units (PLN grosz) with no rounding, then the core price importer stores that integer.
+
+Accepted:
+
+- One separator, comma or dot, is the decimal separator: `80,49` and `80.49` → `8049`. One fractional digit is padded with a trailing zero (`80,5` → `8050`).
+- When both separators appear, the last one is decimal and the other groups thousands in threes: `1.234,56` and `1,234.56` → `123456`.
+- Digits with no separator are whole currency units: `80` → `8000`.
+
+Rejected (examples: `80,499`, `80 zł`, `80 PLN`, `-5`, `0`, empty, `abc`):
+
+- More than two fractional digits.
+- Spaces, currency symbols or letters.
+- A negative amount, zero or an empty cell.
+
+### Net price, gross display
+
+Stored amounts are **net**. Confirmed in the core price pipeline before the price file was written: the price row is the line unit price, and tax runs afterwards. Cart and checkout set `tax_mode` to `tax.ModeExclusive` when the caller does not. Exclusive mode adds tax on top (`internal/domain/tax/calculate.go`: `tax = price * rate / 10000`, integer division). Inclusive mode would treat the stored amount as gross; that path is not the default. The public offer `amount` is this stored net value in minor units.
+
+Gross is computed from the current rate and is never stored:
+
+```text
+gross_minor = net_minor + net_minor * rate / 10000
+```
+
+Placeholder `8049` at rate `2300` → tax `1851` → gross `9900` (99,00 PLN).
+
+### Publish at M3
+
+Draft status and zero stock are two independent protections. The storefront hides a `draft` product. Stock `0` makes `in_stock` false, so the tee stays unbuyable if it is published by mistake. Launch removes both.
+
+1. Replace the placeholder in `prices.csv` with the real net amount and run `metaldogs:catalog-seed`. Rows that already match the file are skipped; a different amount is updated.
+2. Set the launch quantity in `stock.csv` (real stock, or a high reservable quantity) and run the command again. The same skip-if-equal rule applies.
+3. Set the Shopanda product `mdogs-tee` to status `active` in the admin catalog. Leave `products.csv` as `draft`. The loader rejects any other status, and it does not change the status of a product that already exists.
+
+### Limits
+
+- Product, price and stock writes use separate transactions. A failure after the product write can leave a product without the matching price or stock. Validation of the files still happens before any write.
+- CSV row numbers assume one record per line.
+- Leading zeros in a price are accepted (`080,49` → `8049`).

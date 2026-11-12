@@ -14,6 +14,6 @@ New ADRs are written when a slice closes with a decision (see "Docs" lines in [`
 | [0006](0006-design-and-job-status-model.md) | Separate status machines for `Design`, `GenerationJob`, and fulfilment | Accepted | C3 |
 | [0007](0007-guest-design-ownership-tokens.md) | Guest designs are protected by per-design capability tokens | Accepted | C3 |
 | [0008](0008-image-generation-provider.md) | Single image-generation provider behind a port | Proposed (OpenAI candidate; exit gate open) | G1 |
-| [0009](0009-pod-provider-and-catalog-modelling.md) | POD provider, production file specification, and catalog modelling | Proposed (provider TBD) | P0 / E1 |
+| [0009](0009-pod-provider-and-catalog-modelling.md) | POD provider, production file specification, and catalog modelling | Accepted (catalog, E1 / CR-18); Proposed (provider until P0) | P0 / E1 |
 
 Template: [`0000-template.md`](0000-template.md).

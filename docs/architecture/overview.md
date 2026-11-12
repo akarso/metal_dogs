@@ -159,7 +159,8 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 
 ```text
 /                         Shopanda fork, pinned by commit (ADR-0001, UPSTREAM_PIN.md)
-├── cmd/api/register_plugins.go   one added line: registry.Register(metaldogs.New())  # F1
+├── cmd/api/register_plugins.go   registerMetalDogs when the plugin is enabled  # F1 / E1
+├── cmd/api/metaldogs_catalog.go  core catalog repos for metaldogs:catalog-seed  # E1
 ├── plugins/metaldogs/            Go plugin, hexagonal per module (see above)
 │   ├── customizer/
 │   ├── generation/
@@ -195,7 +196,8 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
-| `cmd/api/register_plugins.go` | Registers `metaldogs.New()` when `plugins.metaldogs.enabled` | F1 |
+| `cmd/api/register_plugins.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` | F1 / E1 |
+| `cmd/api/metaldogs_catalog.go` | Builds core product, variant, price, price-history and stock repos for `metaldogs:catalog-seed`. The plugin package does not import infrastructure adapters | E1 |
 | `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
@@ -219,6 +221,6 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
 | `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
 
-**Pin absorb honesty:** #568 / #570 / #571 platform merges landed at `a8cbcb18` and remain at pin `43f0a1ed`. F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). C4 still carries the generate claim fence and the attempts delivery fence on `jobs.Queue`. The #573 delta did not touch those files. Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
+**Pin absorb honesty:** #568 / #570 / #571 platform merges landed at `a8cbcb18` and remain at pin `43f0a1ed`. F3 still carries Metal Dogs–only platform deltas (`BoundQueue`, sync `request_id`→ctx). C4 still carries the generate claim fence and the attempts delivery fence on `jobs.Queue`. The #573 delta did not touch those files. E1 adds `cmd/api/metaldogs_catalog.go`: core catalog repositories for `metaldogs:catalog-seed`, injected from `cmd/api` so the plugin does not import infrastructure adapters. Treat those rows as required conflict allowlist entries until upstreamed or the MD facade is rewritten not to need them.
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface. G0 adds offline `metaldogs:eval` (fake provider).
