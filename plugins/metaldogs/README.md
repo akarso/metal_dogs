@@ -141,4 +141,4 @@ Files: `products.csv`, `prices.csv`, `stock.csv`. Prices are net minor units aft
 
 Shopanda assigns the tax class from the product type. `configurable` maps to the standard class in core (`catalog.TaxClassCode`). This command writes no tax setting.
 
-`parent_sku` is a product attribute written after the product importer commits. A later run fills it when it is missing. A stored value that differs from the CSV is an error and is left unchanged.
+`parent_sku` is stored on the product in the same insert as the product import. A later run fills it when it is missing. A stored value that differs from the CSV is an error and is left unchanged.

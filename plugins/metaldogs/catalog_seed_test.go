@@ -1,8 +1,10 @@
 package metaldogs_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -59,7 +61,7 @@ func TestCatalogSeed_StorefrontHappyPath(t *testing.T) {
 	}
 
 	before := listCatalogVariants(t, srv, product.ID)
-	assertTeeVariants(t, before)
+	assertTeeVariants(t, before, 8049)
 
 	runCatalogSeed(t, db, repoCatalogDir(t))
 
@@ -145,7 +147,105 @@ func TestCatalogSeed_DotDecimal(t *testing.T) {
 	if len(products) != 1 {
 		t.Fatalf("products = %d, want 1", len(products))
 	}
-	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID))
+	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 8049)
+}
+
+func TestCatalogSeed_ParentSKUWrittenWithProduct(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent_insert")
+	runCatalogSeed(t, db, repoCatalogDir(t))
+
+	repo, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	product, err := repo.FindBySlug(catalog.WithOperatorProductReadScope(context.Background()), "mdogs-tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product == nil || product.Attributes["parent_sku"] != "MDOGS-TEE" {
+		t.Fatalf("product = %+v", product)
+	}
+	if !product.CreatedAt.Equal(product.UpdatedAt) {
+		t.Fatalf("parent_sku written after insert: created %s updated %s", product.CreatedAt, product.UpdatedAt)
+	}
+}
+
+func TestCatalogSeed_ThousandsPrices(t *testing.T) {
+	for _, amount := range []string{"1.234,56", "1,234.56"} {
+		t.Run(amount, func(t *testing.T) {
+			db := testutil.OpenIsolatedWithCore(t, "catalog_seed_thousands")
+			dir := copyCatalogDir(t, repoCatalogDir(t))
+			setCatalogAmounts(t, dir, func(string) (string, bool) { return amount, true })
+			runCatalogSeed(t, db, dir)
+			publishCatalogProduct(t, db)
+			srv := newCatalogStorefront(t, db)
+			products := listCatalogProducts(t, srv)
+			if len(products) != 1 || products[0].Attributes["parent_sku"] != "MDOGS-TEE" {
+				t.Fatalf("product = %+v", products)
+			}
+			assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 123456)
+		})
+	}
+}
+
+func TestCatalogSeed_BadPriceWritesNothing(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_bad_price")
+	runCatalogSeed(t, db, repoCatalogDir(t))
+	publishCatalogProduct(t, db)
+	srv := newCatalogStorefront(t, db)
+	beforeProducts := listCatalogProducts(t, srv)
+	if len(beforeProducts) != 1 {
+		t.Fatalf("products = %d, want 1", len(beforeProducts))
+	}
+	before := listCatalogVariants(t, srv, beforeProducts[0].ID)
+	assertTeeVariants(t, before, 8049)
+
+	const sku = "MDOGS-TEE-L"
+	for _, amount := range []string{"80,499", "80 zł", "80 PLN", "-5", "0", "0,00", "", "abc", "1.234"} {
+		t.Run(amount, func(t *testing.T) {
+			dir := copyCatalogDir(t, repoCatalogDir(t))
+			setCatalogAmounts(t, dir, func(rowSKU string) (string, bool) {
+				if rowSKU == sku {
+					return amount, true
+				}
+				return "", false
+			})
+			err := runCatalogSeedErr(t, db, dir)
+			if err == nil {
+				t.Fatal("expected non-zero command result")
+			}
+			msg := err.Error()
+			quoted := amount
+			if amount == "" {
+				quoted = `invalid amount ""`
+			}
+			for _, part := range []string{"prices.csv", "row 4", "column amount", quoted} {
+				if !strings.Contains(msg, part) {
+					t.Fatalf("error %q missing %q", msg, part)
+				}
+			}
+			afterProducts := listCatalogProducts(t, srv)
+			if len(afterProducts) != 1 || afterProducts[0].ID != beforeProducts[0].ID || afterProducts[0].UpdatedAt != beforeProducts[0].UpdatedAt {
+				t.Fatalf("product changed: %+v", afterProducts)
+			}
+			if afterProducts[0].Attributes["parent_sku"] != "MDOGS-TEE" {
+				t.Fatalf("parent_sku = %#v", afterProducts[0].Attributes["parent_sku"])
+			}
+			after := listCatalogVariants(t, srv, beforeProducts[0].ID)
+			if len(after.byID) != len(before.byID) {
+				t.Fatalf("variants = %d, want %d", len(after.byID), len(before.byID))
+			}
+			for id, variant := range before.byID {
+				got, ok := after.byID[id]
+				if !ok || got.SKU != variant.SKU || got.UpdatedAt != variant.UpdatedAt {
+					t.Fatalf("variant %s changed: %+v", id, got)
+				}
+				if after.offers[id] != before.offers[id] {
+					t.Fatalf("offer %s = %+v, want %+v", id, after.offers[id], before.offers[id])
+				}
+			}
+		})
+	}
 }
 
 func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
@@ -378,7 +478,7 @@ func listCatalogVariants(t *testing.T, srv *httptest.Server, productID string) c
 	return page
 }
 
-func assertTeeVariants(t *testing.T, page catalogVariantPage) {
+func assertTeeVariants(t *testing.T, page catalogVariantPage, netMinor int64) {
 	t.Helper()
 	want := map[string]string{
 		"MDOGS-TEE-S":   "S",
@@ -400,11 +500,13 @@ func assertTeeVariants(t *testing.T, page catalogVariantPage) {
 			t.Fatalf("sku %s size = %#v", variant.SKU, variant.Attributes["size"])
 		}
 		offer := page.offers[id]
-		if offer.Amount != 8049 || offer.Currency != "PLN" || offer.InStock {
+		if offer.Amount != netMinor || offer.Currency != "PLN" || offer.InStock {
 			t.Fatalf("sku %s offer = %+v", variant.SKU, offer)
 		}
 		seen[variant.SKU] = struct{}{}
-		assertPlaceholderGross(t, offer.Amount)
+		if netMinor == 8049 {
+			assertPlaceholderGross(t, offer.Amount)
+		}
 	}
 	if len(seen) != len(want) {
 		t.Fatalf("skus = %v", seen)
@@ -495,6 +597,49 @@ func repoCatalogDir(t *testing.T) string {
 		t.Fatal("runtime.Caller failed")
 	}
 	return filepath.Join(filepath.Dir(file), "catalog")
+}
+
+func setCatalogAmounts(t *testing.T, dir string, amountFor func(sku string) (string, bool)) {
+	t.Helper()
+	path := filepath.Join(dir, "prices.csv")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(f).ReadAll()
+	_ = f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		t.Fatal("prices.csv empty")
+	}
+	col := map[string]int{}
+	for i, h := range records[0] {
+		col[strings.TrimSpace(strings.ToLower(h))] = i
+	}
+	skuCol, skuOK := col["sku"]
+	amountCol, amountOK := col["amount"]
+	if !skuOK || !amountOK {
+		t.Fatalf("prices.csv header = %v", records[0])
+	}
+	for i := 1; i < len(records); i++ {
+		if skuCol >= len(records[i]) || amountCol >= len(records[i]) {
+			t.Fatalf("short price row %d", i+1)
+		}
+		amount, ok := amountFor(records[i][skuCol])
+		if ok {
+			records[i][amountCol] = amount
+		}
+	}
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	if err := w.WriteAll(records); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func copyCatalogDir(t *testing.T, src string) string {

@@ -99,7 +99,11 @@ func Seed(ctx context.Context, repos Repos, dir string) error {
 		if err != nil {
 			return err
 		}
-		result, err := importer.NewProductImporter(productRepo, variantRepo, db).Import(ctx, bytes.NewReader(body))
+		result, err := importer.NewProductImporter(
+			productsWithParentSKU(productRepo, map[string]string{slug: rows[0].parentSKU}),
+			variantRepo,
+			db,
+		).Import(ctx, bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("metaldogs:catalog-seed: products: %w", err)
 		}
@@ -165,6 +169,45 @@ func resultErrors(kind string, errs []string) error {
 		return nil
 	}
 	return fmt.Errorf("metaldogs:catalog-seed: %s: %s", kind, strings.Join(errs, "; "))
+}
+
+type productTxBinder interface {
+	domcat.ProductRepository
+	WithTx(tx *sql.Tx) domcat.ProductRepository
+}
+
+// parentSKUProducts puts parent_sku on the product insert. The core importer commits that transaction itself.
+type parentSKUProducts struct {
+	domcat.ProductRepository
+	bind   func(*sql.Tx) domcat.ProductRepository
+	bySlug map[string]string
+}
+
+func productsWithParentSKU(inner domcat.ProductRepository, bySlug map[string]string) domcat.ProductRepository {
+	wrapped := parentSKUProducts{ProductRepository: inner, bySlug: bySlug}
+	if binder, ok := inner.(productTxBinder); ok {
+		wrapped.bind = binder.WithTx
+	}
+	return wrapped
+}
+
+func (p parentSKUProducts) WithTx(tx *sql.Tx) domcat.ProductRepository {
+	if p.bind == nil {
+		return p
+	}
+	return parentSKUProducts{ProductRepository: p.bind(tx), bind: p.bind, bySlug: p.bySlug}
+}
+
+func (p parentSKUProducts) Create(ctx context.Context, product *domcat.Product) error {
+	if product != nil {
+		if sku, ok := p.bySlug[product.Slug]; ok {
+			if product.Attributes == nil {
+				product.Attributes = map[string]interface{}{}
+			}
+			product.Attributes[parentSKUAttribute] = sku
+		}
+	}
+	return p.ProductRepository.Create(ctx, product)
 }
 
 func ensureParentSKU(ctx context.Context, products domcat.ProductRepository, slug, parentSKU string) error {
@@ -460,7 +503,7 @@ func loadPrices(path string) ([]priceRow, error) {
 		if !shared.IsValidCurrency(currency) {
 			return nil, fieldErr(pricesFile, line, "currency", fmt.Sprintf("invalid currency %q", cell(rec, col, "currency")))
 		}
-		minor, err := parseNetMinor(cell(rec, col, "amount"))
+		minor, err := parseNetMinor(cellRaw(rec, col, "amount"))
 		if err != nil {
 			return nil, fieldErr(pricesFile, line, "amount", err.Error())
 		}
@@ -508,7 +551,6 @@ func readCSV(path string) ([][]string, error) {
 	}
 	defer f.Close()
 	r := csv.NewReader(f)
-	r.TrimLeadingSpace = true
 	var records [][]string
 	for {
 		rec, err := r.Read()
@@ -541,11 +583,15 @@ func headerIndex(file string, header []string, required ...string) (map[string]i
 }
 
 func cell(rec []string, col map[string]int, name string) string {
+	return strings.TrimSpace(cellRaw(rec, col, name))
+}
+
+func cellRaw(rec []string, col map[string]int, name string) string {
 	i, ok := col[name]
 	if !ok || i >= len(rec) {
 		return ""
 	}
-	return strings.TrimSpace(rec[i])
+	return rec[i]
 }
 
 func fieldErr(file string, row int, column, msg string) error {
