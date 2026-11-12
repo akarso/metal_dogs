@@ -1,0 +1,31 @@
+revision: c9911a68866b5b944e0812f9eb8d91978d23e014
+worktree: clean
+
+command: SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5433/shopanda_task_e1?sslmode=disable' go test ./plugins/metaldogs/... -count=1
+exit: 0
+
+ok  	github.com/akarso/shopanda/plugins/metaldogs	6.798s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/mediastore	0.007s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres	2.180s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/application	0.027s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/application/imageprep	0.200s
+?   	github.com/akarso/shopanda/plugins/metaldogs/catalog	[no test files]
+ok  	github.com/akarso/shopanda/plugins/metaldogs/domain	0.004s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation	0.009s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/eval	0.168s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/imagemime	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/mockup	0.009s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/ocr	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/openai	0.020s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/validate	0.022s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/httpapi	0.094s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/observability	0.004s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/ports	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/testutil	2.490s
+
+command: make docs-policy
+exit: 0
+
+bash .github/scripts/check-product-docs-links.sh
+bash .github/scripts/check-upstream-deviations.sh
+upstream-deviations OK (pin 43f0a1ed22b0, 24 allowlisted path(s))
