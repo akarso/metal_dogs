@@ -13,3 +13,4 @@
 - [ ] A file with one bad price among good rows writes nothing: product, variants, prices and stock are all unchanged
 - [ ] No silent rounding anywhere
 - [ ] All cases are exercised through the command and observed through the public storefront API or the command result, with no separate parser unit tests
+- [ ] Writing `parent_sku` is part of the same atomic write as the product import: if any step fails, no product exists without its `parent_sku` (carried over from the ticket 02 review)
