@@ -1,8 +1,8 @@
 # CR-17: C7 Regeneration limits
 
-- Status: **open** (implementation complete; merge pending)
+- Status: **closed** — merged via PR [#32](https://github.com/akarso/metal_dogs/pull/32) (`38f34ee4`; tip `8621a2f1`)
 - Slices: `C7`
-- Milestone progress: M3 → C7
+- Milestone progress: M3 → C7 done
 
 ## What shipped
 
@@ -50,7 +50,7 @@
 
 ## Documentation updated
 
-- [x] ROADMAP C7 DONE; G4/C5 partial; api.md; generation-pipeline; CR-17; CR log; plugin README; runbooks
+- [x] ROADMAP C7 DONE; G4/C5 partial; `architecture/api.md`; CR-17; CR log; plugin README; runbooks
 
 ## Follow-ups
 
