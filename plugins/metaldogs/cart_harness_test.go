@@ -28,9 +28,7 @@ import (
 
 var teeSKUs = []string{"MDOGS-TEE-S", "MDOGS-TEE-M", "MDOGS-TEE-L", "MDOGS-TEE-XL", "MDOGS-TEE-XXL"}
 
-// newDesignCartServer seeds the E1 catalog, publishes the tee, sets stock, and
-// serves the storefront product routes plus the public cart API on an isolated
-// database. The plugin is enabled so it registers its cart-line fields.
+// E1 seed stays draft with stock 0, so the harness publishes the tee and sets stock.
 func newDesignCartServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	db := testutil.OpenIsolatedWithCore(t, "cart_design")
