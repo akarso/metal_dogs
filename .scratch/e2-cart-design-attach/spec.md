@@ -39,7 +39,7 @@ The customer presses "add to cart" on an approved design, chooses a size, and th
 25. As a developer, I want the plugin never to take the field's trusted-write marker or codes from request input, so that trust cannot be forged.
 26. As a developer, I want tests to run the route on an isolated database with core and plugin migrations, so that behaviour is observed the way a customer would see it.
 27. As a reviewer, I want the roadmap wording corrected so that "inert without design id" applies only to non-tee products, so that the docs match the decision.
-28. As a reviewer, I want the known gaps (cart merge, rate limit) written down, so that nobody assumes they are covered.
+28. As a reviewer, I want the known gaps (cart merge, signed-in customer, rate limit) written down, so that nobody assumes they are covered.
 29. As a future maintainer, I want the route, the error mapping and the cart flow documented, so that the customizer API reference stays complete.
 30. As a future maintainer, I want the evidence of this slice recorded in a CR round file, so that the slice has a closed record like E1.
 
@@ -90,6 +90,7 @@ The customer presses "add to cart" on an approved design, chooses a size, and th
 - A template-to-product mapping in the data model; a second garment (X2).
 - Unlimited stock or the M3 stock policy; publishing the product.
 - Preserving the field when a guest cart is merged into a customer cart through hooks: the core copies the field without hooks, and E3 re-validates at checkout. Documented as a known gap.
+- A signed-in customer. The route skips customer JWT parsing and always uses the guest session cookie. The storefront cart page loads a signed-in customer's cart by customer id and ignores that cookie, so the added line is not on `/cart` after the redirect. Guest session carts are the supported path.
 - Any change to the Shopanda core or to existing migrations.
 
 ## Further Notes
@@ -98,4 +99,4 @@ The customer presses "add to cart" on an approved design, chooses a size, and th
 - The core refuses a purchase of a draft product or one with no stock. Tests must publish the custom tee and give it stock; do not change the E1 seed to make tests pass.
 - Because the field is public, cart responses show the design id to the cart holder. This is intended: the id is not a secret and the owner token is never stored on the cart.
 - Trust marker rule from upstream: the trusted-write context is per field code and is stripped at event, pricing, checkout and job dispatch points; the plugin must create it only inside the add route, immediately before the cart call.
-- Known accepted limits at this slice: the cart merge gap above, and the shared cart-id exposure of the headless cart API (the route avoids it by using the session cart).
+- Known accepted limits at this slice: the cart merge gap above, the signed-in customer gap above, and the shared cart-id exposure of the headless cart API (the route avoids it by using the session cart).

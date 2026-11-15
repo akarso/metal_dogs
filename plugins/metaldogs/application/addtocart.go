@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"errors"
-	"net/http"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -18,37 +17,38 @@ type AddToCart struct {
 	Grant func(context.Context) (context.Context, error)
 }
 
-// Execute authorises the design and adds one line. The returned path is the cart page.
-func (a *AddToCart) Execute(ctx context.Context, w http.ResponseWriter, r *http.Request, designID, token, variantID string) (string, error) {
+// Execute authorises the design and adds one line.
+// The returned session is the cookie value; path is the cart page.
+func (a *AddToCart) Execute(ctx context.Context, session ports.CartSession, designID, token, variantID string) (ports.CartSession, string, error) {
 	if a == nil || a.Designs == nil || a.Cart == nil || a.Grant == nil {
-		return "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable"}
+		return "", "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable"}
 	}
 	d, _, err := a.Designs.loadAuthorized(ctx, designID, token)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if d.Status != domain.DesignApproved {
-		return "", &DesignError{Code: DesignErrInvalidTransition, Message: "design is not ready"}
+		return "", "", &DesignError{Code: DesignErrInvalidTransition, Message: "design is not ready"}
 	}
 	onTee, err := a.Cart.BelongsToCustomTee(ctx, variantID)
 	if err != nil {
-		return "", mapCartErr(err)
+		return "", "", mapCartErr(err)
 	}
 	if !onTee {
-		return "", &DesignError{Code: DesignErrUnprocessable, Message: "variant is not part of the custom tee"}
+		return "", "", &DesignError{Code: DesignErrUnprocessable, Message: "variant is not part of the custom tee"}
 	}
 	writeCtx, err := a.Grant(ctx)
 	if err != nil {
-		return "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable", Cause: err}
+		return "", "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable", Cause: err}
 	}
-	target, err := a.Cart.AddLine(writeCtx, w, r, ports.DesignLine{VariantID: variantID, DesignID: d.ID})
+	next, target, err := a.Cart.AddLine(writeCtx, session, ports.DesignLine{VariantID: variantID, DesignID: d.ID})
 	if err != nil {
-		return "", mapCartErr(err)
+		return "", "", mapCartErr(err)
 	}
-	if target.Path == "" {
-		return "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable"}
+	if next == "" || target.Path == "" {
+		return "", "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable"}
 	}
-	return target.Path, nil
+	return next, target.Path, nil
 }
 
 func mapCartErr(err error) error {

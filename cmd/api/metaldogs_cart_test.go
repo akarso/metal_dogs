@@ -1,14 +1,12 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"io"
 	"testing"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
 	domainPricing "github.com/akarso/shopanda/internal/domain/pricing"
-	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
@@ -17,7 +15,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func TestBuildServeHandler_BindsMetalDogsSessionCart(t *testing.T) {
+func TestBindMetalDogsSessionCart(t *testing.T) {
 	log := logger.NewWithWriter(io.Discard, "error")
 	reg := plugin.NewRegistry(log)
 	registerMetalDogs(reg)
@@ -29,6 +27,9 @@ func TestBuildServeHandler_BindsMetalDogsSessionCart(t *testing.T) {
 	}
 	if bound == nil {
 		t.Fatal("metaldogs missing")
+	}
+	if bound.SessionCartWired() {
+		t.Fatal("session cart wired before bind")
 	}
 	db, err := sql.Open("pgx", "postgres://shopanda:changeme@127.0.0.1:1/none?sslmode=disable")
 	if err != nil {
@@ -46,10 +47,7 @@ func TestBuildServeHandler_BindsMetalDogsSessionCart(t *testing.T) {
 		log, event.NewBus(log), nil, nil,
 	)
 	rt := &serveRuntime{cartService: cartSvc, repos: repos, log: log}
-	func() {
-		defer func() { _ = recover() }()
-		_, _ = buildServeHandler(&config.Config{}, log, rt, db, context.Background())
-	}()
+	bindMetalDogsSessionCart(rt)
 	if !bound.SessionCartWired() {
 		t.Fatal("composition root did not supply the session cart port")
 	}

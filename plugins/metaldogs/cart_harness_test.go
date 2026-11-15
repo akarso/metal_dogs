@@ -128,6 +128,18 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 	)
 	cartSvc := cartApp.NewService(carts, prices, nil, nil, variants, products, components, stock, pipeline, log, bus, values, nil)
 	cartHandler := storefront.NewCartHandler(cartSvc, extensionapp.AsValueAPI(values))
+	categories, err := postgres.NewCategoryRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages := storefront.NewStorefrontHandler(
+		nil,
+		products,
+		categories,
+		composition.NewPipeline[composition.ProductContext](),
+		composition.NewPipeline[composition.ListingContext](),
+		nil,
+	).WithCart(variants, cartSvc)
 	productHandler := storefront.NewProductHandler(
 		products,
 		composition.NewPipeline[composition.ProductContext](),
@@ -151,6 +163,7 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 	mux.Handle("POST /api/v1/carts/{cartId}/items", cartHandler.AddItem())
 	mux.Handle("PUT /api/v1/carts/{cartId}/items/{variantId}", cartHandler.UpdateItem())
 	mux.Handle("DELETE /api/v1/carts/{cartId}/items/{variantId}", cartHandler.RemoveItem())
+	mux.HandleFunc("GET /fragments/mini-cart", pages.MiniCartFragment())
 	if pluginApp != nil {
 		for _, route := range pluginApp.PublicRoutes() {
 			mux.Handle(route.Pattern, route.Handler)

@@ -11,6 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akarso/shopanda/internal/domain/catalog"
+	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/domain/pricing"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	corepg "github.com/akarso/shopanda/internal/infrastructure/postgres"
 	"github.com/akarso/shopanda/internal/platform/id"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
@@ -58,6 +63,13 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		if len(items[0].Extensions) != 1 || items[0].Extensions[0].FieldCode != "metaldogs.design_id" || items[0].Extensions[0].Value != approved.ID {
 			t.Fatalf("extensions=%+v", items[0].Extensions)
 		}
+		pageStatus, page := miniCart(t, srv, &http.Cookie{Name: sessionCartCookie, Value: cartID})
+		if pageStatus != http.StatusOK {
+			t.Fatalf("mini-cart status=%d body=%s", pageStatus, page)
+		}
+		if !strings.Contains(page, "Metal Dogs custom tee") || strings.Contains(page, "Your cart is empty.") {
+			t.Fatalf("mini-cart does not show the line: %s", page)
+		}
 		after := getDesign(t, srv, approved.ID, token)
 		assertDesignUnchanged(t, before, after)
 	})
@@ -94,7 +106,6 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		expired, expiredToken := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(-time.Hour), 2)
 		draft, draftToken := insertCartDesign(t, db, domain.DesignDraft, time.Now().UTC().Add(24*time.Hour), 3)
 		draftBefore := getDesign(t, srv, draft.ID, draftToken)
-		outside := id.New()
 
 		cases := []struct {
 			name    string
@@ -111,7 +122,6 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 			{name: "unknown id", id: unknown, token: token, variant: variantM, want: http.StatusNotFound, code: "not_found"},
 			{name: "expired", id: expired.ID, token: expiredToken, variant: variantM, want: http.StatusNotFound, code: "not_found"},
 			{name: "not approved", id: draft.ID, token: draftToken, variant: variantM, want: http.StatusConflict, code: "invalid_transition"},
-			{name: "outside tee", id: approved.ID, token: token, variant: outside, want: http.StatusUnprocessableEntity, code: "unprocessable"},
 			{name: "invalid variant", id: approved.ID, token: token, body: `{"variant_id":"nope"}`, want: http.StatusUnprocessableEntity, code: "unprocessable"},
 			{name: "missing variant", id: approved.ID, token: token, body: `{}`, want: http.StatusUnprocessableEntity, code: "unprocessable"},
 			{name: "bad json", id: approved.ID, token: token, body: `{`, want: http.StatusUnprocessableEntity, code: "unprocessable"},
@@ -148,6 +158,138 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		approvedAfter := getDesign(t, srv, approved.ID, token)
 		assertDesignUnchanged(t, before, approvedAfter)
 	})
+
+	t.Run("variant outside the custom tee", func(t *testing.T) {
+		other := insertPublishedOtherVariant(t, db)
+		assertVariantRefused(t, srv, approved.ID, token, variantM, other)
+	})
+
+	t.Run("unknown variant", func(t *testing.T) {
+		assertVariantRefused(t, srv, approved.ID, token, variantM, id.New())
+	})
+}
+
+func assertVariantRefused(t *testing.T, srv *httptest.Server, designID, token, keep, refused string) {
+	t.Helper()
+	status, body, cookies := addDesignToCart(t, srv, designID, token, keep, nil)
+	if status != http.StatusOK {
+		t.Fatalf("seed line: status=%d body=%s", status, body)
+	}
+	cartID := cookieValue(cookies, sessionCartCookie)
+	before := cartItems(t, srv, cartID)
+	status, payload, _ := addDesignToCart(t, srv, designID, token, refused, &http.Cookie{Name: sessionCartCookie, Value: cartID})
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s", status, payload)
+	}
+	var errBody struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &errBody); err != nil {
+		t.Fatalf("body=%s", payload)
+	}
+	if errBody.Error != "unprocessable" {
+		t.Fatalf("error=%q", errBody.Error)
+	}
+	after := cartItems(t, srv, cartID)
+	if len(before) != len(after) {
+		t.Fatalf("cart items %d -> %d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i].VariantID != after[i].VariantID || before[i].Quantity != after[i].Quantity || len(before[i].Extensions) != len(after[i].Extensions) {
+			t.Fatalf("cart changed\nbefore=%+v\nafter=%+v", before, after)
+		}
+		for j := range before[i].Extensions {
+			if before[i].Extensions[j].FieldCode != after[i].Extensions[j].FieldCode || before[i].Extensions[j].Value != after[i].Extensions[j].Value {
+				t.Fatalf("extensions changed\nbefore=%+v\nafter=%+v", before[i].Extensions, after[i].Extensions)
+			}
+		}
+	}
+}
+
+func insertPublishedOtherVariant(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	products, err := corepg.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants, err := corepg.NewVariantRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	product, err := catalog.NewProduct(id.New(), "Other shirt", "other-shirt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := catalog.WithOperatorProductReadScope(context.Background())
+	if err := products.Create(ctx, &product); err != nil {
+		t.Fatal(err)
+	}
+	product.Status = catalog.StatusActive
+	if err := products.Update(ctx, &product); err != nil {
+		t.Fatal(err)
+	}
+	variant, err := catalog.NewVariant(id.New(), product.ID, "OTHER-SHIRT-M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.Name = "M"
+	if err := variants.Create(ctx, &variant); err != nil {
+		t.Fatal(err)
+	}
+	stores, err := corepg.NewStoreRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := stores.FindByCode(ctx, "pl")
+	if err != nil || pl == nil {
+		t.Fatalf("pl store: %v", err)
+	}
+	amount := shared.MustNewMoney(8049, "PLN")
+	price, err := pricing.NewPrice(id.New(), variant.ID, pl.ID, amount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prices, err := corepg.NewPriceRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prices.Upsert(ctx, &price); err != nil {
+		t.Fatal(err)
+	}
+	stock, err := corepg.NewStockRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := inventory.NewStockEntry(variant.ID, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stock.SetStock(ctx, &entry); err != nil {
+		t.Fatal(err)
+	}
+	return variant.ID
+}
+
+func miniCart(t *testing.T, srv *httptest.Server, cookie *http.Cookie) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/fragments/mini-cart", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = catalogPLNHost
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(payload)
 }
 
 func teeVariantID(t *testing.T, srv *httptest.Server, sku string) string {

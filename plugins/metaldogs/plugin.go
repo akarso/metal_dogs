@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -351,12 +350,12 @@ func (s pluginSessionCart) BelongsToCustomTee(ctx context.Context, variantID str
 	return cart.BelongsToCustomTee(ctx, variantID)
 }
 
-func (s pluginSessionCart) AddLine(ctx context.Context, w http.ResponseWriter, r *http.Request, line ports.DesignLine) (ports.CartTarget, error) {
+func (s pluginSessionCart) AddLine(ctx context.Context, session ports.CartSession, line ports.DesignLine) (ports.CartSession, ports.CartTarget, error) {
 	cart, err := s.cart()
 	if err != nil {
-		return ports.CartTarget{}, err
+		return "", ports.CartTarget{}, err
 	}
-	return cart.AddLine(ctx, w, r, line)
+	return cart.AddLine(ctx, session, line)
 }
 
 func (s pluginSessionCart) cart() (ports.SessionCart, error) {

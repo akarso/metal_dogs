@@ -1,9 +1,6 @@
 package ports
 
-import (
-	"context"
-	"net/http"
-)
+import "context"
 
 // DesignIDFieldCode is the cart-line extension written only by the add-to-cart route.
 const DesignIDFieldCode = "metaldogs.design_id"
@@ -18,6 +15,10 @@ type DesignLine struct {
 type CartTarget struct {
 	Path string
 }
+
+// CartSession is the storefront cart id from the session cookie.
+// Empty means the caller has no cart yet. It must not be written into a response body.
+type CartSession string
 
 // CartCode classifies a session-cart failure for HTTP mapping.
 type CartCode string
@@ -57,5 +58,7 @@ func (e *CartError) Unwrap() error {
 // or a trusted-write marker from the caller beyond the context already granted.
 type SessionCart interface {
 	BelongsToCustomTee(ctx context.Context, variantID string) (bool, error)
-	AddLine(ctx context.Context, w http.ResponseWriter, r *http.Request, line DesignLine) (CartTarget, error)
+	// AddLine writes one quantity-one line. An empty session creates a guest cart.
+	// The returned session is the cookie value; callers must not put it in the response body.
+	AddLine(ctx context.Context, session CartSession, line DesignLine) (CartSession, CartTarget, error)
 }
