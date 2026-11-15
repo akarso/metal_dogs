@@ -99,6 +99,10 @@ func (p *Plugin) Init(app *plugin.App) error {
 		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be <= %d", maxCooldownSecs)
 	}
 
+	if err := registerDesignIDField(app); err != nil {
+		return fmt.Errorf("metaldogs plugin: design field: %w", err)
+	}
+
 	registerCLICommands(app, p)
 
 	store, err := resolveAssetStore(app)
