@@ -3,9 +3,10 @@ package metaldogs
 import (
 	domainext "github.com/akarso/shopanda/internal/domain/extension"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
-const designIDFieldCode = "metaldogs.design_id"
+const designIDFieldCode = ports.DesignIDFieldCode
 
 // Same 8-4-4-4-12 hex shape as httpapi.looksLikeUUID.
 const designIDPattern = `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`

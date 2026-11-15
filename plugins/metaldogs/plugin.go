@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -31,12 +32,27 @@ type Plugin struct {
 	generate     *application.GenerateService
 	worker       *application.GenerateWorker
 	catalogRepos func(*sql.DB) (catalog.Repos, error)
+	sessionCart  ports.SessionCart
 }
 
 // UseCatalogRepos supplies catalog repositories for metaldogs:catalog-seed.
 // The plugin cannot import infrastructure adapters (PR-1017); the composition root builds them.
 func (p *Plugin) UseCatalogRepos(open func(*sql.DB) (catalog.Repos, error)) {
 	p.catalogRepos = open
+}
+
+// UseSessionCart supplies the storefront session cart. The composition root calls it
+// after the cart service exists; the add route reads it per request.
+func (p *Plugin) UseSessionCart(cart ports.SessionCart) {
+	if p == nil {
+		return
+	}
+	p.sessionCart = cart
+}
+
+// SessionCartWired reports whether the composition root supplied the session cart port.
+func (p *Plugin) SessionCartWired() bool {
+	return p != nil && p.sessionCart != nil
 }
 
 // New returns the Metal Dogs plugin.
@@ -166,6 +182,16 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/clone", httpapi.CloneDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs clone route: %w", err)
+	}
+	addToCart := &application.AddToCart{
+		Designs: p.designs,
+		Cart:    pluginSessionCart{p: p},
+		Grant: func(ctx context.Context) (context.Context, error) {
+			return app.PluginWriteContext(ctx, PluginName, ports.DesignIDFieldCode)
+		},
+	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/add-to-cart", httpapi.AddDesignToCart(addToCart)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs add-to-cart route: %w", err)
 	}
 	if err := app.RegisterPublicRoute("GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
@@ -313,4 +339,29 @@ func newGenerateServices(
 		Cooldown:    time.Duration(cooldownSecs) * time.Second, // 0 disables
 	}
 	return svc, worker, nil
+}
+
+type pluginSessionCart struct{ p *Plugin }
+
+func (s pluginSessionCart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return false, err
+	}
+	return cart.BelongsToCustomTee(ctx, variantID)
+}
+
+func (s pluginSessionCart) AddLine(ctx context.Context, w http.ResponseWriter, r *http.Request, line ports.DesignLine) (ports.CartTarget, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return ports.CartTarget{}, err
+	}
+	return cart.AddLine(ctx, w, r, line)
+}
+
+func (s pluginSessionCart) cart() (ports.SessionCart, error) {
+	if s.p == nil || s.p.sessionCart == nil {
+		return nil, &ports.CartError{Code: ports.CartUnavailable}
+	}
+	return s.p.sessionCart, nil
 }

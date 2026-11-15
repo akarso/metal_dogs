@@ -354,7 +354,8 @@ func designStatus(code string) int {
 		return http.StatusNotFound
 	case application.DesignErrTemplateUnavailable, application.DesignErrUploadUnavailable,
 		application.DesignErrUploadAlreadyAttached, application.DesignErrInvalidTexts,
-		application.DesignErrChecksumMismatch, application.DesignErrPayloadTooLarge:
+		application.DesignErrChecksumMismatch, application.DesignErrPayloadTooLarge,
+		application.DesignErrUnprocessable:
 		return http.StatusUnprocessableEntity
 	case application.DesignErrInvalidTransition, application.DesignErrConflict:
 		return http.StatusConflict

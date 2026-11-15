@@ -14,6 +14,7 @@ import (
 	"github.com/akarso/shopanda/internal/application/composition"
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
 	appPricing "github.com/akarso/shopanda/internal/application/pricing"
+	"github.com/akarso/shopanda/internal/domain/catalog"
 	"github.com/akarso/shopanda/internal/domain/inventory"
 	domainPricing "github.com/akarso/shopanda/internal/domain/pricing"
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
@@ -23,13 +24,14 @@ import (
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs"
+	"github.com/akarso/shopanda/plugins/metaldogs/adapters/sessioncart"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
 
 var teeSKUs = []string{"MDOGS-TEE-S", "MDOGS-TEE-M", "MDOGS-TEE-L", "MDOGS-TEE-XL", "MDOGS-TEE-XXL"}
 
 // E1 seed stays draft with stock 0, so the harness publishes the tee and sets stock.
-func newDesignCartServer(t *testing.T) *httptest.Server {
+func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	t.Helper()
 	db := testutil.OpenIsolatedWithCore(t, "cart_design")
 	runCatalogSeed(t, db, repoCatalogDir(t))
@@ -38,15 +40,19 @@ func newDesignCartServer(t *testing.T) *httptest.Server {
 
 	log := logger.NewWithWriter(io.Discard, "error")
 	app := testApp(t, true)
+	app.Bootstrap = &plugin.Bootstrap{DB: db}
 	extReg := extensionapp.NewRegistry()
 	app.SetExtensionRegistry(extReg)
 	reg := plugin.NewRegistry(log)
-	reg.Register(metaldogs.New())
+	p := metaldogs.New()
+	reg.Register(p)
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
-	return newStorefrontAndCart(t, db, extReg)
+	return newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository) {
+		p.UseSessionCart(sessioncart.New(carts, products, variants))
+	}), db
 }
 
 func setTeeStock(t *testing.T, db *sql.DB, qty int) {
@@ -78,7 +84,7 @@ func setTeeStock(t *testing.T, db *sql.DB, qty int) {
 	}
 }
 
-func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry) *httptest.Server {
+func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, bind func(*cartApp.Service, catalog.ProductRepository, catalog.VariantRepository)) *httptest.Server {
 	t.Helper()
 	products, err := postgres.NewProductRepo(db)
 	if err != nil {
@@ -145,6 +151,14 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 	mux.Handle("POST /api/v1/carts/{cartId}/items", cartHandler.AddItem())
 	mux.Handle("PUT /api/v1/carts/{cartId}/items/{variantId}", cartHandler.UpdateItem())
 	mux.Handle("DELETE /api/v1/carts/{cartId}/items/{variantId}", cartHandler.RemoveItem())
+	if pluginApp != nil {
+		for _, route := range pluginApp.PublicRoutes() {
+			mux.Handle(route.Pattern, route.Handler)
+		}
+	}
+	if bind != nil {
+		bind(cartSvc, products, variants)
+	}
 
 	stores, err := postgres.NewStoreRepo(db)
 	if err != nil {

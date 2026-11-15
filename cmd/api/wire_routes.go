@@ -28,6 +28,7 @@ import (
 )
 
 func buildServeHandler(cfg *config.Config, log logger.Logger, rt *serveRuntime, conn *sql.DB, serveCtx context.Context) (http.Handler, error) {
+	bindMetalDogsSessionCart(rt)
 	router := shophttp.NewRouter()
 
 	// Middleware: outermost first.

@@ -8,7 +8,7 @@ import (
 )
 
 func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
-	srv := newDesignCartServer(t)
+	srv, _ := newDesignCartServer(t)
 	products := listCatalogProducts(t, srv)
 	if len(products) != 1 || products[0].Slug != "mdogs-tee" || products[0].Status != "active" {
 		t.Fatalf("catalog = %+v", products)
@@ -85,6 +85,7 @@ type cartLine struct {
 	Quantity   int    `json:"quantity"`
 	Extensions []struct {
 		FieldCode string `json:"field_code"`
+		Value     any    `json:"value"`
 	} `json:"extensions"`
 }
 

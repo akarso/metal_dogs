@@ -233,6 +233,7 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
 		!patterns["PATCH /api/customizer/designs/{id}"] ||
 		!patterns["POST /api/customizer/designs/{id}/generate"] ||
+		!patterns["POST /api/customizer/designs/{id}/add-to-cart"] ||
 		!patterns["GET /api/customizer/generation-jobs/{id}"] {
 		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads + designs + generate", routes)
 	}
