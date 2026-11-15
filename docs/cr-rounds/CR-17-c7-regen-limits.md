@@ -1,6 +1,7 @@
 # CR-17: C7 Regeneration limits
 
 - Status: **closed** — merged via PR [#32](https://github.com/akarso/metal_dogs/pull/32) (`38f34ee4`; tip `8621a2f1`)
+- Closed: 2026-11-15
 - Slices: `C7`
 - Milestone progress: M3 → C7 done
 

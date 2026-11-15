@@ -25,11 +25,11 @@ No new previews; designs are preserved and resumable. Risk of runaway spend if r
 
 ## Remediation
 
-1. **Stop the bleeding** if spend is abnormal: set `plugins.metaldogs.generation.enabled: false` (or lower the cap to current spend). Generation endpoints then return `503 temporarily_unavailable`; everything else keeps working.
-2. Provider incident, spend normal: leave the queue running; transient retries are bounded. If the incident is long, disable generation to avoid exhausting customers' attempt budgets with failures — failed attempts due to provider errors should not count against the customer (`C7` policy); verify this is implemented before relying on it.
+1. **Stop the bleeding** if spend is abnormal: lower `plugins.metaldogs.cost.daily_cap` to current spend (once O3 lands), or set `plugins.metaldogs.enabled: false` to take the whole plugin offline (`GET /api/customizer/enabled` → `404`; no customizer HTTP). There is no generation-only kill switch yet.
+2. Provider incident, spend normal: leave the queue running; transient retries are bounded by `max_retries`. A long outage still burns customer attempt budget — every `RequestGeneration` (including after `generation_failed`) consumes C7 attempts and cooldown; provider-fault refunds are a CR-17 follow-up, not current behavior. For a prolonged incident, take the plugin offline (`enabled: false`) or pause traffic rather than letting customers exhaust budgets on provider failures.
 3. Cap reached legitimately (good day): raise the cap deliberately after confirming the success rate and cost per accepted artwork are within budget. Record the change.
 4. Credentials/auth error: rotate the key in the secret store and restart `app serve` and `app worker`. Never put the key in config files or logs.
-5. After recovery: re-enable generation; failed jobs are not retried automatically (cost); customers retry themselves.
+5. After recovery: re-enable the plugin if it was disabled; failed jobs are not retried automatically (cost); customers retry themselves (remaining attempts / cooldown still apply).
 
 Irreversible: none. Raising the cap spends money; record who approved it.
 
