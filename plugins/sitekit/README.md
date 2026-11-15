@@ -16,7 +16,7 @@ product-init for your own slug.
 
 Canonical types only: `integration.sync.sitekit.<name>` via `pluginsdk`
 `RegisterManual` / `Enqueue`. See
-[PLUGIN_RUNTIME_CONTRACT](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/PLUGIN_RUNTIME_CONTRACT.md).
+[PLUGIN_RUNTIME_CONTRACT](https://github.com/akarso/shopanda/blob/f58a4157a8543f2e53dba293ba4e5c554c8bbb91/docs/guides/PLUGIN_RUNTIME_CONTRACT.md).
 
 ## Checks
 
