@@ -17,17 +17,12 @@ import (
 
 func TestBindMetalDogsSessionCart(t *testing.T) {
 	log := logger.NewWithWriter(io.Discard, "error")
+	staleReg := plugin.NewRegistry(log)
+	registerMetalDogs(staleReg)
+	stale := metalDogsFromRegistry(t, staleReg)
 	reg := plugin.NewRegistry(log)
 	registerMetalDogs(reg)
-	var bound *metaldogs.Plugin
-	for _, e := range reg.Entries() {
-		if p, ok := e.Plugin.(*metaldogs.Plugin); ok {
-			bound = p
-		}
-	}
-	if bound == nil {
-		t.Fatal("metaldogs missing")
-	}
+	bound := metalDogsFromRegistry(t, reg)
 	if bound.SessionCartWired() {
 		t.Fatal("session cart wired before bind")
 	}
@@ -51,4 +46,18 @@ func TestBindMetalDogsSessionCart(t *testing.T) {
 	if !bound.SessionCartWired() {
 		t.Fatal("composition root did not supply the session cart port")
 	}
+	if stale.SessionCartWired() {
+		t.Fatal("session cart port was bound to an earlier plugin instance")
+	}
+}
+
+func metalDogsFromRegistry(t *testing.T, reg *plugin.Registry) *metaldogs.Plugin {
+	t.Helper()
+	for _, e := range reg.Entries() {
+		if p, ok := e.Plugin.(*metaldogs.Plugin); ok {
+			return p
+		}
+	}
+	t.Fatal("metaldogs missing")
+	return nil
 }

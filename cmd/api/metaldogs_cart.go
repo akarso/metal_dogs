@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	metalDogsMu      sync.Mutex
-	metalDogsPlugins []*metaldogs.Plugin
+	metalDogsMu     sync.Mutex
+	metalDogsPlugin *metaldogs.Plugin
 )
 
 func rememberMetalDogs(p *metaldogs.Plugin) {
@@ -17,7 +17,7 @@ func rememberMetalDogs(p *metaldogs.Plugin) {
 		return
 	}
 	metalDogsMu.Lock()
-	metalDogsPlugins = append(metalDogsPlugins, p)
+	metalDogsPlugin = p
 	metalDogsMu.Unlock()
 }
 
@@ -28,9 +28,9 @@ func bindMetalDogsSessionCart(rt *serveRuntime) {
 	}
 	port := sessioncart.New(rt.cartService, rt.repos.productRepo, rt.repos.variantRepo)
 	metalDogsMu.Lock()
-	plugins := append([]*metaldogs.Plugin(nil), metalDogsPlugins...)
+	p := metalDogsPlugin
 	metalDogsMu.Unlock()
-	for _, p := range plugins {
+	if p != nil {
 		p.UseSessionCart(port)
 	}
 }

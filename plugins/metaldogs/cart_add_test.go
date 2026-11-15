@@ -74,6 +74,35 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		assertDesignUnchanged(t, before, after)
 	})
 
+	t.Run("checked-out session cart", func(t *testing.T) {
+		oldID := createPLNCart(t, srv)
+		markCartCheckedOut(t, db, oldID)
+		status, body, cookies := addDesignToCart(t, srv, approved.ID, token, variantM, &http.Cookie{Name: sessionCartCookie, Value: oldID})
+		if status != http.StatusOK {
+			t.Fatalf("status=%d body=%s", status, body)
+		}
+		newID := cookieValue(cookies, sessionCartCookie)
+		if newID == "" || newID == oldID {
+			t.Fatalf("cookie=%q old=%q", newID, oldID)
+		}
+		if strings.Contains(string(body), newID) || strings.Contains(string(body), oldID) || strings.Contains(string(body), "cart_id") {
+			t.Fatalf("response exposes a cart id: %s", body)
+		}
+		items := cartItems(t, srv, newID)
+		if len(items) != 1 || items[0].VariantID != variantM || items[0].Quantity != 1 {
+			t.Fatalf("items=%+v", items)
+		}
+		if len(items[0].Extensions) != 1 || items[0].Extensions[0].Value != approved.ID {
+			t.Fatalf("extensions=%+v", items[0].Extensions)
+		}
+		old := publicCart(t, srv, oldID)
+		if old.Status != "checked_out" || len(old.Items) != 0 {
+			t.Fatalf("old cart=%+v", old)
+		}
+		after := getDesign(t, srv, approved.ID, token)
+		assertDesignUnchanged(t, before, after)
+	})
+
 	t.Run("existing session cart", func(t *testing.T) {
 		cartID := createPLNCart(t, srv)
 		status, body, cookies := addDesignToCart(t, srv, approved.ID, token, variantL, &http.Cookie{Name: sessionCartCookie, Value: cartID})
@@ -394,6 +423,47 @@ func addDesignToCartRaw(t *testing.T, srv *httptest.Server, method, path, token,
 		t.Fatal(err)
 	}
 	return resp.StatusCode, payload, resp.Cookies()
+}
+
+func markCartCheckedOut(t *testing.T, db *sql.DB, cartID string) {
+	t.Helper()
+	repo, err := corepg.NewCartRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	current, err := repo.FindByID(ctx, cartID)
+	if err != nil || current == nil {
+		t.Fatalf("cart %s: %v", cartID, err)
+	}
+	if err := current.Checkout(); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Save(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type publicCartView struct {
+	Status string     `json:"status"`
+	Items  []cartLine `json:"items"`
+}
+
+func publicCart(t *testing.T, srv *httptest.Server, cartID string) publicCartView {
+	t.Helper()
+	status, body := cartDo(t, srv, http.MethodGet, "/api/v1/carts/"+cartID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("get cart: status=%d body=%s", status, body)
+	}
+	var envelope struct {
+		Data struct {
+			Cart publicCartView `json:"cart"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("cart body: %v %s", err, body)
+	}
+	return envelope.Data.Cart
 }
 
 func cookieValue(cookies []*http.Cookie, name string) string {

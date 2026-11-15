@@ -45,6 +45,7 @@ func AddDesignToCart(add *application.AddToCart) http.Handler {
 			writeJSONError(w, http.StatusNotFound, application.DesignErrNotFound)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		var body addToCartBody
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()

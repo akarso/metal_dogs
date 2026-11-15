@@ -85,7 +85,8 @@ func (c *Cart) AddLine(ctx context.Context, session ports.CartSession, line port
 func (c *Cart) loadOrCreate(ctx context.Context, session ports.CartSession) (*domaincart.Cart, bool, error) {
 	if id := strings.TrimSpace(string(session)); id != "" {
 		current, err := c.carts.GetCart(ctx, id, "")
-		if err == nil && current != nil {
+		// AddItem rejects a cart that is not active, so that cookie is not a session cart.
+		if err == nil && current != nil && current.IsActive() {
 			return current, false, nil
 		}
 		if err != nil && !clientCartMiss(err) {
