@@ -10,7 +10,7 @@ No calendar dates are given. Ordering is expressed through dependencies and mile
 
 ## 1. Ground truth this plan is built on
 
-Inspected against Shopanda source at pin [`43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b`](UPSTREAM_PIN.md) (`upstream/main`; #573 public catalog price and stock on top of the `a8cbcb18` absorb). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
+Inspected against Shopanda source at pin [`f58a4157a8543f2e53dba293ba4e5c554c8bbb91`](UPSTREAM_PIN.md) (`upstream/main`; #575–#580 plugin-only extension writes on top of the `43f0a1ed` pin). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
 
 | Capability | Status | Consequence for Metal Dogs |
 | --- | --- | --- |
@@ -22,6 +22,7 @@ Inspected against Shopanda source at pin [`43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a
 | Plugin on-demand enqueue + handlers | Inspected at pin (Phase 13 PR-1087–1088) | Use `RegisterManual` + `Enqueue`; queue types are `integration.sync.metaldogs.<name>` (no free-form `metaldogs.*` types) |
 | Plugin-owned schema migrations | Inspected at pin (Phase 13 PR-1084–1086) | Implement `plugin.Migrator`; versions `plugin:<name>:<basename>`; applied by `app migrate` / boot `InitAll` with advisory lock |
 | Extension fields with cart → order snapshot at checkout | Inspected at pin | Line-level (`cart_item` / `order_item`); `design_id` attach via [ADR-0005](adr/0005-immutable-order-design-snapshot.md) |
+| Plugin-only extension writes | Inspected at pin ([shopanda#575](https://github.com/akarso/shopanda/pull/575), [#578](https://github.com/akarso/shopanda/pull/578), [#580](https://github.com/akarso/shopanda/pull/580)) | Untrusted writes of `Access.PluginOnlyWrite` fields return 403 `forbidden_plugin_only_field`. Trusted in-process code uses `App.PluginWriteContext` (error) or `App.WithPluginWrite` (panic). `Publish`, pricing, `checkout.Workflow.Execute`, and `jobs.Worker.safeHandle` strip the grant. `plugin.App` has no cart service port. |
 | Guest checkout, Stripe core plugin, S3 core plugin, media storage port | Inspected at pin | No account required for MVP; private S3 bucket ([ADR-0004](adr/0004-private-object-storage-signed-urls.md)) |
 | SSR storefront with themes, UI slots, asset manifest | Inspected at pin | Cart and checkout pages are reused from Shopanda; only the customizer is custom ([ADR-0002](adr/0002-storefront-customizer-and-shopanda-checkout.md)) |
 | `order.created` / `order.failed` published | Inspected at pin (PR-1088) | Prefer `order.paid` for fulfilment; tolerate `order.created` followed by `order.failed` if checkout compensates |
@@ -235,7 +236,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`43f0a1ed…` on `upstream/main`; #568/#570/#571 still absorbed, #573 public price and stock, F3 residuals still listed in overview deviations).
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`f58a4157…` on `upstream/main`; #568/#570/#571 still absorbed, #573 public price and stock, #575–#580 plugin-only writes, F3 residuals still listed in overview deviations).
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
@@ -262,7 +263,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
 - **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
-- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/SYNC_JOB_OBSERVABILITY.md).
+- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/f58a4157a8543f2e53dba293ba4e5c554c8bbb91/docs/guides/SYNC_JOB_OBSERVABILITY.md).
 
 #### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; pin absorb 2026-11-08)
 

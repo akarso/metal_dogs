@@ -49,4 +49,4 @@ Environment variables:
 | `composition.ProductContext` | Blocks/meta on PDP responses |
 | `pkg/integrationsdk/graphql` | Outbound GraphQL client |
 
-See also: `plugins/warehousedemo` (outbound sync job), [PLUGIN_COMPOSITION.md](https://github.com/akarso/shopanda/blob/43f0a1ed22b09e5e7a4e7d94f2f74fdd57d4a01b/docs/guides/PLUGIN_COMPOSITION.md).
+See also: `plugins/warehousedemo` (outbound sync job), [PLUGIN_COMPOSITION.md](https://github.com/akarso/shopanda/blob/f58a4157a8543f2e53dba293ba4e5c554c8bbb91/docs/guides/PLUGIN_COMPOSITION.md).
