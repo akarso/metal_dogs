@@ -30,8 +30,8 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if !ok || raw == nil {
 		return nil
 	}
-	current, ok := raw.(*domaincart.Cart)
-	if !ok || current == nil || len(current.Items) == 0 {
+	current, ok := cartFromValidatePayload(raw)
+	if !ok || len(current.Items) == 0 {
 		return nil
 	}
 	// A missing port cannot tell a tee from any other line. An enabled plugin does not start in that state; an error here would block every cart.
@@ -85,6 +85,22 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 		}
 	}
 	return nil
+}
+
+func cartFromValidatePayload(raw any) (*domaincart.Cart, bool) {
+	switch current := raw.(type) {
+	case *extapi.CartView:
+		if current == nil {
+			return nil, false
+		}
+		items := make([]domaincart.Item, len(current.Items))
+		for i, line := range current.Items {
+			items[i] = domaincart.Item{VariantID: line.VariantID, Quantity: line.Quantity}
+		}
+		return &domaincart.Cart{ID: current.ID, Items: items}, true
+	default:
+		return nil, false
+	}
 }
 
 func designCartIssue(now time.Time, variantID, designID string, present bool, d domain.Design, found bool) (extapi.CartValidationIssue, bool) {

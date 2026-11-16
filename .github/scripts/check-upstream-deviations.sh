@@ -40,6 +40,8 @@ ALLOWLIST=(
   internal/platform/plugin/providers_test.go
   internal/platform/plugin/sync_job_test.go
   internal/platform/runtime/scheduler_test.go
+  pkg/pluginsdk/harness/harness_test.go
+  pkg/pluginsdk/sdk_test.go
 )
 
 mapfile -t dirty < <(
@@ -48,6 +50,7 @@ mapfile -t dirty < <(
     internal/application/integration \
     internal/domain/jobs \
     cmd/api \
+    pkg/pluginsdk \
     | sort -u
 )
 

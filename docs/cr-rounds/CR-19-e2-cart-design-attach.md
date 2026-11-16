@@ -1,6 +1,8 @@
 # CR-19: E2 cart line design attach
 
-- Status: **open** (implementation complete; merge pending)
+- Status: **closed**
+- Closed: 2026-11-16
+- PR: https://github.com/akarso/metal_dogs/pull/37
 - Slices: `E2`
 - Milestone progress: M3 → E2
 
@@ -57,7 +59,7 @@ Log: [`evidence/CR-19-e2-cart-design-attach-test.log`](evidence/CR-19-e2-cart-de
 - A signed-in customer is written to the guest cookie cart. `/cart` loads the customer cart and ignores that cookie, so the line is not on `/cart` after the redirect. Guest session carts are the supported path
 - Rate limiting for the route is O4
 - A custom-tee line that already exists on that variant with no design id is `409`. The customer removes the line first
-- Concurrent adds of different designs on the same session cart and size can both pass the pre-check. Core `AddItem` upserts the extension before `carts.Save`, and a failed version check does not roll that upsert back (Shopanda roadmap, phase 17). E3 re-validates at checkout
+- Core `AddItem` used to upsert the extension before `carts.Save`. That order is fixed upstream in phase PR-1549 (merged in shopanda#584), verified on pin `a411c970`: `carts.Save`, then the extension upsert, and a failed upsert restores the previous line snapshot. Save and the upsert are still not one database transaction. The Metal Dogs adapter still writes the design id before `AddItem`, because `cart.validate` runs before `AddItem` stores extensions. Two concurrent adds of different designs can still both pass that pre-check. E3 re-validates at checkout
 - Each cart read runs `variants.FindByID` per line, lists `extension_values`, and loads the design for each custom-tee line. The cost is accepted for this slice
 - `metaldogs.design_mismatch` (`DesignMismatchCode`) is reserved. It is not emitted until a template-to-product mapping exists (X2)
 - A process death after the pre-write and before `AddItem` can leave a design id with no line. E3 re-validates the design. No core change in this slice
@@ -65,7 +67,7 @@ Log: [`evidence/CR-19-e2-cart-design-attach-test.log`](evidence/CR-19-e2-cart-de
 
 ## Follow-ups
 
-- E3: checkout re-validation, including merged carts and the concurrent-add race
+- E3: checkout re-validation, including merged carts and the adapter pre-check race (core Save-then-upsert is fixed in phase PR-1549)
 - E4: order snapshot from the copied design id; design → `ordered`
 - S5: size picker and the button that calls this route
 - O4: rate limit

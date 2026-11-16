@@ -125,7 +125,7 @@ Do **not** treat `delete_after` as preview validity — use `preview_url_expires
 | `GET` | `/api/customizer/designs/{id}` | `Authorization: Bearer <owner_token>` | `200` design DTO |
 | `PATCH` | `/api/customizer/designs/{id}` | Bearer | `200` design DTO |
 
-Platform `AuthMiddleware` does **not** JWT-parse `Authorization` on `/api/customizer` and `/api/customizer/*` (owner tokens are opaque base64url, not Shopanda JWTs; scheme match is case-insensitive). Token in query string is rejected (`400`). Wrong/missing Bearer, unknown id, or past `expires_at` → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
+Platform `AuthMiddleware` classifies a Bearer that is not a customer JWT (`ErrNotCustomerToken`: wrong shape, not three segments) as anonymous for the platform: the storefront session cookie is used when it is valid, otherwise the request is a guest. Owner tokens are raw base64url with no dots, so they take that path on `/api/customizer` and `/api/customizer/*`. A Bearer with two dots that fails signature or expiry is `401`, and the session cookie is not consulted. Scheme match is case-insensitive. Token in query string is rejected (`400`). Wrong/missing Bearer, unknown id, or past `expires_at` → **`404` `not_found`** (never `403`). Token is never logged; hash never returned.
 
 ### Create body
 
@@ -303,7 +303,7 @@ Allowed from `approved` (and later `ordered`). Requires source `owner_ref` = des
 | --- | --- | --- | --- |
 | `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer owner token | `200` `{ "cart_url": "/cart" }` |
 
-The customizer prefix skips customer JWT parsing. The owner token is the `Authorization: Bearer` header (ADR-0007). A token in the query string is `400` `bad_request`. The route reads and writes the storefront session cart cookie `shopanda_storefront_cart` (HttpOnly, `Path=/`, 30 days, `SameSite=Lax`). It creates that cart when the cookie is missing or does not name an active cart. The cart id is not a request field and is not in the JSON body. After a successful add the cookie is the cart; the design token is not required on later cart calls.
+Bearer handling matches Designs (C3): an owner token has no dots, so `AuthMiddleware` treats `ErrNotCustomerToken` as the storefront session or a guest; a two-dot Bearer that fails validation is `401`. The owner token is the `Authorization: Bearer` header (ADR-0007). A token in the query string is `400` `bad_request`. The route reads and writes the storefront session cart cookie `shopanda_storefront_cart` (HttpOnly, `Path=/`, 30 days, `SameSite=Lax`). It creates that cart when the cookie is missing or does not name an active cart. The cart id is not a request field and is not in the JSON body. After a successful add the cookie is the cart; the design token is not required on later cart calls.
 
 ### Body
 
@@ -340,7 +340,7 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 - Guest cart merge into a customer cart copies `metaldogs.design_id` without the add path or the hook. E3 re-validates at checkout.
 - The route always uses the guest session cookie. `/cart` for a signed-in customer loads that customer's cart and ignores the cookie, so the new line is not on `/cart` after the redirect. Guest session carts are the supported path.
 - Rate limiting for this route is O4.
-- Two concurrent adds of different designs on the same session cart and size can both pass the pre-check. Core `AddItem` upserts the extension before `carts.Save`, and a failed optimistic version check does not roll that upsert back (Shopanda phase 17). E3 re-validates at checkout.
+- Two concurrent adds of different designs on the same session cart and size can both pass the Metal Dogs pre-check. The adapter writes the design id before `AddItem`, because `cart.validate` runs before `AddItem` stores extensions. Core `AddItem` no longer upserts before `carts.Save` (phase PR-1549, pin `a411c970`: Save, then upsert, then compensate). E3 re-validates at checkout.
 - Each cart read looks up every line's variant, lists extension values, and loads the design for each custom-tee line. That cost is accepted for this slice.
 
 ## Safe delivery

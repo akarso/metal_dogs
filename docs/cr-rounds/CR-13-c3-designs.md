@@ -33,7 +33,7 @@
 - `domain/design_test.go`, `application/design_test.go`, `application/token_test.go`
 - `httpapi/designs_test.go` (incl. AuthMiddleware mount)
 - `adapters/postgres/design_repo_test.go` (incl. concurrent replace)
-- `storefront/auth_middleware_test.go` customizer Bearer skip
+- `storefront/auth_middleware_test.go` customizer Bearer skip (at pin `a411c970` an opaque Bearer is a guest or the session cookie; a two-dot Bearer that fails validation is `401`)
 - Plugin / registerPlugins / sync_obs assert design routes
 
 ## Flags / migrations / rollback

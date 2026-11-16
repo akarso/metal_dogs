@@ -19,6 +19,37 @@ func (s *ValueService) Registry() *Registry {
 	return s.registry
 }
 
+// IsPluginOnlyWrite reports whether code is registered with PluginOnlyWrite.
+// Used by cart hooks to redact values from untrusted hook payloads.
+func (s *ValueService) IsPluginOnlyWrite(code string) bool {
+	if s == nil || s.registry == nil {
+		return false
+	}
+	field, ok := s.registry.Get(code)
+	return ok && field.Access.PluginOnlyWrite
+}
+
+// IsExclusiveString reports whether code opts into exclusive string upsert
+// (differing non-empty stored value → conflict).
+func (s *ValueService) IsExclusiveString(code string) bool {
+	if s == nil || s.registry == nil {
+		return false
+	}
+	field, ok := s.registry.Get(code)
+	return ok && field.Access.ExclusiveString
+}
+
+// FieldOwner returns the registrant that owns code, or "" when the field is
+// unowned or unknown. Used by cart hooks: a plugin-only value is shown only
+// when the handler's registrant matches this owner. An empty owner means
+// redacted for every handler (fields registered outside plugin Init).
+func (s *ValueService) FieldOwner(code string) string {
+	if s == nil || s.registry == nil {
+		return ""
+	}
+	return s.registry.Owner(code)
+}
+
 // NewValueService creates a ValueService.
 func NewValueService(registry *Registry, repo domainext.ValueRepository) *ValueService {
 	if registry == nil {
@@ -69,6 +100,52 @@ func (s *ValueService) List(ctx context.Context, target domainext.Target, includ
 			continue
 		}
 		out = append(out, value)
+	}
+	return out, nil
+}
+
+// ListByCartItems returns stored values grouped by variant ID for a cart,
+// filtering private fields unless includePrivate is true. One repo round-trip.
+func (s *ValueService) ListByCartItems(ctx context.Context, cartID string, variantIDs []string, includePrivate bool) (map[string][]domainext.Value, error) {
+	cartID = strings.TrimSpace(cartID)
+	if cartID == "" || len(variantIDs) == 0 {
+		return map[string][]domainext.Value{}, nil
+	}
+
+	targetIDs := make([]string, 0, len(variantIDs))
+	variantByTargetID := make(map[string]string, len(variantIDs))
+	for _, variantID := range variantIDs {
+		variantID = strings.TrimSpace(variantID)
+		if variantID == "" {
+			continue
+		}
+		targetID := domainext.CartItemTargetID(cartID, variantID)
+		targetIDs = append(targetIDs, targetID)
+		variantByTargetID[targetID] = variantID
+	}
+	if len(targetIDs) == 0 {
+		return map[string][]domainext.Value{}, nil
+	}
+
+	stored, err := s.repo.ListByTargets(ctx, domainext.TargetCartItem, targetIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string][]domainext.Value, len(variantByTargetID))
+	for _, value := range stored {
+		field, ok := s.registry.Get(value.FieldCode)
+		if !ok {
+			continue
+		}
+		if field.Visibility == domainext.VisibilityPrivate && !includePrivate {
+			continue
+		}
+		variantID := variantByTargetID[value.TargetID]
+		if variantID == "" {
+			continue
+		}
+		out[variantID] = append(out[variantID], value)
 	}
 	return out, nil
 }
@@ -193,6 +270,22 @@ func (s *ValueService) UpsertBatch(ctx context.Context, target domainext.Target,
 	return out, nil
 }
 
+// UpsertBatchSelective validates then upserts plain and ExclusiveString fields
+// in one repository transaction (exclusive codes use the conditional predicate).
+func (s *ValueService) UpsertBatchSelective(ctx context.Context, target domainext.Target, inputs []domainext.ValueInput, updatedBy string, canAccessPrivate bool, exclusiveFieldCodes map[string]struct{}) ([]domainext.Value, error) {
+	if len(inputs) == 0 {
+		return nil, domainext.ValidationErr("values must not be empty")
+	}
+	out, err := s.validateBatchValues(ctx, target, inputs, updatedBy, canAccessPrivate, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.UpsertBatchSelective(ctx, out, exclusiveFieldCodes); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *ValueService) validateBatchValues(ctx context.Context, target domainext.Target, inputs []domainext.ValueInput, updatedBy string, canAccessPrivate, requireUpdatedBy bool) ([]domainext.Value, error) {
 	target.Type = domainext.TargetType(strings.TrimSpace(string(target.Type)))
 	target.ID = strings.TrimSpace(target.ID)
@@ -257,6 +350,85 @@ func (s *ValueService) validateBatchValues(ctx context.Context, target domainext
 		})
 	}
 	return out, nil
+}
+
+// ListByTarget returns every stored value for target, unfiltered by
+// visibility or scope (core-internal, like CopyTarget/DeleteAllForTarget).
+// Used to snapshot a target's rows before a risky write (e.g. guest-cart
+// merge CopyTarget, which commits independently of the cart Save that
+// follows it) so a later failure can restore exactly what was there.
+func (s *ValueService) ListByTarget(ctx context.Context, target domainext.Target) ([]domainext.Value, error) {
+	target.Type = domainext.TargetType(strings.TrimSpace(string(target.Type)))
+	target.ID = strings.TrimSpace(target.ID)
+	if target.Type == "" || target.ID == "" {
+		return nil, domainext.ValidationErr("target type and id must not be empty")
+	}
+	return s.repo.ListByTarget(ctx, target)
+}
+
+// ListTargetIDsByTypeAndIDPrefix lists distinct target_ids for type with the
+// given SQL LIKE prefix (core-internal; used to find merge-backup rows).
+func (s *ValueService) ListTargetIDsByTypeAndIDPrefix(ctx context.Context, targetType domainext.TargetType, idPrefix string) ([]string, error) {
+	targetType = domainext.TargetType(strings.TrimSpace(string(targetType)))
+	idPrefix = strings.TrimSpace(idPrefix)
+	if targetType == "" || idPrefix == "" {
+		return nil, domainext.ValidationErr("target type and id prefix must not be empty")
+	}
+	return s.repo.ListTargetIDsByTypeAndIDPrefix(ctx, targetType, idPrefix)
+}
+
+// atomicTargetReplacer is implemented by repos that can replace a target's
+// rows in one database transaction (upsert the snapshot, then delete extras).
+type atomicTargetReplacer interface {
+	ReplaceTarget(ctx context.Context, target domainext.Target, values []domainext.Value) error
+}
+
+// ReplaceTarget restores target to exactly values (already-validated Value
+// rows, typically a prior ListByTarget snapshot). An empty values leaves
+// the target with no rows.
+//
+// Order is upsert-then-delete-extras (never delete-all then upsert): a
+// failed write must not leave the target empty. When the repo implements
+// atomicTargetReplacer, the whole replace runs in one transaction.
+// Core-internal (merge compensation): skips validation and PluginOnlyWrite
+// like CopyTarget — it restores a prior state, it does not accept new input.
+func (s *ValueService) ReplaceTarget(ctx context.Context, target domainext.Target, values []domainext.Value) error {
+	target.Type = domainext.TargetType(strings.TrimSpace(string(target.Type)))
+	target.ID = strings.TrimSpace(target.ID)
+	if target.Type == "" || target.ID == "" {
+		return domainext.ValidationErr("target type and id must not be empty")
+	}
+	normalized := make([]domainext.Value, len(values))
+	keep := make(map[string]struct{}, len(values))
+	for i, v := range values {
+		v.TargetType = target.Type
+		v.TargetID = target.ID
+		normalized[i] = v
+		keep[v.FieldCode] = struct{}{}
+	}
+	if r, ok := s.repo.(atomicTargetReplacer); ok {
+		return r.ReplaceTarget(ctx, target, normalized)
+	}
+	// Fallback for in-memory / test repos: upsert first so a failed write
+	// never wipes existing rows the way DeleteAll-then-UpsertBatch did.
+	if len(normalized) > 0 {
+		if err := s.repo.UpsertBatch(ctx, normalized); err != nil {
+			return err
+		}
+	}
+	stored, err := s.repo.ListByTarget(ctx, target)
+	if err != nil {
+		return err
+	}
+	for _, value := range stored {
+		if _, ok := keep[value.FieldCode]; ok {
+			continue
+		}
+		if err := s.repo.Delete(ctx, target, value.FieldCode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CopyTarget copies stored values from one target to another.

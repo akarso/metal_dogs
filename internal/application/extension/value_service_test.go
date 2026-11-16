@@ -2,9 +2,11 @@ package extension_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
 	domainext "github.com/akarso/shopanda/internal/domain/extension"
@@ -59,6 +61,23 @@ func (m *memValueRepo) UpsertBatch(_ context.Context, values []domainext.Value) 
 	return nil
 }
 
+func (m *memValueRepo) UpsertBatchSelective(_ context.Context, values []domainext.Value, exclusiveFieldCodes map[string]struct{}) error {
+	for _, value := range values {
+		if _, ok := exclusiveFieldCodes[value.FieldCode]; !ok || value.Payload.StringValue == nil {
+			continue
+		}
+		key := valueKey(domainext.Target{Type: value.TargetType, ID: value.TargetID}, value.FieldCode)
+		if existing, ok := m.values[key]; ok && existing.Payload.StringValue != nil {
+			stored := strings.TrimSpace(*existing.Payload.StringValue)
+			want := strings.TrimSpace(*value.Payload.StringValue)
+			if stored != "" && stored != want {
+				return domainext.ErrStringValueConflict
+			}
+		}
+	}
+	return m.UpsertBatch(context.Background(), values)
+}
+
 func (m *memValueRepo) Delete(_ context.Context, target domainext.Target, fieldCode string) error {
 	key := valueKey(target, fieldCode)
 	if _, ok := m.values[key]; !ok {
@@ -93,6 +112,45 @@ func registerValueField(t *testing.T, reg *extensionapp.Registry, def domainext.
 	t.Helper()
 	if err := reg.Register(def); err != nil {
 		t.Fatalf("register field %q: %v", def.Code, err)
+	}
+}
+
+func TestValueService_UpsertBatchSelective_ConflictAndRollbackPlain(t *testing.T) {
+	reg := extensionapp.NewRegistry()
+	registerValueField(t, reg, domainext.FieldDef{
+		Code: "acme.design", Label: "Design", Type: domainext.FieldTypeString,
+		Scope: domainext.TargetCartItem, StorageMode: domainext.StorageStored,
+		Access:     domainext.Access{ExclusiveString: true},
+		Validation: domainext.Validation{Required: true},
+	})
+	registerValueField(t, reg, domainext.FieldDef{
+		Code: "acme.note", Label: "Note", Type: domainext.FieldTypeString,
+		Scope: domainext.TargetCartItem, StorageMode: domainext.StorageStored,
+	})
+	repo := newMemValueRepo()
+	svc := extensionapp.NewValueService(reg, repo)
+	target := domainext.CartItemTarget("cart-1", "var-1")
+	ctx := context.Background()
+	excl := map[string]struct{}{"acme.design": {}}
+	if _, err := svc.UpsertBatchSelective(ctx, target, []domainext.ValueInput{
+		{FieldCode: "acme.design", Value: "d1"},
+	}, "plugin:acme", false, excl); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.UpsertBatchSelective(ctx, target, []domainext.ValueInput{
+		{FieldCode: "acme.note", Value: "should-not-stick"},
+		{FieldCode: "acme.design", Value: "d2"},
+	}, "plugin:acme", false, excl)
+	if !errors.Is(err, domainext.ErrStringValueConflict) {
+		t.Fatalf("err = %v, want ErrStringValueConflict", err)
+	}
+	if _, ok := repo.values[valueKey(target, "acme.note")]; ok {
+		t.Fatal("plain note must roll back when exclusive design conflicts")
+	}
+	if _, err := svc.UpsertBatchSelective(ctx, target, []domainext.ValueInput{
+		{FieldCode: "acme.design", Value: ""},
+	}, "plugin:acme", false, excl); err == nil {
+		t.Fatal("expected Required validation for blank design")
 	}
 }
 
@@ -406,6 +464,62 @@ func TestValueService_PluginOnlyWrite_TrustedContextAllowed(t *testing.T) {
 		if v.UpdatedBy != "plugin:acme" {
 			t.Fatalf("UpdatedBy = %q, want plugin:acme", v.UpdatedBy)
 		}
+	}
+}
+
+// failUpsertRepo fails the next UpsertBatch call. Used to prove ReplaceTarget
+// upserts before deleting extras: a failed upsert must leave existing rows.
+type failUpsertRepo struct {
+	*memValueRepo
+	fail error
+}
+
+func (f *failUpsertRepo) UpsertBatch(ctx context.Context, values []domainext.Value) error {
+	if f.fail != nil {
+		err := f.fail
+		f.fail = nil
+		return err
+	}
+	return f.memValueRepo.UpsertBatch(ctx, values)
+}
+
+// TestValueService_ReplaceTarget_UpsertFailurePreservesExisting covers the
+// review blocker: the old DeleteAll-then-UpsertBatch order wiped the target
+// when UpsertBatch failed after deletes. Upsert-first keeps "Keep me".
+func TestValueService_ReplaceTarget_UpsertFailurePreservesExisting(t *testing.T) {
+	reg := extensionapp.NewRegistry()
+	registerValueField(t, reg, domainext.FieldDef{
+		Code: "acme.gift.message", Label: "Gift", Type: domainext.FieldTypeString,
+		Scope: domainext.TargetCartItem, StorageMode: domainext.StorageStored,
+	})
+	inner := newMemValueRepo()
+	repo := &failUpsertRepo{memValueRepo: inner}
+	svc := extensionapp.NewValueService(reg, repo)
+	ctx := context.Background()
+	target := domainext.CartItemTarget("cart-1", "var-1")
+	keep := "Keep me"
+	if _, err := svc.UpsertBatch(ctx, target, []domainext.ValueInput{{FieldCode: "acme.gift.message", Value: keep}}, "cust", false); err != nil {
+		t.Fatal(err)
+	}
+	repo.fail = errors.New("upsert boom")
+	overwrite := "Overwrite"
+	err := svc.ReplaceTarget(ctx, target, []domainext.Value{{
+		FieldCode:  "acme.gift.message",
+		TargetType: target.Type,
+		TargetID:   target.ID,
+		Payload:    domainext.ValuePayload{StringValue: &overwrite},
+		UpdatedBy:  "restore",
+		UpdatedAt:  time.Now().UTC(),
+	}})
+	if err == nil {
+		t.Fatal("expected UpsertBatch failure")
+	}
+	got, err := repo.ListByTarget(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Payload.StringValue == nil || *got[0].Payload.StringValue != keep {
+		t.Fatalf("after failed ReplaceTarget = %+v, want %q preserved", got, keep)
 	}
 }
 
