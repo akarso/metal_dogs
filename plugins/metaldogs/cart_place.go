@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/akarso/shopanda/pkg/extapi"
@@ -43,7 +45,6 @@ func (p *Plugin) Place(ctx context.Context, w http.ResponseWriter, r *http.Reque
 	if cart == nil || strings.TrimSpace(cart.ID) == "" {
 		return "", cartUnavailable(nil)
 	}
-	defer p.clearPendingDesign(cart.ID, variantID)
 	for _, line := range cart.Items {
 		if line.VariantID != variantID {
 			continue
@@ -55,13 +56,15 @@ func (p *Plugin) Place(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		}
 		return "", &application.DesignError{Code: application.DesignErrConflict, Message: "conflict"}
 	}
+	token := p.bindPending(cart.ID, variantID)
+	defer p.releasePending(token)
 	writeCtx := p.host.WithPluginWrite(ctx, PluginName, ports.DesignIDFieldCode)
 	if err := port.AddItem(writeCtx, cart.ID, cart.CustomerID, variantID, 1, pluginsdk.CartAddItemOpts{
 		Extensions: []pluginsdk.CartExtensionValue{{
 			Code:  ports.DesignIDFieldCode,
 			Value: designID,
 		}},
-		UpdatedBy: "guest",
+		UpdatedBy: cartLineActor(cart.CustomerID),
 	}); err != nil {
 		return "", cartPlaceErr(err)
 	}
@@ -122,7 +125,7 @@ func (p *Plugin) onAddItemBefore(hctx *extapi.HookContext) error {
 		return nil
 	}
 	// cart.validate reads stored line extensions. AddItem upserts this field after that hook.
-	p.setPendingDesign(hookString(hctx, "cart_id"), hookString(hctx, "variant_id"), designID)
+	p.rememberPending(hookString(hctx, "cart_id"), hookString(hctx, "variant_id"), designID)
 	return nil
 }
 
@@ -151,20 +154,71 @@ func hookString(hctx *extapi.HookContext, key string) string {
 	return strings.TrimSpace(s)
 }
 
-func pendingKey(cartID, variantID string) string {
-	return cartID + "\x00" + variantID
+type pendingCall struct {
+	token     uint64
+	cartID    string
+	variantID string
+	designID  string
 }
 
-func (p *Plugin) setPendingDesign(cartID, variantID, designID string) {
-	if p == nil || cartID == "" || variantID == "" || designID == "" {
-		return
+func cartLineActor(customerID string) string {
+	if id := strings.TrimSpace(customerID); id != "" {
+		return id
 	}
+	return "guest"
+}
+
+// Hook handlers do not receive Place's context; before-hook and cart.validate share the AddItem goroutine.
+func currentGID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	fields := strings.Fields(string(buf[:n]))
+	if len(fields) < 2 {
+		return 0
+	}
+	id, _ := strconv.ParseUint(fields[1], 10, 64)
+	return id
+}
+
+func (p *Plugin) bindPending(cartID, variantID string) uint64 {
+	if p == nil || cartID == "" || variantID == "" {
+		return 0
+	}
+	gid := currentGID()
 	p.pendingMu.Lock()
 	defer p.pendingMu.Unlock()
 	if p.pending == nil {
-		p.pending = map[string]string{}
+		p.pending = map[uint64]pendingCall{}
 	}
-	p.pending[pendingKey(cartID, variantID)] = designID
+	p.pendingSeq++
+	token := p.pendingSeq
+	p.pending[gid] = pendingCall{token: token, cartID: cartID, variantID: variantID}
+	return token
+}
+
+func (p *Plugin) rememberPending(cartID, variantID, designID string) {
+	if p == nil || cartID == "" || variantID == "" || designID == "" {
+		return
+	}
+	gid := currentGID()
+	p.pendingMu.Lock()
+	defer p.pendingMu.Unlock()
+	if p.pending == nil {
+		p.pending = map[uint64]pendingCall{}
+	}
+	if cur, ok := p.pending[gid]; ok && cur.cartID == cartID && cur.variantID == variantID {
+		cur.designID = designID
+		p.pending[gid] = cur
+		return
+	}
+	p.pendingSeq++
+	p.pending[gid] = pendingCall{
+		token: p.pendingSeq, cartID: cartID, variantID: variantID, designID: designID,
+	}
+}
+
+func (p *Plugin) setPendingDesign(cartID, variantID, designID string) {
+	p.rememberPending(cartID, variantID, designID)
 }
 
 func (p *Plugin) pendingDesign(cartID, variantID string) (string, bool) {
@@ -173,15 +227,24 @@ func (p *Plugin) pendingDesign(cartID, variantID string) (string, bool) {
 	}
 	p.pendingMu.Lock()
 	defer p.pendingMu.Unlock()
-	id := strings.TrimSpace(p.pending[pendingKey(cartID, variantID)])
+	cur, ok := p.pending[currentGID()]
+	if !ok || cur.cartID != cartID || cur.variantID != variantID {
+		return "", false
+	}
+	id := strings.TrimSpace(cur.designID)
 	return id, id != ""
 }
 
-func (p *Plugin) clearPendingDesign(cartID, variantID string) {
-	if p == nil {
+func (p *Plugin) releasePending(token uint64) {
+	if p == nil || token == 0 {
 		return
 	}
+	gid := currentGID()
 	p.pendingMu.Lock()
 	defer p.pendingMu.Unlock()
-	delete(p.pending, pendingKey(cartID, variantID))
+	cur, ok := p.pending[gid]
+	if !ok || cur.token != token {
+		return
+	}
+	delete(p.pending, gid)
 }

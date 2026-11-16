@@ -201,11 +201,13 @@ type qtyCart struct {
 	ensureCtx   context.Context
 	addCtx      context.Context
 	ensureView  *extapi.CartView
+	lastOpts    pluginsdk.CartAddItemOpts
 }
 
-func (q *qtyCart) AddItem(ctx context.Context, _, _, _ string, _ int, _ pluginsdk.CartAddItemOpts) error {
+func (q *qtyCart) AddItem(ctx context.Context, _, _, _ string, _ int, opts pluginsdk.CartAddItemOpts) error {
 	q.addCalls++
 	q.addCtx = ctx
+	q.lastOpts = opts
 	return nil
 }
 

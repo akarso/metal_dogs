@@ -35,7 +35,9 @@ type Plugin struct {
 	catalogRepos func(*sql.DB) (catalog.Repos, error)
 	host         cartSurface
 	pendingMu    sync.Mutex
-	pending      map[string]string
+	pendingSeq   uint64
+	// One slot per AddItem goroutine: cart.validate does not receive the Place context.
+	pending map[uint64]pendingCall
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.
