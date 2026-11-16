@@ -1,29 +1,25 @@
-revision: 82f52ba05ae7012e8d28b54c0e108eadab26e2fd
-worktree: code clean; documentation for CR-19 not yet committed
-command: SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5433/shopanda_task_e2?sslmode=disable' go test -count=1 -p 1 -timeout 25m ./plugins/metaldogs/... ./cmd/api/...
+revision: cae877824a9db56ff483f32d4faad8a9474dc9aa
+worktree: clean
+command: go test -count=1 -p 1 -timeout 25m ./plugins/metaldogs/... ./cmd/api/... (SHOPANDA_TEST_DSN=shopanda_task_e2)
 exit: 0
-elapsed_ms: 26465
 
-ok  	github.com/akarso/shopanda/plugins/metaldogs	14.605s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/mediastore	0.006s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres	2.264s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/sessioncart	0.006s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/application	0.030s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/application/imageprep	0.156s
+ok  	github.com/akarso/shopanda/plugins/metaldogs	13.930s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/mediastore	0.005s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres	2.720s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/sessioncart	0.004s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/application	0.025s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/application/imageprep	0.140s
 ?   	github.com/akarso/shopanda/plugins/metaldogs/catalog	[no test files]
 ok  	github.com/akarso/shopanda/plugins/metaldogs/domain	0.004s
 ok  	github.com/akarso/shopanda/plugins/metaldogs/generation	0.006s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/eval	0.123s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/imagemime	0.003s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/mockup	0.006s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/ocr	0.003s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/openai	0.015s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/validate	0.011s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/httpapi	0.095s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/observability	0.005s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/eval	0.102s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/imagemime	0.002s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/mockup	0.005s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/ocr	0.002s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/openai	0.012s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/validate	0.012s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/httpapi	0.080s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/observability	0.004s
 ok  	github.com/akarso/shopanda/plugins/metaldogs/ports	0.003s
-ok  	github.com/akarso/shopanda/plugins/metaldogs/testutil	2.336s
-ok  	github.com/akarso/shopanda/cmd/api	1.402s
-
-docs-policy: bash .github/scripts/check-product-docs-links.sh
-docs-policy-exit: 0
+ok  	github.com/akarso/shopanda/plugins/metaldogs/testutil	2.382s
+ok  	github.com/akarso/shopanda/cmd/api	1.433s

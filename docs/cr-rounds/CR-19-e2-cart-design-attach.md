@@ -17,7 +17,7 @@
 
 | Item | Result |
 | --- | --- |
-| `SHOPANDA_TEST_DSN=postgres://shopanda:changeme@127.0.0.1:5433/shopanda_task_e2?sslmode=disable go test -count=1 -p 1 -timeout 25m ./plugins/metaldogs/... ./cmd/api/...` | Exit 0 in 26s. Code revision `82f52ba05ae7012e8d28b54c0e108eadab26e2fd`. This commit adds documentation only; the suite does not execute it |
+| `SHOPANDA_TEST_DSN=postgres://shopanda:changeme@127.0.0.1:5433/shopanda_task_e2?sslmode=disable go test -count=1 -p 1 -timeout 25m ./plugins/metaldogs/... ./cmd/api/...` | Exit 0 in 26s. Code revision `cae877824a9db56ff483f32d4faad8a9474dc9aa`. Later commits add documentation only; the suite does not execute it |
 | `make docs-policy` (`bash .github/scripts/check-product-docs-links.sh`) | Exit 0 on the same worktree |
 | Known red on the upgrade base, not part of this run | `TestImportBoundary` (`job_fence.go`), `store_credit`, notification dedupe, OpenAI smoke |
 | Flaky on the base, not an E2 failure | `TestGenerateWorker_OverlapProcess_WinnerStaysSucceeded` (timeout observed on base; not changed in E2) |
