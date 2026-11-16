@@ -30,8 +30,6 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if !ok || raw == nil {
 		return nil
 	}
-	// Hook payload is *extapi.CartView. The domain cart is still accepted so a
-	// caller that has not switched cannot skip validation.
 	current, ok := cartFromValidatePayload(raw)
 	if !ok || len(current.Items) == 0 {
 		return nil
@@ -100,8 +98,6 @@ func cartFromValidatePayload(raw any) (*domaincart.Cart, bool) {
 			items[i] = domaincart.Item{VariantID: line.VariantID, Quantity: line.Quantity}
 		}
 		return &domaincart.Cart{ID: current.ID, Items: items}, true
-	case *domaincart.Cart:
-		return current, current != nil
 	default:
 		return nil, false
 	}

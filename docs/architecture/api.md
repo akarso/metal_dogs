@@ -303,7 +303,7 @@ Allowed from `approved` (and later `ordered`). Requires source `owner_ref` = des
 | --- | --- | --- | --- |
 | `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer owner token | `200` `{ "cart_url": "/cart" }` |
 
-The customizer prefix skips customer JWT parsing. The owner token is the `Authorization: Bearer` header (ADR-0007). A token in the query string is `400` `bad_request`. The route reads and writes the storefront session cart cookie `shopanda_storefront_cart` (HttpOnly, `Path=/`, 30 days, `SameSite=Lax`). It creates that cart when the cookie is missing or does not name an active cart. The cart id is not a request field and is not in the JSON body. After a successful add the cookie is the cart; the design token is not required on later cart calls.
+Bearer handling matches Designs (C3): an owner token has no dots, so `AuthMiddleware` treats `ErrNotCustomerToken` as the storefront session or a guest; a two-dot Bearer that fails validation is `401`. The owner token is the `Authorization: Bearer` header (ADR-0007). A token in the query string is `400` `bad_request`. The route reads and writes the storefront session cart cookie `shopanda_storefront_cart` (HttpOnly, `Path=/`, 30 days, `SameSite=Lax`). It creates that cart when the cookie is missing or does not name an active cart. The cart id is not a request field and is not in the JSON body. After a successful add the cookie is the cart; the design token is not required on later cart calls.
 
 ### Body
 

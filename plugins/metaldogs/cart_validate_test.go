@@ -23,12 +23,8 @@ func TestCartFromValidatePayload_View(t *testing.T) {
 }
 
 func TestOnCartValidate_EmptyCartWithoutSessionCart(t *testing.T) {
-	current, err := domaincart.NewCart("cart-1", "EUR")
-	if err != nil {
-		t.Fatal(err)
-	}
 	hctx := &extapi.HookContext{}
-	hctx.Set("cart", &current)
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1"})
 	if err := New().onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
@@ -38,13 +34,8 @@ func TestOnCartValidate_EmptyCartWithoutSessionCart(t *testing.T) {
 }
 
 func TestOnCartValidate_MissingSessionCart(t *testing.T) {
-	current, err := domaincart.NewCart("cart-1", "EUR")
-	if err != nil {
-		t.Fatal(err)
-	}
-	current.Items = []domaincart.Item{{VariantID: "variant-m", Quantity: 1}}
 	hctx := &extapi.HookContext{}
-	hctx.Set("cart", &current)
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "variant-m", Quantity: 1}}})
 	if err := New().onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
@@ -54,16 +45,11 @@ func TestOnCartValidate_MissingSessionCart(t *testing.T) {
 }
 
 func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
-	current, err := domaincart.NewCart("cart-1", "EUR")
-	if err != nil {
-		t.Fatal(err)
-	}
-	current.Items = []domaincart.Item{{VariantID: "shirt", Quantity: 1}}
 	cart := &scriptSessionCart{}
 	p := New()
 	p.sessionCart = cart
 	hctx := &extapi.HookContext{}
-	hctx.Set("cart", &current)
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "shirt", Quantity: 1}}})
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
@@ -79,16 +65,12 @@ func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
 }
 
 func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
-	current, err := domaincart.NewCart("cart-1", "EUR")
-	if err != nil {
-		t.Fatal(err)
-	}
-	current.Items = []domaincart.Item{{VariantID: "tee", Quantity: 1}}
+	view := &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "tee", Quantity: 1}}}
 	p := New()
 	cart := &scriptSessionCart{tees: map[string]struct{}{"tee": {}}}
 	p.sessionCart = cart
 	hctx := &extapi.HookContext{}
-	hctx.Set("cart", &current)
+	hctx.Set("cart", view)
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +87,7 @@ func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
 		lines: map[string]string{"tee": "design-a"},
 	}
 	hctx = &extapi.HookContext{}
-	hctx.Set("cart", &current)
+	hctx.Set("cart", view)
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
