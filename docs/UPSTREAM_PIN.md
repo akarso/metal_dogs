@@ -6,9 +6,9 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `f58a4157a8543f2e53dba293ba4e5c554c8bbb91` |
-| Pinned subject | Merge pull request #582 from akarso/dev |
-| Verified locally | 2026-11-15 (explicit `upstream/main`; tree delta from `43f0a1ed` is plugin-only extension writes, #575–#580) |
+| Pinned commit | `a411c970bbc869d54d44852bc30f7427be9b2745` |
+| Pinned subject | Merge pull request #588 from akarso/pr-1554-1555-product-consumer-followups |
+| Verified locally | 2026-11-16 (explicit SHA). Fetched `upstream/main` tip `9a8d2b7c` (PR #589) has the same tree |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
 
@@ -32,5 +32,8 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 - [shopanda#580](https://github.com/akarso/shopanda/pull/580) — strip plugin-write trust at pricing, checkout, and job dispatch (`4b164072`)
 - [shopanda#581](https://github.com/akarso/shopanda/pull/581) — `make check` gofmt/vet (`d19ee742`)
 - [shopanda#582](https://github.com/akarso/shopanda/pull/582) — promote that `dev` tip onto `main` (`f58a4157`)
+- [shopanda#584](https://github.com/akarso/shopanda/pull/584) — public extension SDK, PR-1540–1552 (`4f9de269`)
+- [shopanda#586](https://github.com/akarso/shopanda/pull/586) — `CartPort` consumer follow-ups, PR-1553 (`cec3e492`)
+- [shopanda#588](https://github.com/akarso/shopanda/pull/588) — optional customer identity and `CatalogPort` slug, PR-1554/1555 (`a411c970`)
 
-**Still Metal Dogs–only** (do not claim full F3 absorb): `App.BoundQueue()`, sync-handler `request_id`→ctx reinjection, plus registration/cache-control wiring — listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `plugin.App` still has no cart service port.
+**Still Metal Dogs–only** (do not claim full F3 absorb): `App.BoundQueue()`, sync-handler `request_id`→ctx reinjection, plus registration/cache-control wiring — listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `pluginsdk.Host` now has `Cart()` and `Catalog()`. Metal Dogs still injects `cmd/api/metaldogs_cart.go`; moving that port onto the SDK is a later ticket.

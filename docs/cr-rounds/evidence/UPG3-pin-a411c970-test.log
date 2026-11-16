@@ -1,0 +1,39 @@
+ok  	github.com/akarso/shopanda/internal/application/extension	0.006s
+ok  	github.com/akarso/shopanda/internal/application/cart	0.015s
+ok  	github.com/akarso/shopanda/internal/interfaces/http/storefront	18.268s
+ok  	github.com/akarso/shopanda/internal/application/composition	0.003s
+ok  	github.com/akarso/shopanda/cmd/api	1.389s
+ok  	github.com/akarso/shopanda/plugins/metaldogs	10.464s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/mediastore	0.010s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres	2.448s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/adapters/sessioncart	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/application	0.028s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/application/imageprep	0.155s
+?   	github.com/akarso/shopanda/plugins/metaldogs/catalog	[no test files]
+ok  	github.com/akarso/shopanda/plugins/metaldogs/domain	0.004s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation	0.006s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/eval	0.120s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/imagemime	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/mockup	0.006s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/ocr	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/openai	0.013s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/generation/validate	0.009s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/httpapi	0.096s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/observability	0.003s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/ports	0.002s
+ok  	github.com/akarso/shopanda/plugins/metaldogs/testutil	1.880s
+ok  	github.com/akarso/shopanda/internal/application/checkout	0.087s
+ok  	github.com/akarso/shopanda/internal/domain/pricing	0.005s
+ok  	github.com/akarso/shopanda/internal/domain/jobs	2.187s
+ok  	github.com/akarso/shopanda/internal/platform/event	0.364s
+ok  	github.com/akarso/shopanda/internal/platform/pluginwrite	0.005s
+ok  	github.com/akarso/shopanda/internal/platform/plugin	0.092s
+ok  	github.com/akarso/shopanda/pkg/extapi	0.007s
+ok  	github.com/akarso/shopanda/pkg/integrationhttp	0.004s
+?   	github.com/akarso/shopanda/pkg/integrationsdk	[no test files]
+ok  	github.com/akarso/shopanda/pkg/integrationsdk/graphql	0.007s
+ok  	github.com/akarso/shopanda/pkg/integrationsdk/http	0.211s
+ok  	github.com/akarso/shopanda/pkg/pluginsdk	0.006s
+ok  	github.com/akarso/shopanda/pkg/pluginsdk/harness	0.007s
+ok  	github.com/akarso/shopanda/pkg/storefrontsession	0.003s
+EXIT:0

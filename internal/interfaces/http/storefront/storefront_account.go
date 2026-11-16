@@ -1,7 +1,6 @@
 package storefront
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,10 +13,10 @@ import (
 	"github.com/akarso/shopanda/internal/domain/order"
 	"github.com/akarso/shopanda/internal/domain/theme"
 	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/pkg/storefrontsession"
 )
 
 const (
-	storefrontSessionCookieName   = "shopanda_storefront_session"
 	storefrontSessionCookieMaxAge = 60 * 60 * 24 * 14
 )
 
@@ -323,18 +322,15 @@ func (h *StorefrontHandler) syncStorefrontGuestCart(w http.ResponseWriter, r *ht
 	if h.carts == nil {
 		return nil
 	}
-	cookie, err := r.Cookie(storefrontCartCookieName)
-	if errors.Is(err, http.ErrNoCookie) {
+	cartID, ok := storefrontsession.CartIDFromRequest(r)
+	if !ok {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	if _, err := h.carts.ClaimGuestCart(r.Context(), strings.TrimSpace(cookie.Value), customerID); err != nil {
+	if _, err := h.carts.ClaimGuestCart(r.Context(), strings.TrimSpace(cartID), customerID); err != nil {
 		return err
 	}
 	// Clear stale or foreign cart cookies even when ClaimGuestCart becomes a no-op.
-	storefrontClearCartCookie(w, r)
+	h.storefrontClearCartCookie(w, r)
 	return nil
 }
 
@@ -583,14 +579,7 @@ func (h *StorefrontHandler) AccountDelete() http.HandlerFunc {
 }
 
 func storefrontSessionToken(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	cookie, err := r.Cookie(storefrontSessionCookieName)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(cookie.Value)
+	return storefrontsession.SessionTokenFromRequest(r)
 }
 
 func storefrontSetSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
@@ -602,7 +591,7 @@ func storefrontSetSessionCookie(w http.ResponseWriter, r *http.Request, token st
 		}
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     storefrontSessionCookieName,
+		Name:     storefrontsession.SessionCookieName,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   maxAge,
@@ -614,7 +603,7 @@ func storefrontSetSessionCookie(w http.ResponseWriter, r *http.Request, token st
 
 func storefrontClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     storefrontSessionCookieName,
+		Name:     storefrontsession.SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,

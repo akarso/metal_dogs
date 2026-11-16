@@ -1,7 +1,7 @@
 # Runbook: upgrading the pinned Shopanda version
 
 - **Introduced by slice:** `F0`
-- **Last exercised:** 2026-11-15 (pin → `f58a4157`; `upstream/main`, plugin-only extension writes from #575–#580)
+- **Last exercised:** 2026-11-16 (pin → `a411c970`; public extension SDK, PR-1540–1555). Fetched `upstream/main` tip `9a8d2b7c` is the same tree.
 - **Severity when triggered:** medium (planned change with regression risk)
 - **Owner:** backend maintainer
 

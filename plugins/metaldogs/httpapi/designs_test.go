@@ -18,6 +18,7 @@ import (
 
 	"github.com/akarso/shopanda/internal/domain/identity"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
+	platformauth "github.com/akarso/shopanda/internal/platform/auth"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
@@ -570,7 +571,7 @@ type failingJWTParser struct{ last string }
 
 func (p *failingJWTParser) Parse(_ context.Context, token string) (identity.Identity, error) {
 	p.last = token
-	return identity.Identity{}, errors.New("jwt: malformed token")
+	return identity.Identity{}, fmt.Errorf("%w: jwt: malformed token", platformauth.ErrNotCustomerToken)
 }
 
 func TestDesigns_AuthMiddlewareAllowsOwnerBearer(t *testing.T) {
@@ -612,8 +613,8 @@ func TestDesigns_AuthMiddlewareAllowsOwnerBearer(t *testing.T) {
 	if got["error"] != nil {
 		t.Fatalf("want design JSON, got %+v", got)
 	}
-	if parser.last != "" {
-		t.Fatalf("JWT parser must not see owner token, got %q", parser.last)
+	if parser.last != created.OwnerToken {
+		t.Fatalf("parser last=%q, want owner token", parser.last)
 	}
 
 	patch, _ := json.Marshal(map[string]any{"texts": map[string]string{"dog_name": "Azor"}})
