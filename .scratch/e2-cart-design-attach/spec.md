@@ -52,6 +52,7 @@ The customer presses "add to cart" on an approved design, chooses a size, and th
 - **Add semantics.** The line identity in the cart is the variant. Rules, applied by the route before the cart is touched:
   - same design, same variant already in cart → success, no change in quantity, existing cart returned;
   - a different design already on that variant → 409 conflict, nothing changed;
+  - the variant is already a custom-tee line with no design id → 409 conflict, nothing changed; the customer removes that line before a design can be attached;
   - the same design on a different variant → allowed, a second line;
   - a new line is added with quantity one; the customer may raise the quantity on the Shopanda cart page (any quantity of one or more), and the route never raises it.
 - **Eligibility.** The design must belong to the caller (token), exist, be unexpired and be `approved` (not `ordered`, not `expired`). The chosen variant must belong to the custom tee product (the product identified by its configured slug; one product at MVP, a template-to-product mapping is deferred to X2).
@@ -92,11 +93,12 @@ The customer presses "add to cart" on an approved design, chooses a size, and th
 - Preserving the field when a guest cart is merged into a customer cart through hooks: the core copies the field without hooks, and E3 re-validates at checkout. Documented as a known gap.
 - A signed-in customer. The route skips customer JWT parsing and always uses the guest session cookie. The storefront cart page loads a signed-in customer's cart by customer id and ignores that cookie, so the added line is not on `/cart` after the redirect. Guest session carts are the supported path.
 - Any change to the Shopanda core or to existing migrations.
+- Closing the race of two concurrent adds of different designs on the same session cart and size. Both can pass the pre-check. Core `AddItem` upserts the extension before `carts.Save`, and a failed optimistic version check does not roll that upsert back, so the line can keep the design whose save lost. E3 re-validates at checkout. No core change in this slice.
 
 ## Further Notes
 
 - The line identity is the variant, so one cart line holds one design; two designs in the same size cannot coexist, which is why a different design on the same size is refused rather than added.
 - The core refuses a purchase of a draft product or one with no stock. Tests must publish the custom tee and give it stock; do not change the E1 seed to make tests pass.
 - Because the field is public, cart responses show the design id to the cart holder. This is intended: the id is not a secret and the owner token is never stored on the cart.
-- Trust marker rule from upstream: the trusted-write context is per field code and is stripped at event, pricing, checkout and job dispatch points; the plugin must create it only inside the add route, immediately before the cart call.
-- Known accepted limits at this slice: the cart merge gap above, the signed-in customer gap above, and the shared cart-id exposure of the headless cart API (the route avoids it by using the session cart).
+- Trust marker rule from upstream: the trusted-write context is per field code and is stripped at event, pricing, checkout and job dispatch points. The adapter creates that context only for `AddItem`. `GetCart` and `CreateCart` receive a stripped context.
+- Known accepted limits at this slice: the cart merge gap above, the signed-in customer gap above, the concurrent-add race above, and the shared cart-id exposure of the headless cart API (the route avoids it by using the session cart).
