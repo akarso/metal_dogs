@@ -134,7 +134,7 @@ sequenceDiagram
     Cust->>UI: choose size
     UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer owner token)
     Note over API,Shop: Cookie shopanda_storefront_cart. No cart id in the request or the JSON response
-    API->>API: design exists, unexpired, approved, owned; variant is mdogs-tee
+    API->>API: design exists, unexpired, approved, owned, variant is mdogs-tee
     API->>Shop: trusted write of metaldogs.design_id, then AddItem quantity 1
     Note over Shop: Public cart API, SSR cart, and admin values cannot set this field (403)
     API-->>UI: 200 {cart_url: "/cart"} and Set-Cookie

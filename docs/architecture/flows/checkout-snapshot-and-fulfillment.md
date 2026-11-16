@@ -86,7 +86,7 @@ sequenceDiagram
     W->>S3: put production asset
     W->>API: version.production_status = ready
 
-    UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer; session cookie)
+    UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer, session cookie)
     Note over API: Response is cart_url /cart. The cart id stays in the cookie
     API->>Shop: trusted plugin write of metaldogs.design_id on AddItem only
     Shop->>Shop: cart.validate (approved, unexpired, present). No ownership check

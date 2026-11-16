@@ -1,7 +1,6 @@
 # CR-19: E2 cart line design attach
 
 - Status: **open** (implementation complete; merge pending)
-- Closed: 2026-11-16
 - Slices: `E2`
 - Milestone progress: M3 → E2
 
