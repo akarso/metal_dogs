@@ -18,16 +18,53 @@ import (
 )
 
 func TestBindMetalDogsSessionCart_MissingDependencyWarns(t *testing.T) {
+	restore := swapMetalDogsPlugin(nil)
+	t.Cleanup(restore)
 	var buf bytes.Buffer
 	log := logger.NewWithWriter(&buf, "warn")
-	bindMetalDogsSessionCart(&serveRuntime{log: log})
+	if err := bindMetalDogsSessionCart(&serveRuntime{log: log}); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(buf.String(), "metaldogs: session cart bind skipped") {
 		t.Fatalf("log=%s", buf.String())
 	}
 	buf.Reset()
-	bindMetalDogsSessionCart(nil)
+	if err := bindMetalDogsSessionCart(nil); err != nil {
+		t.Fatal(err)
+	}
 	if buf.Len() != 0 {
 		t.Fatalf("nil runtime logged %s", buf.String())
+	}
+}
+
+func TestBindMetalDogsSessionCart_EnabledWithoutDependencies(t *testing.T) {
+	t.Cleanup(swapMetalDogsPlugin(nil))
+	log := logger.NewWithWriter(io.Discard, "error")
+	reg := plugin.NewRegistry(log)
+	registerMetalDogs(reg)
+	p := metalDogsFromRegistry(t, reg)
+	var buf bytes.Buffer
+	err := bindMetalDogsSessionCart(&serveRuntime{log: logger.NewWithWriter(&buf, "warn")})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if p.SessionCartWired() {
+		t.Fatal("session cart wired without dependencies")
+	}
+	if !strings.Contains(buf.String(), "metaldogs: session cart bind skipped") {
+		t.Fatalf("log=%s", buf.String())
+	}
+}
+
+func swapMetalDogsPlugin(p *metaldogs.Plugin) func() {
+	metalDogsMu.Lock()
+	prev := metalDogsPlugin
+	metalDogsPlugin = p
+	metalDogsMu.Unlock()
+	return func() {
+		metalDogsMu.Lock()
+		metalDogsPlugin = prev
+		metalDogsMu.Unlock()
 	}
 }
 
@@ -58,7 +95,9 @@ func TestBindMetalDogsSessionCart(t *testing.T) {
 		log, event.NewBus(log), nil, nil,
 	)
 	rt := &serveRuntime{cartService: cartSvc, repos: repos, log: log}
-	bindMetalDogsSessionCart(rt)
+	if err := bindMetalDogsSessionCart(rt); err != nil {
+		t.Fatal(err)
+	}
 	if !bound.SessionCartWired() {
 		t.Fatal("composition root did not supply the session cart port")
 	}

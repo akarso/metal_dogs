@@ -56,6 +56,9 @@ func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok := cart.ctx.Deadline(); !ok {
+		t.Fatal("validation I/O has no deadline")
+	}
 	if cart.lineCalls != 0 || cart.qtyCalls != 0 {
 		t.Fatalf("line=%d qty=%d", cart.lineCalls, cart.qtyCalls)
 	}
@@ -71,11 +74,15 @@ func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
 	}
 	current.Items = []domaincart.Item{{VariantID: "tee", Quantity: 1}}
 	p := New()
-	p.sessionCart = &scriptSessionCart{tees: map[string]struct{}{"tee": {}}}
+	cart := &scriptSessionCart{tees: map[string]struct{}{"tee": {}}}
+	p.sessionCart = cart
 	hctx := &extapi.HookContext{}
 	hctx.Set("cart", &current)
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := cart.ctx.Deadline(); !ok {
+		t.Fatal("validation I/O has no deadline")
 	}
 	issues := hookIssues(hctx)
 	if len(issues) != 1 || issues[0].Code != ports.DesignRequiredCode || issues[0].Message != "design required" || issues[0].VariantID != "tee" || issues[0].Level != "" {
@@ -102,6 +109,7 @@ type scriptSessionCart struct {
 	lines     map[string]string
 	lineCalls int
 	qtyCalls  int
+	ctx       context.Context
 }
 
 func (s *scriptSessionCart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, error) {
@@ -113,7 +121,8 @@ func (s *scriptSessionCart) BelongsToCustomTee(ctx context.Context, variantID st
 	return ok, nil
 }
 
-func (s *scriptSessionCart) CustomTeeLines(_ context.Context, _ []string) (map[string]struct{}, error) {
+func (s *scriptSessionCart) CustomTeeLines(ctx context.Context, _ []string) (map[string]struct{}, error) {
+	s.ctx = ctx
 	if s.tees == nil {
 		return map[string]struct{}{}, nil
 	}

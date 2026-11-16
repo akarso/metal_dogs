@@ -13,6 +13,8 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
+const cartValidateTimeout = 5 * time.Second
+
 func registerCartValidation(app *plugin.App, p *Plugin) error {
 	if app == nil || p == nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: app not configured")
@@ -32,12 +34,13 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if !ok || current == nil || len(current.Items) == 0 {
 		return nil
 	}
-	// Without the port a tee cannot be told from any other line, and a hook error would block those carts.
+	// A missing port cannot tell a tee from any other line. An enabled plugin does not start in that state; an error here would block every cart.
 	if p == nil || p.sessionCart == nil {
 		return nil
 	}
-	// Hook handlers are not given the request context.
-	ctx := context.Background()
+	// Invoke drops the request context before the handler runs.
+	ctx, cancel := context.WithTimeout(context.Background(), cartValidateTimeout)
+	defer cancel()
 	variantIDs := make([]string, len(current.Items))
 	for i, item := range current.Items {
 		variantIDs[i] = item.VariantID

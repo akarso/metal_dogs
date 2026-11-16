@@ -69,7 +69,6 @@ func (c *Cart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, 
 	return ok, nil
 }
 
-// CustomTeeLines reports which variantIDs belong to the custom tee.
 func (c *Cart) CustomTeeLines(ctx context.Context, variantIDs []string) (map[string]struct{}, error) {
 	if c == nil || c.variants == nil || c.products == nil {
 		return nil, &ports.CartError{Code: ports.CartUnavailable}
@@ -133,8 +132,7 @@ func (c *Cart) PersistedLineQuantities(ctx context.Context, cartID string) (map[
 	return qty, true, nil
 }
 
-// LineDesign reads the design id stored for a cart line, including a value written
-// before the line itself is saved.
+// A value written before the line exists is still returned.
 func (c *Cart) LineDesign(ctx context.Context, cartID, variantID string) (string, bool, error) {
 	if c == nil || c.lines == nil {
 		return "", false, &ports.CartError{Code: ports.CartUnavailable}
