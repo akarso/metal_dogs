@@ -33,7 +33,7 @@ plugins/metaldogs/
 │   ├── eval/              # offline runner + report.json
 │   ├── validate/          # G3 output checks
 │   └── mockup/            # G4 Compose + embedded 80×100 placeholder tee
-├── httpapi/               # enabled + health + templates + uploads + designs + generate + approve/clone
+├── httpapi/               # enabled + health + templates + uploads + designs + generate + approve/clone + add-to-cart
 ├── observability/         # correlation_id alias helpers
 ├── domain/                # Template, Asset, Design, DesignVersion, GenerationJob, …
 ├── application/           # TemplateCatalog, UploadService, DesignService, Generate*
@@ -59,6 +59,7 @@ plugins/metaldogs/
 | `GET` | `/api/customizer/generation-jobs/{id}` | Bearer | Job status + `retry_after` |
 | `POST` | `/api/customizer/designs/{id}/approve` | Bearer | Freeze `DesignVersion`; design → `approved`; enqueue prepare (stub fails until G5; 503 + retry) |
 | `POST` | `/api/customizer/designs/{id}/clone` | Bearer | New draft + token; Put-copies source bytes |
+| `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer | Session cart line for one custom-tee variant; `200` `{ "cart_url": "/cart" }`. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).

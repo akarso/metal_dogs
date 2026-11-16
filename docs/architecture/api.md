@@ -297,6 +297,52 @@ Allowed from `approved` (and later `ordered`). Requires source `owner_ref` = des
 | `503` | `unavailable` | Object store I/O before commit (no `version_id`); prepare enqueue or generation-preview view I/O after commit (`version_id` set — retry approve; version may already exist) |
 | `500` | `internal_error` | Persistence failure; source metadata I/O on the post-commit approve view (no `version_id` — retry approve is still safe because the version may already exist) |
 
+## Add to cart (E2)
+
+| Method | Path | Auth | Success |
+| --- | --- | --- | --- |
+| `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer owner token | `200` `{ "cart_url": "/cart" }` |
+
+The customizer prefix skips customer JWT parsing. The owner token is the `Authorization: Bearer` header (ADR-0007). A token in the query string is `400` `bad_request`. The route reads and writes the storefront session cart cookie `shopanda_storefront_cart` (HttpOnly, `Path=/`, 30 days, `SameSite=Lax`). It creates that cart when the cookie is missing or does not name an active cart. The cart id is not a request field and is not in the JSON body. After a successful add the cookie is the cart; the design token is not required on later cart calls.
+
+### Body
+
+```json
+{ "variant_id": "uuid" }
+```
+
+`variant_id` is a variant of the custom tee (slug `mdogs-tee`). Unknown JSON fields are rejected. A second JSON value after the object is `422` `unprocessable`. Body cap is 1 MiB.
+
+### Success
+
+`200` and `Set-Cookie` for the session cart. `cart_url` is `/cart`. A new line has quantity `1`. The public cart response shows `metaldogs.design_id` on that line. Repeating the same design and the same variant returns `200` and does not change quantity. The same design on another variant adds a second line. Quantity above one is changed on the Shopanda cart page; this route never raises it. The design's status, versions, and expiry are unchanged.
+
+The field is public, plugin-only write, snapshot storage, UUID-shaped. The trusted-write context is created only around `AddItem`. `GetCart` and `CreateCart` receive a stripped context. The field code and the trust marker are fixed in code.
+
+Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line at checkout. E4 reads that copy. This route does not create the order snapshot.
+
+### Errors
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `400` | `bad_request` | Owner token in the query string |
+| `403` | `forbidden_plugin_only_field` | Any path other than this route tries to set `metaldogs.design_id` (public cart API add and update, SSR cart pages, admin values API). Nothing is stored |
+| `404` | `not_found` | Unknown design, non-UUID design id, missing or wrong Bearer, expired design |
+| `409` | `invalid_transition` | Design exists and is owned but is not `approved` (including `ordered`) |
+| `409` | `conflict` | This variant already has a different design, or it is already a custom-tee line with no `metaldogs.design_id`. The cart is unchanged. The customer removes that line before a design can be attached |
+| `422` | `unprocessable` | Malformed JSON, unknown fields, trailing data after the object, `variant_id` missing or not a UUID, variant is not part of the custom tee |
+| `503` | `unavailable` | Design service or session-cart port is not configured |
+
+`cart.validate` (plugin enabled) blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is no longer `approved` (`metaldogs.design_not_approved`, "design is not approved"). The cart API surfaces that as `422` `cart_validation_failed`. The hook does not check ownership. It does nothing for every other product. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
+
+### Limits
+
+- Guest cart merge into a customer cart copies `metaldogs.design_id` without the add path or the hook. E3 re-validates at checkout.
+- The route always uses the guest session cookie. `/cart` for a signed-in customer loads that customer's cart and ignores the cookie, so the new line is not on `/cart` after the redirect. Guest session carts are the supported path.
+- Rate limiting for this route is O4.
+- Two concurrent adds of different designs on the same session cart and size can both pass the pre-check. Core `AddItem` upserts the extension before `carts.Save`, and a failed optimistic version check does not roll that upsert back (Shopanda phase 17). E3 re-validates at checkout.
+- Each cart read looks up every line's variant, lists extension values, and loads the design for each custom-tee line. That cost is accepted for this slice.
+
 ## Safe delivery
 
-No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads, designs, generate, approve, and clone require media + DB. Flag default off. Generate uses the fake provider unless a later slice wires a live provider. Approve enqueues prepare_production_artwork (C6 stub terminals with `pending_spec`; G5 owns reclaim of failed rows).
+No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads, designs, generate, approve, clone, and add-to-cart require media + DB. The design field and `cart.validate` register when the plugin is enabled, including when media is absent. Flag default off. Generate uses the fake provider unless a later slice wires a live provider. Approve enqueues prepare_production_artwork (C6 stub terminals with `pending_spec`; G5 owns reclaim of failed rows). Add to cart uses the same plugin flag. The E1 seed stays draft with stock 0; a buyable tee is published and stocked outside that seed.

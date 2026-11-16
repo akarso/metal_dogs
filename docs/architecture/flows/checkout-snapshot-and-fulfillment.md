@@ -9,7 +9,7 @@ flowchart TB
     subgraph customizer[metaldogs customizer]
         a1[Approve: freeze DesignVersion with checksum]
         a2[Enqueue prepare_production_artwork — C6 stub fails pending_spec; Requeue until G5]
-        a3[Add to cart: verify approved and owned]
+        a3[Add to cart: session cart, no cart id, trusted plugin write]
     end
 
     subgraph worker[Worker]
@@ -86,12 +86,12 @@ sequenceDiagram
     W->>S3: put production asset
     W->>API: version.production_status = ready
 
-    UI->>API: POST /designs/{id}/add-to-cart {variant_sku}
-    API->>Shop: AddLine(product, variant, ext: metaldogs.design_id)
-    Shop->>API: cart hook validate(design_id, cart session)
-    API-->>Shop: ok (approved, owned)
-    Shop-->>UI: cart updated
-    UI->>Shop: redirect /cart → /checkout (SSR, guest)
+    UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer; session cookie)
+    Note over API: Response is cart_url /cart. The cart id stays in the cookie
+    API->>Shop: trusted plugin write of metaldogs.design_id on AddItem only
+    Shop->>Shop: cart.validate (approved, unexpired, present). No ownership check
+    API-->>UI: 200 cart_url
+    UI->>Shop: redirect /cart → /checkout (SSR, guest session cart)
     Shop->>API: checkout step validate designs
     API-->>Shop: ok
     Shop->>Shop: create order (extension values copied to order line)
@@ -132,6 +132,6 @@ sequenceDiagram
 
 ## Open items to verify (tracked in ROADMAP §1)
 
-- Extension fields are available at **cart line** granularity and are copied to the order line at checkout.
+- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). Snapshot mode copies it to the order line in core; E4 consumes that copy. E2 does not run checkout.
 - Event names `order.created` / `payment.confirmed` and whether handlers run synchronously within the order transaction (affects whether an outbox is needed).
 - Shopanda API for updating shipment/tracking from a plugin.

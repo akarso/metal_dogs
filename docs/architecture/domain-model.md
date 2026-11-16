@@ -206,6 +206,10 @@ stateDiagram-v2
 
 Invalid transitions return a domain error (`invalid_transition`) which the HTTP layer maps to `409`.
 
+## Cart line design (E2)
+
+Shopanda stores the link on the cart line as extension `metaldogs.design_id` (public read, plugin-only write, snapshot storage, UUID). Metal Dogs does not own a cart table. The add-to-cart route writes the field through a trusted context on `AddItem` only. Checkout copies snapshot-mode values onto the order line; E4 reads that copy. Adding to the cart does not change design status, versions, or expiry. `ordered` stays on the E4 snapshot step. One line is one variant, so one size holds one design.
+
 ## GenerationJob status machine
 
 ```mermaid
