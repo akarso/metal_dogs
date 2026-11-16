@@ -133,18 +133,60 @@ func TestAddLine_AddItemFailureDeletesDesignValue(t *testing.T) {
 	current := mustCart(t, "cart-1", "")
 	store := &recordingCarts{current: current, addErr: errors.New("no stock")}
 	lines := &recordingLines{}
-	cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
+	saved := &recordingSaved{cart: current}
+	cart := newCart(store, nil, nil, lines, saved, func(ctx context.Context) (context.Context, error) {
 		return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
 	})
 	_, _, err := cart.AddLine(context.Background(), ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: "design-a"})
 	if err == nil {
 		t.Fatal("expected add failure")
 	}
-	if store.addCalls != 1 || store.discardCalls != 0 || lines.upsertCalls != 1 || lines.deleteCalls != 1 {
-		t.Fatalf("add=%d discard=%d upsert=%d delete=%d", store.addCalls, store.discardCalls, lines.upsertCalls, lines.deleteCalls)
+	if store.addCalls != 1 || store.discardCalls != 0 || lines.upsertCalls != 1 || lines.deleteCalls != 1 || saved.calls != 1 {
+		t.Fatalf("add=%d discard=%d upsert=%d delete=%d saved=%d", store.addCalls, store.discardCalls, lines.upsertCalls, lines.deleteCalls, saved.calls)
 	}
 	if !granted(lines.deleteCtx) || lines.deleteTarget != domainext.CartItemTarget(current.ID, variant) {
 		t.Fatalf("delete granted=%v target=%+v", granted(lines.deleteCtx), lines.deleteTarget)
+	}
+	if granted(saved.ctx) {
+		t.Fatal("saved cart read can write the design field")
+	}
+}
+
+func TestAddLine_AddItemFailureKeepsDesignWhenLineSaved(t *testing.T) {
+	variant := "variant-m"
+	current := mustCart(t, "cart-1", "")
+	savedCart := mustCart(t, "cart-1", variant)
+	store := &recordingCarts{current: current, addErr: errors.New("version conflict")}
+	lines := &recordingLines{}
+	saved := &recordingSaved{cart: savedCart}
+	cart := newCart(store, nil, nil, lines, saved, func(ctx context.Context) (context.Context, error) {
+		return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+	})
+	_, _, err := cart.AddLine(context.Background(), ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: "design-a"})
+	cartErr, ok := err.(*ports.CartError)
+	if !ok || cartErr.Code != ports.CartUnavailable {
+		t.Fatalf("err=%v", err)
+	}
+	if lines.deleteCalls != 0 || saved.calls != 1 {
+		t.Fatalf("delete=%d saved=%d", lines.deleteCalls, saved.calls)
+	}
+}
+
+func TestAddLine_AddItemFailureWithoutSavedLookup(t *testing.T) {
+	variant := "variant-m"
+	current := mustCart(t, "cart-1", "")
+	store := &recordingCarts{current: current, addErr: errors.New("version conflict")}
+	lines := &recordingLines{}
+	cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
+		return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+	})
+	_, _, err := cart.AddLine(context.Background(), ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: "design-a"})
+	cartErr, ok := err.(*ports.CartError)
+	if !ok || cartErr.Code != ports.CartUnavailable {
+		t.Fatalf("err=%v", err)
+	}
+	if lines.deleteCalls != 0 {
+		t.Fatalf("delete=%d", lines.deleteCalls)
 	}
 }
 
@@ -227,6 +269,22 @@ func (r *recordingCarts) AddItem(ctx context.Context, cartID, customerID, varian
 func (r *recordingCarts) DiscardEmptyGuestCart(ctx context.Context, cartID string) error {
 	r.discardCalls++
 	return nil
+}
+
+type recordingSaved struct {
+	cart  *domaincart.Cart
+	calls int
+	ctx   context.Context
+	err   error
+}
+
+func (r *recordingSaved) FindByID(ctx context.Context, id string) (*domaincart.Cart, error) {
+	r.calls++
+	r.ctx = ctx
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.cart, nil
 }
 
 type recordingLines struct {

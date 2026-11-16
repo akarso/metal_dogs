@@ -5,9 +5,22 @@ import (
 	"time"
 
 	domaincart "github.com/akarso/shopanda/internal/domain/cart"
+	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
+
+func TestOnCartValidate_MissingSessionCart(t *testing.T) {
+	current, err := domaincart.NewCart("cart-1", "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &current)
+	if err := New().onCartValidate(hctx); err == nil {
+		t.Fatal("expected error")
+	}
+}
 
 func TestDesignCartIssue(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)

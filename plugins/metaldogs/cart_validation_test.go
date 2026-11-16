@@ -1,10 +1,12 @@
 package metaldogs_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -184,6 +186,13 @@ func TestCartValidation_DesignLines(t *testing.T) {
 		if extensionValue(t, lineByVariant(t, items, variantL)) != stale.ID {
 			t.Fatalf("L=%+v", lineByVariant(t, items, variantL))
 		}
+		status, body = cartDo(t, srv, http.MethodPut, "/api/v1/carts/"+cartID+"/items/"+otherVariant, map[string]any{"quantity": 1})
+		if status != http.StatusUnprocessableEntity || cartErrorCode(t, body) != "cart_validation_failed" {
+			t.Fatalf("same quantity: status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
+		}
+		if lineByVariant(t, cartItems(t, srv, cartID), otherVariant).Quantity != 1 {
+			t.Fatal("same-quantity write changed the other line")
+		}
 		status, body = cartDo(t, srv, http.MethodDelete, "/api/v1/carts/"+cartID+"/items/"+variantM, nil)
 		if status != http.StatusOK {
 			t.Fatalf("delete: status=%d body=%s", status, body)
@@ -205,6 +214,57 @@ func TestCartValidation_DesignLines(t *testing.T) {
 			t.Fatalf("issues=%+v", issues)
 		}
 	})
+}
+
+func TestAddToCart_ConcurrentSameDesignKeepsDesignID(t *testing.T) {
+	srv, db := newDesignCartServer(t)
+	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 14)
+	cartID := createPLNCart(t, srv)
+	cookie := &http.Cookie{Name: sessionCartCookie, Value: cartID}
+
+	const n = 8
+	start := make(chan struct{})
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			raw, err := json.Marshal(map[string]string{"variant_id": variantM})
+			if err != nil {
+				errs <- err
+				return
+			}
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/customizer/designs/"+design.ID+"/add-to-cart", bytes.NewReader(raw))
+			if err != nil {
+				errs <- err
+				return
+			}
+			req.Host = catalogPLNHost
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(cookie)
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	items := cartItems(t, srv, cartID)
+	if len(items) != 1 || items[0].VariantID != variantM || extensionValue(t, items[0]) != design.ID {
+		t.Fatalf("items=%+v", items)
+	}
 }
 
 func addDesignLine(t *testing.T, srv *httptest.Server, designID, token, variantID string) string {

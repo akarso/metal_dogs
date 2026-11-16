@@ -227,12 +227,12 @@ func (c *Cart) AddLine(ctx context.Context, session ports.CartSession, line port
 		UpdatedBy: "guest",
 	})
 	if err != nil {
-		// AddItem can fail after the pre-write. A leftover value would pass validation on a later generic add.
-		if delErr := c.lines.DeleteAllForTarget(writeCtx, target); delErr != nil {
+		// A concurrent same-design add may already have saved the line; deleting then strips its design.
+		if dropErr := c.dropDesignIfLineMissing(readCtx, writeCtx, current.ID, line.VariantID, target); dropErr != nil {
 			if created {
 				_ = c.carts.DiscardEmptyGuestCart(readCtx, current.ID)
 			}
-			return "", ports.CartTarget{}, &ports.CartError{Code: ports.CartUnavailable, Err: delErr}
+			return "", ports.CartTarget{}, dropErr
 		}
 		if created {
 			_ = c.carts.DiscardEmptyGuestCart(readCtx, current.ID)
@@ -240,6 +240,27 @@ func (c *Cart) AddLine(ctx context.Context, session ports.CartSession, line port
 		return "", ports.CartTarget{}, classifyCart(err)
 	}
 	return ports.CartSession(updated.ID), ports.CartTarget{Path: cartPagePath}, nil
+}
+
+func (c *Cart) dropDesignIfLineMissing(ctx, writeCtx context.Context, cartID, variantID string, target domainext.Target) error {
+	if c.saved == nil {
+		return &ports.CartError{Code: ports.CartUnavailable}
+	}
+	saved, err := c.saved.FindByID(ctx, cartID)
+	if err != nil {
+		return &ports.CartError{Code: ports.CartUnavailable, Err: err}
+	}
+	if saved != nil {
+		for _, item := range saved.Items {
+			if item.VariantID == variantID {
+				return nil
+			}
+		}
+	}
+	if err := c.lines.DeleteAllForTarget(writeCtx, target); err != nil {
+		return &ports.CartError{Code: ports.CartUnavailable, Err: err}
+	}
+	return nil
 }
 
 func (c *Cart) activeCart(ctx context.Context, session ports.CartSession) (*domaincart.Cart, error) {

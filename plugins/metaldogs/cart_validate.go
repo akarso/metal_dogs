@@ -21,7 +21,10 @@ func registerCartValidation(app *plugin.App, p *Plugin) error {
 }
 
 func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
-	if p == nil || p.sessionCart == nil || p.designs == nil || p.designs.Designs == nil {
+	if p == nil || p.sessionCart == nil {
+		return fmt.Errorf("metaldogs plugin: cart validation: session cart port is not configured")
+	}
+	if p.designs == nil || p.designs.Designs == nil {
 		return nil
 	}
 	raw, ok := hctx.Get("cart")
