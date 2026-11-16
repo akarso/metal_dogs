@@ -29,7 +29,7 @@ Log: [`evidence/CR-19-e2-cart-design-attach-test.log`](evidence/CR-19-e2-cart-de
 - `plugins/metaldogs/cart_add_test.go` — approved design, owner token, one line, quantity one, field visible, `cart_url` `/cart`; unapproved `409`; foreign, unknown, expired `404`; variant outside the tee `422`; extra JSON fields `422`
 - `plugins/metaldogs/cart_add_rules_test.go` — repeat does not change quantity; different design `409` and cart unchanged; second size; quantity raised on the cart API stays; remove and add again
 - `plugins/metaldogs/cart_design_field_test.go` — public cart add and update of `metaldogs.design_id` return `403` `forbidden_plugin_only_field` and store nothing
-- `plugins/metaldogs/cart_validation_test.go` — tee line without a design blocks; another product does not; design later unapproved, expired, or unknown blocks; plugin enabled without media still blocks a tee line that has no design id
+- `plugins/metaldogs/cart_validation_test.go` — tee line without a design blocks; another product does not; design later unapproved, expired, or removed blocks; plugin enabled without media still blocks a tee line that has no design id
 - `plugins/metaldogs/httpapi/addtocart_test.go` — trailing data after the JSON object is `422`
 - `plugins/metaldogs/adapters/sessioncart/cart_rules_test.go` — same-design repeat, different design, bare tee line; `GetCart` / `CreateCart` receive a context with no plugin write
 - `cmd/api/metaldogs_cart_test.go` — enabled plugin refuses to start when the session-cart port cannot be bound; the skip path logs a warning

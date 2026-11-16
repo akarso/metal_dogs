@@ -132,7 +132,6 @@ func (c *Cart) PersistedLineQuantities(ctx context.Context, cartID string) (map[
 	return qty, true, nil
 }
 
-// A value written before the line exists is still returned.
 func (c *Cart) LineDesign(ctx context.Context, cartID, variantID string) (string, bool, error) {
 	if c == nil || c.lines == nil {
 		return "", false, &ports.CartError{Code: ports.CartUnavailable}

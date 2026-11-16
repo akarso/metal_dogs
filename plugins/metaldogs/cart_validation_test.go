@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akarso/shopanda/internal/platform/id"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -130,14 +129,10 @@ func TestCartValidation_DesignLines(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown design id", func(t *testing.T) {
+	t.Run("removed design", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 8)
 		cartID := addDesignLine(t, srv, design.ID, token, variantM)
-		if _, err := db.ExecContext(context.Background(), `
-			UPDATE extension_values
-			SET value = jsonb_set(value, '{string_value}', to_jsonb($1::text))
-			WHERE field_code = 'metaldogs.design_id' AND value->>'string_value' = $2
-		`, id.New(), design.ID); err != nil {
+		if _, err := db.ExecContext(context.Background(), `DELETE FROM metaldogs_designs WHERE id = $1`, design.ID); err != nil {
 			t.Fatal(err)
 		}
 		issues := cartValidationIssues(t, srv, cartID)
