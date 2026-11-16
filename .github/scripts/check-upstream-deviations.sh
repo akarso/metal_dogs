@@ -21,8 +21,6 @@ ALLOWLIST=(
   cmd/api/jobs_cli.go
   cmd/api/main.go
   cmd/api/metaldogs_catalog.go
-  cmd/api/metaldogs_cart.go
-  cmd/api/metaldogs_cart_test.go
   cmd/api/migrate_plugins_test.go
   cmd/api/register_plugins.go
   cmd/api/register_plugins_metaldogs_test.go

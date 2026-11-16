@@ -7,13 +7,6 @@ import (
 	"strings"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
-	"github.com/akarso/shopanda/plugins/metaldogs/ports"
-)
-
-// shopanda_storefront_cart is unexported in the storefront; the name must match or /cart ignores the line.
-const (
-	sessionCartCookie       = "shopanda_storefront_cart"
-	sessionCartCookieMaxAge = 60 * 60 * 24 * 30
 )
 
 type addToCartBody struct {
@@ -63,39 +56,12 @@ func AddDesignToCart(add *application.AddToCart) http.Handler {
 			writeJSONError(w, http.StatusUnprocessableEntity, application.DesignErrUnprocessable)
 			return
 		}
-		next, cartURL, err := add.Execute(r.Context(), sessionCartID(r), id, token, variantID)
+		cartURL, err := add.Execute(r.Context(), w, r, id, token, variantID)
 		if err != nil {
 			writeDesignError(w, err)
 			return
 		}
-		setSessionCartCookie(w, r, next)
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(addToCartResponse{CartURL: cartURL})
-	})
-}
-
-func sessionCartID(r *http.Request) ports.CartSession {
-	if r == nil {
-		return ""
-	}
-	cookie, err := r.Cookie(sessionCartCookie)
-	if err != nil {
-		return ""
-	}
-	return ports.CartSession(strings.TrimSpace(cookie.Value))
-}
-
-func setSessionCartCookie(w http.ResponseWriter, r *http.Request, cartID ports.CartSession) {
-	if w == nil || strings.TrimSpace(string(cartID)) == "" {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCartCookie,
-		Value:    string(cartID),
-		Path:     "/",
-		MaxAge:   sessionCartCookieMaxAge,
-		HttpOnly: true,
-		Secure:   r != nil && r.TLS != nil,
-		SameSite: http.SameSiteLaxMode,
 	})
 }

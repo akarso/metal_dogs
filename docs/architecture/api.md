@@ -317,7 +317,7 @@ Bearer handling matches Designs (C3): an owner token has no dots, so `AuthMiddle
 
 `200` and `Set-Cookie` for the session cart. `cart_url` is `/cart`. A new line has quantity `1`. The public cart response shows `metaldogs.design_id` on that line. Repeating the same design and the same variant returns `200` and does not change quantity. The same design on another variant adds a second line. Quantity above one is changed on the Shopanda cart page; this route never raises it. The design's status, versions, and expiry are unchanged.
 
-The field is public, plugin-only write, snapshot storage, UUID-shaped. The trusted-write context is created only around `AddItem`. `GetCart` and `CreateCart` receive a stripped context. The field code and the trust marker are fixed in code.
+The field is public, plugin-only write, snapshot storage, UUID-shaped. The trusted-write context is created only around `AddItem`. `EnsureStorefrontCart` and `CatalogPort.FindVariants` run without that grant. The field code and the trust marker are fixed in code.
 
 Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line at checkout. E4 reads that copy. This route does not create the order snapshot.
 
@@ -333,15 +333,16 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 | `422` | `unprocessable` | Malformed JSON, unknown fields, trailing data after the object, `variant_id` missing or not a UUID, variant is not part of the custom tee |
 | `503` | `unavailable` | Design service or session-cart port is not configured |
 
-`cart.validate` (plugin enabled) blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is no longer `approved` (`metaldogs.design_not_approved`, "design is not approved"). The cart API surfaces that as `422` `cart_validation_failed`. The hook does not check ownership. It does nothing for every other product. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
+`cart.validate` (plugin enabled) fails the mutation when the `cart` payload is present and is not a cart view (logged as `metaldogs.cart.validate.payload`). It blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is no longer `approved` (`metaldogs.design_not_approved`, "design is not approved"). The cart API surfaces that as `422` `cart_validation_failed`. The hook does not check ownership. It does nothing for every other product. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
 
 ### Limits
 
 - Guest cart merge into a customer cart copies `metaldogs.design_id` without the add path or the hook. E3 re-validates at checkout.
-- The route always uses the guest session cookie. `/cart` for a signed-in customer loads that customer's cart and ignores the cookie, so the new line is not on `/cart` after the redirect. Guest session carts are the supported path.
+- A dotless owner token is a guest (`AuthMiddleware` + `ValidatingTokenParser`). `EnsureStorefrontCart` then uses the guest cookie. A signed-in customer id on the request (PR-1554) takes `EnsureActive` and does not write that cart id into the guest cookie. This route's bearer is the owner token, so the supported call is still the guest cart.
 - Rate limiting for this route is O4.
-- Two concurrent adds of different designs on the same session cart and size can both pass the Metal Dogs pre-check. The adapter writes the design id before `AddItem`, because `cart.validate` runs before `AddItem` stores extensions. Core `AddItem` no longer upserts before `carts.Save` (phase PR-1549, pin `a411c970`: Save, then upsert, then compensate). E3 re-validates at checkout.
-- Each cart read looks up every line's variant, lists extension values, and loads the design for each custom-tee line. That cost is accepted for this slice.
+- `cart.validate` reads stored extensions. Core `AddItem` saves the line, runs that hook, then upserts extensions (pin `a411c970`). The route does not write `metaldogs.design_id` before `AddItem`. The `cart.add_item.before` hook remembers the design id from the extension payload for that one call, and `cart.validate` uses it only when the line has no stored design id. The memory is cleared when the call returns. Two concurrent adds of different designs on the same cart and size can still both pass. E3 re-validates at checkout.
+- `CartPort` has no `DiscardEmptyGuestCart`. A failed add after `EnsureStorefrontCart` can leave an empty guest cart and its cookie.
+- Variant-to-product checks use one `CatalogPort.FindVariants` call. An empty `ProductSlug` is not the custom tee.
 
 ## Safe delivery
 

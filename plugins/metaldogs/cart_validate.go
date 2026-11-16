@@ -2,22 +2,31 @@ package metaldogs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	domaincart "github.com/akarso/shopanda/internal/domain/cart"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
-const cartValidateTimeout = 5 * time.Second
+const (
+	cartValidateTimeout = 5 * time.Second
+	customTeeSlug       = "mdogs-tee"
+)
+
+var errUnexpectedCartPayload = errors.New("metaldogs: cart.validate payload is not a cart")
 
 func registerCartValidation(app *plugin.App, p *Plugin) error {
 	if app == nil || p == nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: app not configured")
+	}
+	if err := app.Hooks(p.Name()).Register(extapi.HookCartAddItemBefore, 100, p.onAddItemBefore); err != nil {
+		return err
 	}
 	return app.Hooks(p.Name()).Register(extapi.HookCartValidate, 100, p.onCartValidate)
 }
@@ -30,31 +39,44 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if !ok || raw == nil {
 		return nil
 	}
-	current, ok := cartFromValidatePayload(raw)
-	if !ok || len(current.Items) == 0 {
+	current, err := cartFromValidatePayload(raw)
+	if err != nil {
+		if p != nil && p.host != nil && p.host.Logger() != nil {
+			p.host.Logger().Error("metaldogs.cart.validate.payload", err, map[string]interface{}{
+				"hook": "cart.validate",
+			})
+		}
+		return err
+	}
+	if current == nil || len(current.Items) == 0 {
 		return nil
 	}
-	// A missing port cannot tell a tee from any other line. An enabled plugin does not start in that state; an error here would block every cart.
-	if p == nil || p.sessionCart == nil {
-		return nil
+	if p == nil || p.host == nil {
+		return fmt.Errorf("metaldogs: cart catalog is not wired")
 	}
-	// Invoke drops the request context before the handler runs.
+	catalog, ok := p.host.Catalog()
+	if !ok || catalog == nil {
+		return fmt.Errorf("metaldogs: cart catalog is not wired")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), cartValidateTimeout)
 	defer cancel()
 	variantIDs := make([]string, len(current.Items))
 	for i, item := range current.Items {
 		variantIDs[i] = item.VariantID
 	}
-	tees, err := p.sessionCart.CustomTeeLines(ctx, variantIDs)
+	found, err := catalog.FindVariants(ctx, variantIDs)
 	if err != nil {
 		return err
 	}
+	tees := customTeeVariants(found)
 	if len(tees) == 0 {
 		return nil
 	}
-	// RemoveItem deletes extension values before this hook and does not restore them when validation fails.
-	// Issues on lines this mutation left unchanged stay on the cart read.
-	persisted, stored, err := p.sessionCart.PersistedLineQuantities(ctx, current.ID)
+	port, ok := p.host.Cart()
+	if !ok || port == nil {
+		return fmt.Errorf("metaldogs: cart port is not wired")
+	}
+	persisted, stored, err := persistedLineQuantities(ctx, port, current.ID, current.CustomerID)
 	if err != nil {
 		return err
 	}
@@ -67,19 +89,22 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 		if _, ok := scope[item.VariantID]; !ok {
 			continue
 		}
-		designID, present, err := p.sessionCart.LineDesign(ctx, current.ID, item.VariantID)
-		if err != nil {
-			return err
+		designID, present := lineDesignID(item)
+		if !present {
+			if pending, ok := p.pendingDesign(current.ID, item.VariantID); ok {
+				designID = pending
+				present = true
+			}
 		}
-		var found domain.Design
+		var foundDesign domain.Design
 		known := false
 		if present && p.designs != nil && p.designs.Designs != nil {
-			found, known, err = p.designs.Designs.GetByID(ctx, designID)
+			foundDesign, known, err = p.designs.Designs.GetByID(ctx, designID)
 			if err != nil {
 				return err
 			}
 		}
-		issue, blocked := designCartIssue(now, item.VariantID, designID, present, found, known)
+		issue, blocked := designCartIssue(now, item.VariantID, designID, present, foundDesign, known)
 		if blocked {
 			hctx.AppendValidationError(issue)
 		}
@@ -87,20 +112,63 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	return nil
 }
 
-func cartFromValidatePayload(raw any) (*domaincart.Cart, bool) {
-	switch current := raw.(type) {
-	case *extapi.CartView:
-		if current == nil {
-			return nil, false
-		}
-		items := make([]domaincart.Item, len(current.Items))
-		for i, line := range current.Items {
-			items[i] = domaincart.Item{VariantID: line.VariantID, Quantity: line.Quantity}
-		}
-		return &domaincart.Cart{ID: current.ID, Items: items}, true
-	default:
-		return nil, false
+func cartFromValidatePayload(raw any) (*extapi.CartView, error) {
+	if raw == nil {
+		return nil, nil
 	}
+	current, ok := raw.(*extapi.CartView)
+	if !ok {
+		return nil, errUnexpectedCartPayload
+	}
+	return current, nil
+}
+
+func customTeeVariants(found map[string]*extapi.CatalogVariant) map[string]struct{} {
+	out := map[string]struct{}{}
+	for id, variant := range found {
+		if variant == nil || variant.ProductSlug != customTeeSlug {
+			continue
+		}
+		out[id] = struct{}{}
+	}
+	return out
+}
+
+func persistedLineQuantities(ctx context.Context, port pluginsdk.CartPort, cartID, customerID string) (map[string]int, bool, error) {
+	cartID = strings.TrimSpace(cartID)
+	if cartID == "" {
+		return map[string]int{}, false, nil
+	}
+	stored, err := port.Get(ctx, cartID, customerID)
+	if err != nil {
+		if pluginsdk.IsNotFound(err) {
+			return map[string]int{}, false, nil
+		}
+		return nil, false, err
+	}
+	if stored == nil {
+		return map[string]int{}, false, nil
+	}
+	qty := make(map[string]int, len(stored.Items))
+	for _, item := range stored.Items {
+		qty[item.VariantID] = item.Quantity
+	}
+	return qty, true, nil
+}
+
+func lineDesignID(line extapi.CartLineView) (string, bool) {
+	for _, value := range line.Extensions {
+		if value.Code != ports.DesignIDFieldCode {
+			continue
+		}
+		id, _ := value.Value.(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return "", false
+		}
+		return id, true
+	}
+	return "", false
 }
 
 func designCartIssue(now time.Time, variantID, designID string, present bool, d domain.Design, found bool) (extapi.CartValidationIssue, bool) {
@@ -128,7 +196,7 @@ func designCartIssue(now time.Time, variantID, designID string, present bool, d 
 	return extapi.CartValidationIssue{}, false
 }
 
-func teeLinesToValidate(proposed []domaincart.Item, persisted map[string]int, persistedFound bool, tees map[string]struct{}) map[string]struct{} {
+func teeLinesToValidate(proposed []extapi.CartLineView, persisted map[string]int, persistedFound bool, tees map[string]struct{}) map[string]struct{} {
 	if len(tees) == 0 {
 		return nil
 	}

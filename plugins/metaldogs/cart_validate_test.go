@@ -2,27 +2,49 @@ package metaldogs
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
-	domaincart "github.com/akarso/shopanda/internal/domain/cart"
+	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/internal/platform/pluginwrite"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 func TestCartFromValidatePayload_View(t *testing.T) {
 	view := &extapi.CartView{ID: "c1", Items: []extapi.CartLineView{{VariantID: "v", Quantity: 2}}}
-	got, ok := cartFromValidatePayload(view)
-	if !ok || got == nil || got.ID != "c1" || len(got.Items) != 1 || got.Items[0].VariantID != "v" || got.Items[0].Quantity != 2 {
-		t.Fatalf("view = %+v ok=%v", got, ok)
+	got, err := cartFromValidatePayload(view)
+	if err != nil || got == nil || got.ID != "c1" || len(got.Items) != 1 || got.Items[0].VariantID != "v" || got.Items[0].Quantity != 2 {
+		t.Fatalf("view = %+v err=%v", got, err)
 	}
-	if _, ok := cartFromValidatePayload((*extapi.CartView)(nil)); ok {
-		t.Fatal("nil view")
+	got, err = cartFromValidatePayload((*extapi.CartView)(nil))
+	if err != nil || got != nil {
+		t.Fatalf("nil view = %+v err=%v", got, err)
 	}
 }
 
-func TestOnCartValidate_EmptyCartWithoutSessionCart(t *testing.T) {
+func TestOnCartValidate_UnexpectedPayload(t *testing.T) {
+	log := &recLog{}
+	p := New()
+	p.host = &surface{log: log}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", "not-a-cart")
+	err := p.onCartValidate(hctx)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if log.errors != 1 {
+		t.Fatalf("logged errors=%d", log.errors)
+	}
+	if issues := hookIssues(hctx); len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestOnCartValidate_EmptyCartWithoutCatalog(t *testing.T) {
 	hctx := &extapi.HookContext{}
 	hctx.Set("cart", &extapi.CartView{ID: "cart-1"})
 	if err := New().onCartValidate(hctx); err != nil {
@@ -33,11 +55,11 @@ func TestOnCartValidate_EmptyCartWithoutSessionCart(t *testing.T) {
 	}
 }
 
-func TestOnCartValidate_MissingSessionCart(t *testing.T) {
+func TestOnCartValidate_UnwiredCatalog(t *testing.T) {
 	hctx := &extapi.HookContext{}
 	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "variant-m", Quantity: 1}}})
-	if err := New().onCartValidate(hctx); err != nil {
-		t.Fatal(err)
+	if err := New().onCartValidate(hctx); err == nil {
+		t.Fatal("expected unwired catalog to fail closed")
 	}
 	if issues := hookIssues(hctx); len(issues) != 0 {
 		t.Fatalf("issues=%+v", issues)
@@ -45,19 +67,34 @@ func TestOnCartValidate_MissingSessionCart(t *testing.T) {
 }
 
 func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
-	cart := &scriptSessionCart{}
+	catalog := &slugCatalog{slugs: map[string]string{"shirt": "other-shirt"}}
+	cart := &qtyCart{}
 	p := New()
-	p.sessionCart = cart
+	p.host = &surface{cart: cart, catalog: catalog}
 	hctx := &extapi.HookContext{}
 	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "shirt", Quantity: 1}}})
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cart.ctx.Deadline(); !ok {
+	if _, ok := catalog.ctx.Deadline(); !ok {
 		t.Fatal("validation I/O has no deadline")
 	}
-	if cart.lineCalls != 0 || cart.qtyCalls != 0 {
-		t.Fatalf("line=%d qty=%d", cart.lineCalls, cart.qtyCalls)
+	if catalog.calls != 1 || cart.getCalls != 0 {
+		t.Fatalf("catalog=%d get=%d", catalog.calls, cart.getCalls)
+	}
+	if issues := hookIssues(hctx); len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestOnCartValidate_EmptyProductSlugIsNotTee(t *testing.T) {
+	catalog := &slugCatalog{slugs: map[string]string{"tee": ""}}
+	p := New()
+	p.host = &surface{cart: &qtyCart{}, catalog: catalog}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "tee", Quantity: 1}}})
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
 	}
 	if issues := hookIssues(hctx); len(issues) != 0 {
 		t.Fatalf("issues=%+v", issues)
@@ -66,26 +103,27 @@ func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
 
 func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
 	view := &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "tee", Quantity: 1}}}
+	catalog := &slugCatalog{slugs: map[string]string{"tee": customTeeSlug}}
+	cart := &qtyCart{missing: true}
 	p := New()
-	cart := &scriptSessionCart{tees: map[string]struct{}{"tee": {}}}
-	p.sessionCart = cart
+	p.host = &surface{cart: cart, catalog: catalog}
 	hctx := &extapi.HookContext{}
 	hctx.Set("cart", view)
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cart.ctx.Deadline(); !ok {
+	if _, ok := catalog.ctx.Deadline(); !ok {
 		t.Fatal("validation I/O has no deadline")
+	}
+	if catalog.calls != 1 {
+		t.Fatalf("catalog calls=%d", catalog.calls)
 	}
 	issues := hookIssues(hctx)
 	if len(issues) != 1 || issues[0].Code != ports.DesignRequiredCode || issues[0].Message != "design required" || issues[0].VariantID != "tee" || issues[0].Level != "" {
 		t.Fatalf("issues=%+v", issues)
 	}
 
-	p.sessionCart = &scriptSessionCart{
-		tees:  map[string]struct{}{"tee": {}},
-		lines: map[string]string{"tee": "design-a"},
-	}
+	p.setPendingDesign("cart-1", "tee", "design-a")
 	hctx = &extapi.HookContext{}
 	hctx.Set("cart", view)
 	if err := p.onCartValidate(hctx); err != nil {
@@ -97,44 +135,109 @@ func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
 	}
 }
 
-type scriptSessionCart struct {
-	tees      map[string]struct{}
-	lines     map[string]string
-	lineCalls int
-	qtyCalls  int
-	ctx       context.Context
+type surface struct {
+	cart       pluginsdk.CartPort
+	catalog    pluginsdk.CatalogPort
+	log        pluginsdk.Logger
+	writeCalls int
 }
 
-func (s *scriptSessionCart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, error) {
-	lines, err := s.CustomTeeLines(ctx, []string{variantID})
+func (s *surface) Cart() (pluginsdk.CartPort, bool) { return s.cart, s.cart != nil }
+func (s *surface) Catalog() (pluginsdk.CatalogPort, bool) {
+	return s.catalog, s.catalog != nil
+}
+func (s *surface) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
+	s.writeCalls++
+	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)
+}
+func (s *surface) Logger() pluginsdk.Logger { return s.log }
+
+type recLog struct{ errors int }
+
+func (r *recLog) Info(string, map[string]interface{})         {}
+func (r *recLog) Warn(string, map[string]interface{})         {}
+func (r *recLog) Error(string, error, map[string]interface{}) { r.errors++ }
+
+type slugCatalog struct {
+	slugs map[string]string
+	calls int
+	ctx   context.Context
+}
+
+func (s *slugCatalog) FindVariant(ctx context.Context, id string) (*extapi.CatalogVariant, error) {
+	found, err := s.FindVariants(ctx, []string{id})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	_, ok := lines[variantID]
-	return ok, nil
+	return found[id], nil
 }
 
-func (s *scriptSessionCart) CustomTeeLines(ctx context.Context, _ []string) (map[string]struct{}, error) {
+func (s *slugCatalog) FindVariants(ctx context.Context, ids []string) (map[string]*extapi.CatalogVariant, error) {
+	s.calls++
 	s.ctx = ctx
-	if s.tees == nil {
-		return map[string]struct{}{}, nil
+	out := map[string]*extapi.CatalogVariant{}
+	for _, id := range ids {
+		slug, ok := s.slugs[id]
+		if !ok {
+			continue
+		}
+		out[id] = &extapi.CatalogVariant{ID: id, ProductSlug: slug}
 	}
-	return s.tees, nil
+	return out, nil
 }
 
-func (s *scriptSessionCart) PersistedLineQuantities(_ context.Context, _ string) (map[string]int, bool, error) {
-	s.qtyCalls++
-	return nil, false, nil
+func (s *slugCatalog) FindProduct(context.Context, string) (*extapi.CatalogProduct, error) {
+	return nil, nil
 }
 
-func (s *scriptSessionCart) LineDesign(_ context.Context, _, variantID string) (string, bool, error) {
-	s.lineCalls++
-	id, ok := s.lines[variantID]
-	return id, ok, nil
+type qtyCart struct {
+	missing     bool
+	persisted   *extapi.CartView
+	getCalls    int
+	addCalls    int
+	upsertCalls int
+	deleteCalls int
+	ensureCalls int
+	ensureCtx   context.Context
+	addCtx      context.Context
+	ensureView  *extapi.CartView
 }
 
-func (s *scriptSessionCart) AddLine(_ context.Context, session ports.CartSession, _ ports.DesignLine) (ports.CartSession, ports.CartTarget, error) {
-	return session, ports.CartTarget{}, nil
+func (q *qtyCart) AddItem(ctx context.Context, _, _, _ string, _ int, _ pluginsdk.CartAddItemOpts) error {
+	q.addCalls++
+	q.addCtx = ctx
+	return nil
+}
+
+func (q *qtyCart) Get(context.Context, string, string) (*extapi.CartView, error) {
+	q.getCalls++
+	if q.missing {
+		return nil, apperror.NotFound("cart not found")
+	}
+	return q.persisted, nil
+}
+
+func (q *qtyCart) EnsureActive(context.Context, string, string) (*extapi.CartView, error) {
+	return q.ensureView, nil
+}
+
+func (q *qtyCart) EnsureStorefrontCart(ctx context.Context, _ http.ResponseWriter, _ *http.Request, _ string) (*extapi.CartView, error) {
+	q.ensureCalls++
+	q.ensureCtx = ctx
+	if q.ensureView != nil {
+		return q.ensureView, nil
+	}
+	return &extapi.CartView{ID: "cart-1"}, nil
+}
+
+func (q *qtyCart) DeleteLineExtension(context.Context, string, string, string, string) error {
+	q.deleteCalls++
+	return nil
+}
+
+func (q *qtyCart) UpsertLineExtension(context.Context, string, string, string, []pluginsdk.CartExtensionValue, string) error {
+	q.upsertCalls++
+	return nil
 }
 
 func hookIssues(hctx *extapi.HookContext) []extapi.CartValidationIssue {
@@ -187,16 +290,16 @@ func TestDesignCartIssue(t *testing.T) {
 func TestTeeLinesToValidate(t *testing.T) {
 	tees := map[string]struct{}{"m": {}, "l": {}}
 	stored := map[string]int{"m": 1, "l": 1}
-	proposed := []domaincart.Item{{VariantID: "m", Quantity: 1}, {VariantID: "l", Quantity: 1}}
+	proposed := []extapi.CartLineView{{VariantID: "m", Quantity: 1}, {VariantID: "l", Quantity: 1}}
 
 	if got := teeLinesToValidate(proposed, stored, true, tees); len(got) != 2 {
 		t.Fatalf("read path = %v", got)
 	}
-	removed := []domaincart.Item{{VariantID: "l", Quantity: 1}}
+	removed := []extapi.CartLineView{{VariantID: "l", Quantity: 1}}
 	if got := teeLinesToValidate(removed, stored, true, tees); len(got) != 0 {
 		t.Fatalf("unchanged stale line = %v", got)
 	}
-	changed := []domaincart.Item{{VariantID: "m", Quantity: 2}, {VariantID: "l", Quantity: 1}}
+	changed := []extapi.CartLineView{{VariantID: "m", Quantity: 2}, {VariantID: "l", Quantity: 1}}
 	got := teeLinesToValidate(changed, stored, true, tees)
 	if len(got) != 1 {
 		t.Fatalf("changed line = %v", got)
@@ -204,11 +307,11 @@ func TestTeeLinesToValidate(t *testing.T) {
 	if _, ok := got["m"]; !ok {
 		t.Fatalf("changed line = %v", got)
 	}
-	added := []domaincart.Item{{VariantID: "m", Quantity: 1}, {VariantID: "l", Quantity: 1}, {VariantID: "x", Quantity: 1}}
+	added := []extapi.CartLineView{{VariantID: "m", Quantity: 1}, {VariantID: "l", Quantity: 1}, {VariantID: "x", Quantity: 1}}
 	if got := teeLinesToValidate(added, stored, true, tees); len(got) != 0 {
 		t.Fatalf("other product = %v", got)
 	}
-	bare := []domaincart.Item{{VariantID: "m", Quantity: 1}}
+	bare := []extapi.CartLineView{{VariantID: "m", Quantity: 1}}
 	got = teeLinesToValidate(bare, map[string]int{"shirt": 1}, true, map[string]struct{}{"m": {}})
 	if len(got) != 1 {
 		t.Fatalf("new tee = %v", got)

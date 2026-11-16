@@ -13,7 +13,6 @@ import (
 func registerMetalDogs(registry *plugin.Registry) {
 	p := metaldogs.New()
 	p.UseCatalogRepos(metalDogsCatalogRepos)
-	rememberMetalDogs(p)
 	registry.Register(p)
 }
 
