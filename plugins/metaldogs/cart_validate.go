@@ -21,10 +21,7 @@ func registerCartValidation(app *plugin.App, p *Plugin) error {
 }
 
 func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
-	if p == nil || p.sessionCart == nil {
-		return fmt.Errorf("metaldogs plugin: cart validation: session cart port is not configured")
-	}
-	if p.designs == nil || p.designs.Designs == nil {
+	if hctx == nil {
 		return nil
 	}
 	raw, ok := hctx.Get("cart")
@@ -32,18 +29,15 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 		return nil
 	}
 	current, ok := raw.(*domaincart.Cart)
-	if !ok || current == nil {
+	if !ok || current == nil || len(current.Items) == 0 {
+		return nil
+	}
+	// Without the port a tee cannot be told from any other line, and a hook error would block those carts.
+	if p == nil || p.sessionCart == nil {
 		return nil
 	}
 	// Hook handlers are not given the request context.
 	ctx := context.Background()
-	now := time.Now().UTC()
-	if p.designs.Clock != nil {
-		now = p.designs.Clock.Now().UTC()
-	}
-	if len(current.Items) == 0 {
-		return nil
-	}
 	variantIDs := make([]string, len(current.Items))
 	for i, item := range current.Items {
 		variantIDs[i] = item.VariantID
@@ -62,6 +56,10 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 		return err
 	}
 	scope := teeLinesToValidate(current.Items, persisted, stored, tees)
+	now := time.Now().UTC()
+	if p.designs != nil && p.designs.Clock != nil {
+		now = p.designs.Clock.Now().UTC()
+	}
 	for _, item := range current.Items {
 		if _, ok := scope[item.VariantID]; !ok {
 			continue
@@ -71,14 +69,14 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 			return err
 		}
 		var found domain.Design
-		ok := false
-		if present {
-			found, ok, err = p.designs.Designs.GetByID(ctx, designID)
+		known := false
+		if present && p.designs != nil && p.designs.Designs != nil {
+			found, known, err = p.designs.Designs.GetByID(ctx, designID)
 			if err != nil {
 				return err
 			}
 		}
-		issue, blocked := designCartIssue(now, item.VariantID, designID, present, found, ok)
+		issue, blocked := designCartIssue(now, item.VariantID, designID, present, found, known)
 		if blocked {
 			hctx.AppendValidationError(issue)
 		}

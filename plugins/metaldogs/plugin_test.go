@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/application/hooks"
 	domainext "github.com/akarso/shopanda/internal/domain/extension"
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
@@ -449,17 +450,20 @@ func TestPlugin_Init_Enabled_RegistersDesignIDField(t *testing.T) {
 func TestPlugin_Init_Disabled_DoesNotRegisterDesignIDField(t *testing.T) {
 	t.Parallel()
 	app := testApp(t, false)
+	app.SetHookRegistry(hooks.NewRegistry(app.Logger))
 	if err := metaldogs.New().Init(app); err == nil {
 		t.Fatal("Init() expected error when plugins.metaldogs.enabled is false")
 	}
 	if _, ok := app.ExtensionRegistry().Get("metaldogs.design_id"); ok {
 		t.Fatal("metaldogs.design_id registered while the plugin is disabled")
 	}
-	if reg := app.HookRegistry(); reg != nil {
-		for _, entry := range reg.Catalog() {
-			if entry.Name == string(extapi.HookCartValidate) {
-				t.Fatal("cart validation registered while the plugin is disabled")
-			}
+	reg := app.HookRegistry()
+	if reg == nil {
+		t.Fatal("hook registry missing")
+	}
+	for _, entry := range reg.Catalog() {
+		if entry.Name == string(extapi.HookCartValidate) {
+			t.Fatal("cart validation registered while the plugin is disabled")
 		}
 	}
 }

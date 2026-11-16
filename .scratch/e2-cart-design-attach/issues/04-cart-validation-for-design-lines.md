@@ -8,7 +8,7 @@
 
 - [ ] A custom tee line added through the generic API without `design_id` yields a blocking cart validation issue ("design required")
 - [ ] A design line whose design is no longer `approved` (changed after the add) yields a blocking issue
-- [ ] A design line whose design has expired, or whose design id does not match the custom tee, yields a blocking issue
+- [ ] A design line whose design has expired yields a blocking issue. A design id that does not match the custom tee uses `DesignMismatchCode` (`metaldogs.design_mismatch`); that code is reserved and is not emitted until a template-to-product mapping exists (X2)
 - [ ] A cart with a valid design line yields no issue from this plugin
 - [ ] A cart with another product and no design id is unaffected
 - [ ] With the plugin disabled no validation is registered

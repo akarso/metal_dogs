@@ -21,6 +21,7 @@ import (
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
 	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
+	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
@@ -61,6 +62,48 @@ func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 			return app.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
 		}))
 	}), db
+}
+
+// Plugin stays enabled, but Init returns before design services when media is absent.
+func newDesignCartServerWithoutMedia(t *testing.T) (*httptest.Server, *sql.DB, *metaldogs.Plugin) {
+	t.Helper()
+	db := testutil.OpenIsolatedWithCore(t, "cart_design_nomedia")
+	runCatalogSeed(t, db, repoCatalogDir(t))
+	publishCatalogProduct(t, db)
+	setTeeStock(t, db, 5)
+
+	log := logger.NewWithWriter(io.Discard, "error")
+	app := &plugin.App{
+		Logger: log,
+		Bus:    event.NewBus(log),
+		Config: &config.Config{
+			Plugins: config.PluginsConfig{
+				MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
+			},
+		},
+	}
+	extReg := extensionapp.NewRegistry()
+	app.SetExtensionRegistry(extReg)
+	reg := plugin.NewRegistry(log)
+	p := metaldogs.New()
+	reg.Register(p)
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v", summary)
+	}
+	if p.DesignService() != nil {
+		t.Fatal("design service wired without media")
+	}
+	saved, err := postgres.NewCartRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository, lines *extensionapp.ValueService) {
+		p.UseSessionCart(sessioncart.New(carts, products, variants, lines, saved, func(ctx context.Context) (context.Context, error) {
+			return app.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
+		}))
+	})
+	return srv, db, p
 }
 
 func setVariantStock(t *testing.T, db *sql.DB, variantID string, qty int) {

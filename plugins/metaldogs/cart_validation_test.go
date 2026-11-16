@@ -15,6 +15,29 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
+func TestCartValidation_TeeWithoutDesignWhenMediaUnavailable(t *testing.T) {
+	srv, _, plugin := newDesignCartServerWithoutMedia(t)
+	if plugin.DesignService() != nil {
+		t.Fatal("design service wired without media")
+	}
+	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	cartID := createPLNCart(t, srv)
+	status, body := cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+cartID+"/items", map[string]any{
+		"variant_id": variantM,
+		"quantity":   1,
+	})
+	if status != http.StatusUnprocessableEntity || cartErrorCode(t, body) != "cart_validation_failed" {
+		t.Fatalf("status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
+	}
+	issues := validationIssuesFrom(t, body)
+	if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.DesignRequiredCode, "design required", variantM) {
+		t.Fatalf("issues=%+v", issues)
+	}
+	if items := cartItems(t, srv, cartID); len(items) != 0 {
+		t.Fatalf("stored items=%+v", items)
+	}
+}
+
 func TestCartValidation_DesignLines(t *testing.T) {
 	srv, db := newDesignCartServer(t)
 	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")

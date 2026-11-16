@@ -1,6 +1,7 @@
 package metaldogs
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -10,16 +11,137 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
-func TestOnCartValidate_MissingSessionCart(t *testing.T) {
+func TestOnCartValidate_EmptyCartWithoutSessionCart(t *testing.T) {
 	current, err := domaincart.NewCart("cart-1", "EUR")
 	if err != nil {
 		t.Fatal(err)
 	}
 	hctx := &extapi.HookContext{}
 	hctx.Set("cart", &current)
-	if err := New().onCartValidate(hctx); err == nil {
-		t.Fatal("expected error")
+	if err := New().onCartValidate(hctx); err != nil {
+		t.Fatal(err)
 	}
+	if issues := hookIssues(hctx); len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestOnCartValidate_MissingSessionCart(t *testing.T) {
+	current, err := domaincart.NewCart("cart-1", "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Items = []domaincart.Item{{VariantID: "variant-m", Quantity: 1}}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &current)
+	if err := New().onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	if issues := hookIssues(hctx); len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
+	current, err := domaincart.NewCart("cart-1", "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Items = []domaincart.Item{{VariantID: "shirt", Quantity: 1}}
+	cart := &scriptSessionCart{}
+	p := New()
+	p.sessionCart = cart
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &current)
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	if cart.lineCalls != 0 || cart.qtyCalls != 0 {
+		t.Fatalf("line=%d qty=%d", cart.lineCalls, cart.qtyCalls)
+	}
+	if issues := hookIssues(hctx); len(issues) != 0 {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
+	current, err := domaincart.NewCart("cart-1", "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Items = []domaincart.Item{{VariantID: "tee", Quantity: 1}}
+	p := New()
+	p.sessionCart = &scriptSessionCart{tees: map[string]struct{}{"tee": {}}}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &current)
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	issues := hookIssues(hctx)
+	if len(issues) != 1 || issues[0].Code != ports.DesignRequiredCode || issues[0].Message != "design required" || issues[0].VariantID != "tee" || issues[0].Level != "" {
+		t.Fatalf("issues=%+v", issues)
+	}
+
+	p.sessionCart = &scriptSessionCart{
+		tees:  map[string]struct{}{"tee": {}},
+		lines: map[string]string{"tee": "design-a"},
+	}
+	hctx = &extapi.HookContext{}
+	hctx.Set("cart", &current)
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	issues = hookIssues(hctx)
+	if len(issues) != 1 || issues[0].Code != ports.DesignNotFoundCode || issues[0].Message != "design not found" || issues[0].VariantID != "tee" || issues[0].Level != "" {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+type scriptSessionCart struct {
+	tees      map[string]struct{}
+	lines     map[string]string
+	lineCalls int
+	qtyCalls  int
+}
+
+func (s *scriptSessionCart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, error) {
+	lines, err := s.CustomTeeLines(ctx, []string{variantID})
+	if err != nil {
+		return false, err
+	}
+	_, ok := lines[variantID]
+	return ok, nil
+}
+
+func (s *scriptSessionCart) CustomTeeLines(_ context.Context, _ []string) (map[string]struct{}, error) {
+	if s.tees == nil {
+		return map[string]struct{}{}, nil
+	}
+	return s.tees, nil
+}
+
+func (s *scriptSessionCart) PersistedLineQuantities(_ context.Context, _ string) (map[string]int, bool, error) {
+	s.qtyCalls++
+	return nil, false, nil
+}
+
+func (s *scriptSessionCart) LineDesign(_ context.Context, _, variantID string) (string, bool, error) {
+	s.lineCalls++
+	id, ok := s.lines[variantID]
+	return id, ok, nil
+}
+
+func (s *scriptSessionCart) AddLine(_ context.Context, session ports.CartSession, _ ports.DesignLine) (ports.CartSession, ports.CartTarget, error) {
+	return session, ports.CartTarget{}, nil
+}
+
+func hookIssues(hctx *extapi.HookContext) []extapi.CartValidationIssue {
+	raw, _ := hctx.Get("validation_errors")
+	issues, _ := raw.(*[]extapi.CartValidationIssue)
+	if issues == nil {
+		return nil
+	}
+	return *issues
 }
 
 func TestDesignCartIssue(t *testing.T) {

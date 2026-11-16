@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"io"
+	"strings"
 	"testing"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
@@ -14,6 +16,20 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+func TestBindMetalDogsSessionCart_MissingDependencyWarns(t *testing.T) {
+	var buf bytes.Buffer
+	log := logger.NewWithWriter(&buf, "warn")
+	bindMetalDogsSessionCart(&serveRuntime{log: log})
+	if !strings.Contains(buf.String(), "metaldogs: session cart bind skipped") {
+		t.Fatalf("log=%s", buf.String())
+	}
+	buf.Reset()
+	bindMetalDogsSessionCart(nil)
+	if buf.Len() != 0 {
+		t.Fatalf("nil runtime logged %s", buf.String())
+	}
+}
 
 func TestBindMetalDogsSessionCart(t *testing.T) {
 	log := logger.NewWithWriter(io.Discard, "error")

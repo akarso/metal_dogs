@@ -26,6 +26,11 @@ func rememberMetalDogs(p *metaldogs.Plugin) {
 // bindMetalDogsSessionCart supplies the session-cart port after the cart service exists.
 func bindMetalDogsSessionCart(rt *serveRuntime) {
 	if rt == nil || rt.cartService == nil || rt.repos == nil || rt.repos.productRepo == nil || rt.repos.variantRepo == nil {
+		if rt != nil && rt.log != nil {
+			rt.log.Warn("metaldogs: session cart bind skipped", map[string]interface{}{
+				"reason": "cart service or catalog repositories are not configured",
+			})
+		}
 		return
 	}
 	var grant func(context.Context) (context.Context, error)
