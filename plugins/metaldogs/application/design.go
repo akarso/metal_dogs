@@ -17,7 +17,7 @@ import (
 type DesignError struct {
 	Code      string
 	Message   string
-	VersionID string     // set on approve enqueue/view 503 so clients can retry
+	VersionID string // set on approve enqueue/view 503 so clients can retry
 	DesignID  string
 	JobID     string     // set when a generation job lookup/preview I/O fails
 	Design    DesignView // set when a mutation committed but the response view failed
@@ -42,6 +42,7 @@ const (
 	DesignErrUnavailable           = "unavailable"
 	DesignErrNotFound              = "not_found"
 	DesignErrBadRequest            = "bad_request"
+	DesignErrUnprocessable         = "unprocessable"
 	DesignErrTemplateUnavailable   = "template_unavailable"
 	DesignErrUploadUnavailable     = "upload_unavailable"
 	DesignErrUploadAlreadyAttached = "upload_already_attached"

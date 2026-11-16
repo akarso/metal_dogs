@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/application/hooks"
+	domainext "github.com/akarso/shopanda/internal/domain/extension"
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/platform/cli"
@@ -18,6 +21,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
@@ -231,6 +235,7 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
 		!patterns["PATCH /api/customizer/designs/{id}"] ||
 		!patterns["POST /api/customizer/designs/{id}/generate"] ||
+		!patterns["POST /api/customizer/designs/{id}/add-to-cart"] ||
 		!patterns["GET /api/customizer/generation-jobs/{id}"] {
 		t.Fatalf("PublicRoutes = %+v, want enabled + health + templates + uploads + designs + generate", routes)
 	}
@@ -385,5 +390,103 @@ func TestCLI_Eval_NonZeroOnSampleFailure(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected non-zero exit when samples fail")
+	}
+}
+
+func TestPlugin_Init_Enabled_RegistersDesignIDField(t *testing.T) {
+	t.Parallel()
+	for _, withMedia := range []bool{false, true} {
+		log := logger.NewWithWriter(io.Discard, "error")
+		app := &plugin.App{
+			Logger: log,
+			Bus:    event.NewBus(log),
+			Config: &config.Config{
+				Plugins: config.PluginsConfig{
+					MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
+				},
+			},
+		}
+		if withMedia {
+			app.RegisterMediaStorage(&fakeSigned{})
+		}
+		reg := plugin.NewRegistry(log)
+		reg.Register(metaldogs.New())
+		summary := reg.InitAll(app)
+		if summary.Failed > 0 || summary.Initialized != 1 {
+			t.Fatalf("media=%v InitAll summary = %+v", withMedia, summary)
+		}
+		field, ok := app.ExtensionRegistry().Get("metaldogs.design_id")
+		if !ok {
+			t.Fatalf("media=%v: metaldogs.design_id is not registered", withMedia)
+		}
+		if app.ExtensionRegistry().Owner("metaldogs.design_id") != metaldogs.PluginName {
+			t.Fatalf("media=%v: owner = %q", withMedia, app.ExtensionRegistry().Owner("metaldogs.design_id"))
+		}
+		if field.Visibility != domainext.VisibilityPublic {
+			t.Fatalf("visibility = %q", field.Visibility)
+		}
+		if !field.Access.PluginOnlyWrite {
+			t.Fatal("field is writable by the public cart API")
+		}
+		if field.StorageMode != domainext.StorageSnapshot {
+			t.Fatalf("storage = %q", field.StorageMode)
+		}
+		if field.Scope != domainext.TargetCartItem || field.Type != domainext.FieldTypeString {
+			t.Fatalf("scope=%q type=%q", field.Scope, field.Type)
+		}
+		re, err := regexp.Compile(field.Validation.Regex)
+		if err != nil {
+			t.Fatalf("regex: %v", err)
+		}
+		if !re.MatchString("11111111-1111-4111-8111-111111111111") {
+			t.Fatalf("regex %q rejected a UUID", field.Validation.Regex)
+		}
+		if re.MatchString("not-a-uuid") || re.MatchString("") {
+			t.Fatalf("regex %q accepted a non-UUID", field.Validation.Regex)
+		}
+	}
+}
+
+func TestPlugin_Init_Disabled_DoesNotRegisterDesignIDField(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, false)
+	app.SetHookRegistry(hooks.NewRegistry(app.Logger))
+	if err := metaldogs.New().Init(app); err == nil {
+		t.Fatal("Init() expected error when plugins.metaldogs.enabled is false")
+	}
+	if _, ok := app.ExtensionRegistry().Get("metaldogs.design_id"); ok {
+		t.Fatal("metaldogs.design_id registered while the plugin is disabled")
+	}
+	reg := app.HookRegistry()
+	if reg == nil {
+		t.Fatal("hook registry missing")
+	}
+	for _, entry := range reg.Catalog() {
+		if entry.Name == string(extapi.HookCartValidate) {
+			t.Fatal("cart validation registered while the plugin is disabled")
+		}
+	}
+}
+
+func TestPlugin_Init_Enabled_RegistersCartValidation(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	initMetalDogs(t, app)
+	reg := app.HookRegistry()
+	if reg == nil {
+		t.Fatal("hook registry missing")
+	}
+	var handlers int
+	for _, entry := range reg.Catalog() {
+		if entry.Name != string(extapi.HookCartValidate) {
+			continue
+		}
+		handlers = len(entry.Handlers)
+		if handlers != 1 || entry.Handlers[0].Registrant != metaldogs.PluginName {
+			t.Fatalf("handlers=%+v", entry.Handlers)
+		}
+	}
+	if handlers != 1 {
+		t.Fatal("cart validation is not registered")
 	}
 }

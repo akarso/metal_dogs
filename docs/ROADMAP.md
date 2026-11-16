@@ -21,7 +21,7 @@ Inspected against Shopanda source at pin [`f58a4157a8543f2e53dba293ba4e5c554c8bb
 | PostgreSQL job queue with admin API and `jobs:*` CLI; cron scheduler | Inspected at pin | Generation, artwork preparation, retention sweeps run as queue jobs ([ADR-0003](adr/0003-async-generation-pg-job-queue-polling.md)) |
 | Plugin on-demand enqueue + handlers | Inspected at pin (Phase 13 PR-1087–1088) | Use `RegisterManual` + `Enqueue`; queue types are `integration.sync.metaldogs.<name>` (no free-form `metaldogs.*` types) |
 | Plugin-owned schema migrations | Inspected at pin (Phase 13 PR-1084–1086) | Implement `plugin.Migrator`; versions `plugin:<name>:<basename>`; applied by `app migrate` / boot `InitAll` with advisory lock |
-| Extension fields with cart → order snapshot at checkout | Inspected at pin | Line-level (`cart_item` / `order_item`); `design_id` attach via [ADR-0005](adr/0005-immutable-order-design-snapshot.md) |
+| Extension fields with cart → order snapshot at checkout | Inspected at pin; E2 contract-tests the session-cart route, the plugin-only `403`, and `cart.validate` ([CR-19](cr-rounds/CR-19-e2-cart-design-attach.md)). Copy of snapshot-mode values onto the order line is core behaviour, consumed by E4 | Line-level (`cart_item` / `order_item`); `metaldogs.design_id` is public, plugin-only write, snapshot storage ([ADR-0005](adr/0005-immutable-order-design-snapshot.md)) |
 | Plugin-only extension writes | Inspected at pin ([shopanda#575](https://github.com/akarso/shopanda/pull/575), [#578](https://github.com/akarso/shopanda/pull/578), [#580](https://github.com/akarso/shopanda/pull/580)) | Untrusted writes of `Access.PluginOnlyWrite` fields return 403 `forbidden_plugin_only_field`. Trusted in-process code uses `App.PluginWriteContext` (error) or `App.WithPluginWrite` (panic). `Publish`, pricing, `checkout.Workflow.Execute`, and `jobs.Worker.safeHandle` strip the grant. `plugin.App` has no cart service port. |
 | Guest checkout, Stripe core plugin, S3 core plugin, media storage port | Inspected at pin | No account required for MVP; private S3 bucket ([ADR-0004](adr/0004-private-object-storage-signed-urls.md)) |
 | SSR storefront with themes, UI slots, asset manifest | Inspected at pin | Cart and checkout pages are reused from Shopanda; only the customizer is custom ([ADR-0002](adr/0002-storefront-customizer-and-shopanda-checkout.md)) |
@@ -432,11 +432,12 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 - **Safe delivery:** Product unpublished/hidden in Shopanda until M3. Draft status and zero stock are independent protections; launch clears both.
 - **Docs:** [ADR-0009](adr/0009-pod-provider-and-catalog-modelling.md) catalog modelling Accepted (fulfilment stays Proposed until P0); plugin README catalog section; [CR-18](cr-rounds/CR-18-e1-catalog.md).
 
-#### E2 · Cart line design attach — size M
+#### E2 · Cart line design attach — size M — **DONE** (CR-19, 2026-11-16)
 
-- **Goal:** Extension field `metaldogs.design_id` on the cart line (**verify** granularity); cart hook validates the design exists, is `approved`, belongs to the caller (token), and matches the product; quantity rules (one design per line); endpoint path either Shopanda cart API with extension payload or thin plugin route `POST /api/customizer/designs/{id}/add-to-cart` that calls Shopanda's cart application service.
-- **Tests:** Feature: unapproved design rejected; foreign design rejected; happy path persists the field; idempotent re-add does not duplicate lines.
-- **Safe delivery:** Flagged; hook is inert when no `design_id` present.
+- **Goal:** `POST /api/customizer/designs/{id}/add-to-cart` puts an approved design the caller owns onto the session cart as one line for a custom-tee size. The line carries `metaldogs.design_id` (public read, plugin-only write, snapshot storage). The route does not accept or return a cart id. The same design on the same variant again changes nothing. A different design on that variant, or a custom-tee line that already exists with no design id, is `409`. `cart.validate` blocks a custom-tee line whose design is missing, unknown, expired, or no longer approved. It does not check ownership. A design that does not match the custom tee is reserved (`metaldogs.design_mismatch`) and is not emitted until X2.
+- **Tests:** Feature tests call the route and the public cart API on an isolated database ([CR-19](cr-rounds/CR-19-e2-cart-design-attach.md)).
+- **Safe delivery:** The plugin master switch. The field, the route, and the hook exist only when the plugin is enabled. The hook does nothing for products that are not the custom tee. A custom-tee line with no `design_id` blocks that line. "Inert without design id" applies to non-tee products only.
+- **Docs:** [`architecture/api.md`](architecture/api.md); [`architecture/flows/design-to-order.md`](architecture/flows/design-to-order.md); [CR-19](cr-rounds/CR-19-e2-cart-design-attach.md).
 
 #### E3 · Checkout validation — size S
 

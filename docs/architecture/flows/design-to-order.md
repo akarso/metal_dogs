@@ -41,7 +41,7 @@ flowchart TB
         a5[GET generation-jobs/id]
         a6[GET designs/id with signed URLs]
         a7[POST approve: freeze DesignVersion, enqueue production prep]
-        a8[POST add-to-cart: verify approved + owner]
+        a8[POST add-to-cart: session cart, approved + owner, trusted write]
     end
 
     subgraph worker[Worker]
@@ -132,14 +132,17 @@ sequenceDiagram
     Note over Q: C6 stub fails pending_spec (not done); approve Requeues / retries enqueue until G5
     API-->>UI: approved, version_id
     Cust->>UI: choose size
-    UI->>API: POST /designs/{id}/add-to-cart {variant_sku} (token)
-    API->>Shop: add cart line with extension metaldogs.design_id
-    Shop->>API: cart hook: design approved and owned?
-    API-->>Shop: ok
-    Shop-->>UI: cart line id
-    UI->>Shop: redirect to /cart
+    UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer owner token)
+    Note over API,Shop: Cookie shopanda_storefront_cart. No cart id in the request or the JSON response
+    API->>API: design exists, unexpired, approved, owned, variant is mdogs-tee
+    API->>Shop: trusted write of metaldogs.design_id, then AddItem quantity 1
+    Note over Shop: Public cart API, SSR cart, and admin values cannot set this field (403)
+    API-->>UI: 200 {cart_url: "/cart"} and Set-Cookie
+    UI->>Shop: redirect to /cart (guest session cart)
     Cust->>Shop: checkout (guest), pay via Stripe
-    Shop->>API: checkout step: designs still approved?
+    Shop->>Shop: cart.validate blocks a custom tee with a missing, unknown, expired, or unapproved design. Other products are untouched. Ownership is not re-checked
+    Shop->>Shop: checkout copies snapshot-mode metaldogs.design_id onto the order line
+    Shop->>API: checkout step (E3): designs still approved?
     API-->>Shop: ok
     Shop->>Shop: create immutable order
     Shop-->>API: event order.created
@@ -157,5 +160,10 @@ sequenceDiagram
 | Job | transient provider error | Progress continues (attempt count visible) | Automatic |
 | Job | terminal failure | Mapped friendly reason | Retry if attempts remain |
 | Reload mid-flow | — | Flow resumes from stored design id/token | Automatic |
-| Add to cart | design not approved | Prompt to approve first | Approve |
+| Add to cart | design not approved | `409` `invalid_transition` ("design is not ready") | Approve |
+| Add to cart | unknown, foreign, or expired design | `404` `not_found` | Use the caller's own approved design |
+| Add to cart | variant is not the custom tee, or the body is invalid | `422` `unprocessable` | Pick a size of `mdogs-tee` |
+| Add to cart | that size already has another design, or a custom-tee line with no design id | `409` `conflict`; cart unchanged | Remove the line, then add again |
+| Add to cart | another client sets `metaldogs.design_id` | `403` `forbidden_plugin_only_field`; nothing stored | Use this route |
+| Cart read or line change | custom tee missing, unknown, expired, or no longer approved | Blocking cart issue | Fix or remove that line. Other products still change |
 | Checkout | design expired/deleted | Shopanda error mapped: "Design no longer available" | Return to customizer |

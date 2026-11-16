@@ -31,12 +31,27 @@ type Plugin struct {
 	generate     *application.GenerateService
 	worker       *application.GenerateWorker
 	catalogRepos func(*sql.DB) (catalog.Repos, error)
+	sessionCart  ports.SessionCart
 }
 
 // UseCatalogRepos supplies catalog repositories for metaldogs:catalog-seed.
 // The plugin cannot import infrastructure adapters (PR-1017); the composition root builds them.
 func (p *Plugin) UseCatalogRepos(open func(*sql.DB) (catalog.Repos, error)) {
 	p.catalogRepos = open
+}
+
+// UseSessionCart supplies the storefront session cart. The composition root calls it
+// after the cart service exists; the add route reads it per request.
+func (p *Plugin) UseSessionCart(cart ports.SessionCart) {
+	if p == nil {
+		return
+	}
+	p.sessionCart = cart
+}
+
+// SessionCartWired reports whether the composition root supplied the session cart port.
+func (p *Plugin) SessionCartWired() bool {
+	return p != nil && p.sessionCart != nil
 }
 
 // New returns the Metal Dogs plugin.
@@ -97,6 +112,13 @@ func (p *Plugin) Init(app *plugin.App) error {
 	maxCooldownSecs := int(domain.MaxGenerationCooldown / time.Second)
 	if cooldownSecs > maxCooldownSecs {
 		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be <= %d", maxCooldownSecs)
+	}
+
+	if err := registerDesignIDField(app); err != nil {
+		return fmt.Errorf("metaldogs plugin: design field: %w", err)
+	}
+	if err := registerCartValidation(app, p); err != nil {
+		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
 	}
 
 	registerCLICommands(app, p)
@@ -162,6 +184,13 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/clone", httpapi.CloneDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs clone route: %w", err)
+	}
+	addToCart := &application.AddToCart{
+		Designs: p.designs,
+		Cart:    pluginSessionCart{p: p},
+	}
+	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/add-to-cart", httpapi.AddDesignToCart(addToCart)); err != nil {
+		return fmt.Errorf("metaldogs plugin: designs add-to-cart route: %w", err)
 	}
 	if err := app.RegisterPublicRoute("GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
@@ -309,4 +338,53 @@ func newGenerateServices(
 		Cooldown:    time.Duration(cooldownSecs) * time.Second, // 0 disables
 	}
 	return svc, worker, nil
+}
+
+type pluginSessionCart struct{ p *Plugin }
+
+func (s pluginSessionCart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return false, err
+	}
+	return cart.BelongsToCustomTee(ctx, variantID)
+}
+
+func (s pluginSessionCart) CustomTeeLines(ctx context.Context, variantIDs []string) (map[string]struct{}, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return nil, err
+	}
+	return cart.CustomTeeLines(ctx, variantIDs)
+}
+
+func (s pluginSessionCart) PersistedLineQuantities(ctx context.Context, cartID string) (map[string]int, bool, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return nil, false, err
+	}
+	return cart.PersistedLineQuantities(ctx, cartID)
+}
+
+func (s pluginSessionCart) LineDesign(ctx context.Context, cartID, variantID string) (string, bool, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return "", false, err
+	}
+	return cart.LineDesign(ctx, cartID, variantID)
+}
+
+func (s pluginSessionCart) AddLine(ctx context.Context, session ports.CartSession, line ports.DesignLine) (ports.CartSession, ports.CartTarget, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return "", ports.CartTarget{}, err
+	}
+	return cart.AddLine(ctx, session, line)
+}
+
+func (s pluginSessionCart) cart() (ports.SessionCart, error) {
+	if s.p == nil || s.p.sessionCart == nil {
+		return nil, &ports.CartError{Code: ports.CartUnavailable}
+	}
+	return s.p.sessionCart, nil
 }

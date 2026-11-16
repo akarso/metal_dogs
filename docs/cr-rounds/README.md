@@ -70,3 +70,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-16 | C6 approve + DesignVersion freeze | M2 → C6 | [`CR-16-c6-approve.md`](CR-16-c6-approve.md) |
 | CR-17 | C7 regeneration limits + cooldown | M3 → C7 done | [`CR-17-c7-regen-limits.md`](CR-17-c7-regen-limits.md) |
 | CR-18 | E1 catalog product and variants | M3 → E1 | [`CR-18-e1-catalog.md`](CR-18-e1-catalog.md) |
+| CR-19 | E2 cart line design attach | M3 → E2 | [`CR-19-e2-cart-design-attach.md`](CR-19-e2-cart-design-attach.md) |
