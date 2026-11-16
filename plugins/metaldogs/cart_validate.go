@@ -38,12 +38,29 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if p.designs.Clock != nil {
 		now = p.designs.Clock.Now().UTC()
 	}
+	if len(current.Items) == 0 {
+		return nil
+	}
+	variantIDs := make([]string, len(current.Items))
+	for i, item := range current.Items {
+		variantIDs[i] = item.VariantID
+	}
+	tees, err := p.sessionCart.CustomTeeLines(ctx, variantIDs)
+	if err != nil {
+		return err
+	}
+	if len(tees) == 0 {
+		return nil
+	}
+	// RemoveItem deletes extension values before this hook and does not restore them when validation fails.
+	// Issues on lines this mutation left unchanged stay on the cart read.
+	persisted, stored, err := p.sessionCart.PersistedLineQuantities(ctx, current.ID)
+	if err != nil {
+		return err
+	}
+	scope := teeLinesToValidate(current.Items, persisted, stored, tees)
 	for _, item := range current.Items {
-		tee, err := p.sessionCart.BelongsToCustomTee(ctx, item.VariantID)
-		if err != nil {
-			return err
-		}
-		if !tee {
+		if _, ok := scope[item.VariantID]; !ok {
 			continue
 		}
 		designID, present, err := p.sessionCart.LineDesign(ctx, current.ID, item.VariantID)
@@ -74,8 +91,8 @@ func designCartIssue(now time.Time, variantID, designID string, present bool, d 
 		return issue, true
 	}
 	if !found {
-		issue.Code = ports.DesignMismatchCode
-		issue.Message = "design does not match the custom tee"
+		issue.Code = ports.DesignNotFoundCode
+		issue.Message = "design not found"
 		return issue, true
 	}
 	if d.Status == domain.DesignExpired || !d.ExpiresAt.After(now) {
@@ -89,4 +106,41 @@ func designCartIssue(now time.Time, variantID, designID string, present bool, d 
 		return issue, true
 	}
 	return extapi.CartValidationIssue{}, false
+}
+
+func teeLinesToValidate(proposed []domaincart.Item, persisted map[string]int, persistedFound bool, tees map[string]struct{}) map[string]struct{} {
+	if len(tees) == 0 {
+		return nil
+	}
+	proposedQty := make(map[string]int, len(proposed))
+	for _, item := range proposed {
+		proposedQty[item.VariantID] = item.Quantity
+	}
+	changed := !persistedFound
+	if persistedFound {
+		if len(proposedQty) != len(persisted) {
+			changed = true
+		} else {
+			for id, qty := range proposedQty {
+				if persisted[id] != qty {
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	out := make(map[string]struct{})
+	for id := range tees {
+		if _, onLine := proposedQty[id]; !onLine {
+			continue
+		}
+		if changed && persistedFound && persisted[id] == proposedQty[id] {
+			continue
+		}
+		out[id] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

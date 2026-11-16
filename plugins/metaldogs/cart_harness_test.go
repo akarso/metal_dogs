@@ -52,11 +52,30 @@ func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
+	saved, err := postgres.NewCartRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository, lines *extensionapp.ValueService) {
-		p.UseSessionCart(sessioncart.New(carts, products, variants, lines, func(ctx context.Context) (context.Context, error) {
+		p.UseSessionCart(sessioncart.New(carts, products, variants, lines, saved, func(ctx context.Context) (context.Context, error) {
 			return app.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
 		}))
 	}), db
+}
+
+func setVariantStock(t *testing.T, db *sql.DB, variantID string, qty int) {
+	t.Helper()
+	stock, err := postgres.NewStockRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := inventory.NewStockEntry(variantID, qty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stock.SetStock(context.Background(), &entry); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func setTeeStock(t *testing.T, db *sql.DB, qty int) {

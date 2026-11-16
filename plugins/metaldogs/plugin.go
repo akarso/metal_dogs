@@ -350,6 +350,22 @@ func (s pluginSessionCart) BelongsToCustomTee(ctx context.Context, variantID str
 	return cart.BelongsToCustomTee(ctx, variantID)
 }
 
+func (s pluginSessionCart) CustomTeeLines(ctx context.Context, variantIDs []string) (map[string]struct{}, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return nil, err
+	}
+	return cart.CustomTeeLines(ctx, variantIDs)
+}
+
+func (s pluginSessionCart) PersistedLineQuantities(ctx context.Context, cartID string) (map[string]int, bool, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return nil, false, err
+	}
+	return cart.PersistedLineQuantities(ctx, cartID)
+}
+
 func (s pluginSessionCart) LineDesign(ctx context.Context, cartID, variantID string) (string, bool, error) {
 	cart, err := s.cart()
 	if err != nil {

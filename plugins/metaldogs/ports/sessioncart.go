@@ -5,12 +5,14 @@ import "context"
 // DesignIDFieldCode is the cart-line extension written only by the add-to-cart route.
 const DesignIDFieldCode = "metaldogs.design_id"
 
-// Cart-validation issue codes. Level is left empty so each issue blocks checkout.
+// Cart-validation issue codes. Level stays empty so a reported issue blocks that line.
 const (
 	DesignRequiredCode    = "metaldogs.design_required"
 	DesignNotApprovedCode = "metaldogs.design_not_approved"
 	DesignExpiredCode     = "metaldogs.design_expired"
-	DesignMismatchCode    = "metaldogs.design_mismatch"
+	DesignNotFoundCode    = "metaldogs.design_not_found"
+	// DesignMismatchCode is reserved for a template-to-product mapping (X2). It is not emitted yet.
+	DesignMismatchCode = "metaldogs.design_mismatch"
 )
 
 // DesignLine is one custom-tee line. Quantity is always one; the field code is not part of this value.
@@ -66,6 +68,12 @@ func (e *CartError) Unwrap() error {
 // or a trusted-write marker from the caller beyond the context already granted.
 type SessionCart interface {
 	BelongsToCustomTee(ctx context.Context, variantID string) (bool, error)
+	// CustomTeeLines reports which variantIDs belong to the custom tee.
+	// The tee product is loaded once per call. A missing product matches nothing.
+	CustomTeeLines(ctx context.Context, variantIDs []string) (map[string]struct{}, error)
+	// PersistedLineQuantities reads stored line quantities without an owner check.
+	// found is false when the cart does not exist. The cart hook has no customer token.
+	PersistedLineQuantities(ctx context.Context, cartID string) (map[string]int, bool, error)
 	// LineDesign reads the design id stored for a cart line.
 	// present is false when the line has no design id, including before the line itself is saved.
 	LineDesign(ctx context.Context, cartID, variantID string) (designID string, present bool, err error)

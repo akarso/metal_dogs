@@ -34,7 +34,7 @@ func bindMetalDogsSessionCart(rt *serveRuntime) {
 			return rt.pluginApp.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
 		}
 	}
-	port := sessioncart.New(rt.cartService, rt.repos.productRepo, rt.repos.variantRepo, rt.extensionValueService, grant)
+	port := sessioncart.New(rt.cartService, rt.repos.productRepo, rt.repos.variantRepo, rt.extensionValueService, rt.repos.cartRepo, grant)
 	metalDogsMu.Lock()
 	p := metalDogsPlugin
 	metalDogsMu.Unlock()

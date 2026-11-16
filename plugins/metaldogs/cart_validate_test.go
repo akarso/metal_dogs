@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	domaincart "github.com/akarso/shopanda/internal/domain/cart"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -28,7 +29,7 @@ func TestDesignCartIssue(t *testing.T) {
 		{name: "not approved", id: "design-a", present: true, design: domain.Design{Status: domain.DesignOrdered, ExpiresAt: now.Add(time.Hour)}, found: true, code: ports.DesignNotApprovedCode, message: "design is not approved"},
 		{name: "expired status", id: "design-a", present: true, design: domain.Design{Status: domain.DesignExpired, ExpiresAt: now.Add(time.Hour)}, found: true, code: ports.DesignExpiredCode, message: "design has expired"},
 		{name: "expired clock", id: "design-a", present: true, design: domain.Design{Status: domain.DesignApproved, ExpiresAt: now.Add(-time.Minute)}, found: true, code: ports.DesignExpiredCode, message: "design has expired"},
-		{name: "unknown", id: "design-a", present: true, found: false, code: ports.DesignMismatchCode, message: "design does not match the custom tee"},
+		{name: "unknown", id: "design-a", present: true, found: false, code: ports.DesignNotFoundCode, message: "design not found"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,5 +44,42 @@ func TestDesignCartIssue(t *testing.T) {
 				t.Fatalf("issue=%+v blocked=%v", issue, blocked)
 			}
 		})
+	}
+}
+
+func TestTeeLinesToValidate(t *testing.T) {
+	tees := map[string]struct{}{"m": {}, "l": {}}
+	stored := map[string]int{"m": 1, "l": 1}
+	proposed := []domaincart.Item{{VariantID: "m", Quantity: 1}, {VariantID: "l", Quantity: 1}}
+
+	if got := teeLinesToValidate(proposed, stored, true, tees); len(got) != 2 {
+		t.Fatalf("read path = %v", got)
+	}
+	removed := []domaincart.Item{{VariantID: "l", Quantity: 1}}
+	if got := teeLinesToValidate(removed, stored, true, tees); len(got) != 0 {
+		t.Fatalf("unchanged stale line = %v", got)
+	}
+	changed := []domaincart.Item{{VariantID: "m", Quantity: 2}, {VariantID: "l", Quantity: 1}}
+	got := teeLinesToValidate(changed, stored, true, tees)
+	if len(got) != 1 {
+		t.Fatalf("changed line = %v", got)
+	}
+	if _, ok := got["m"]; !ok {
+		t.Fatalf("changed line = %v", got)
+	}
+	added := []domaincart.Item{{VariantID: "m", Quantity: 1}, {VariantID: "l", Quantity: 1}, {VariantID: "x", Quantity: 1}}
+	if got := teeLinesToValidate(added, stored, true, tees); len(got) != 0 {
+		t.Fatalf("other product = %v", got)
+	}
+	bare := []domaincart.Item{{VariantID: "m", Quantity: 1}}
+	got = teeLinesToValidate(bare, map[string]int{"shirt": 1}, true, map[string]struct{}{"m": {}})
+	if len(got) != 1 {
+		t.Fatalf("new tee = %v", got)
+	}
+	if _, ok := got["m"]; !ok {
+		t.Fatalf("new tee = %v", got)
+	}
+	if got := teeLinesToValidate(proposed, nil, false, tees); len(got) != 2 {
+		t.Fatalf("missing cart = %v", got)
 	}
 }

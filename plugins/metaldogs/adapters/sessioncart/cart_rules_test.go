@@ -2,10 +2,12 @@ package sessioncart
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
 	domaincart "github.com/akarso/shopanda/internal/domain/cart"
+	"github.com/akarso/shopanda/internal/domain/catalog"
 	domainext "github.com/akarso/shopanda/internal/domain/extension"
 	"github.com/akarso/shopanda/internal/domain/shared"
 	"github.com/akarso/shopanda/internal/platform/pluginwrite"
@@ -21,7 +23,7 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		store := &recordingCarts{}
 		lines := &recordingLines{}
 		grants := 0
-		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+		cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
 			grants++
 			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
 		})
@@ -45,7 +47,7 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		store := &recordingCarts{current: current}
 		lines := &recordingLines{}
 		grants := 0
-		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+		cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
 			grants++
 			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
 		})
@@ -65,7 +67,7 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		store := &recordingCarts{current: current}
 		lines := &recordingLines{design: design}
 		grants := 0
-		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+		cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
 			grants++
 			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
 		})
@@ -89,7 +91,7 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		store := &recordingCarts{current: current}
 		lines := &recordingLines{design: "design-b"}
 		grants := 0
-		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+		cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
 			grants++
 			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
 		})
@@ -111,7 +113,7 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		store := &recordingCarts{current: current}
 		lines := &recordingLines{}
 		grants := 0
-		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+		cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
 			grants++
 			return ctx, nil
 		})
@@ -124,6 +126,42 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 			t.Fatalf("add=%d grants=%d upsert=%d", store.addCalls, grants, lines.upsertCalls)
 		}
 	})
+}
+
+func TestAddLine_AddItemFailureDeletesDesignValue(t *testing.T) {
+	variant := "variant-m"
+	current := mustCart(t, "cart-1", "")
+	store := &recordingCarts{current: current, addErr: errors.New("no stock")}
+	lines := &recordingLines{}
+	cart := newCart(store, nil, nil, lines, nil, func(ctx context.Context) (context.Context, error) {
+		return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+	})
+	_, _, err := cart.AddLine(context.Background(), ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: "design-a"})
+	if err == nil {
+		t.Fatal("expected add failure")
+	}
+	if store.addCalls != 1 || store.discardCalls != 0 || lines.upsertCalls != 1 || lines.deleteCalls != 1 {
+		t.Fatalf("add=%d discard=%d upsert=%d delete=%d", store.addCalls, store.discardCalls, lines.upsertCalls, lines.deleteCalls)
+	}
+	if !granted(lines.deleteCtx) || lines.deleteTarget != domainext.CartItemTarget(current.ID, variant) {
+		t.Fatalf("delete granted=%v target=%+v", granted(lines.deleteCtx), lines.deleteTarget)
+	}
+}
+
+func TestCustomTeeLines_LoadsProductOnce(t *testing.T) {
+	products := &slugProducts{product: &catalog.Product{ID: "tee"}}
+	variants := &idVariants{}
+	cart := newCart(nil, products, variants, nil, nil, nil)
+	got, err := cart.CustomTeeLines(context.Background(), []string{"m", "other", "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if products.calls != 1 || variants.calls != 2 {
+		t.Fatalf("product calls=%d variant calls=%d", products.calls, variants.calls)
+	}
+	if _, ok := got["m"]; !ok || len(got) != 1 {
+		t.Fatalf("lines=%v", got)
+	}
 }
 
 func granted(ctx context.Context) bool {
@@ -146,13 +184,15 @@ func mustCart(t *testing.T, id, variant string) *domaincart.Cart {
 }
 
 type recordingCarts struct {
-	current     *domaincart.Cart
-	getCalls    int
-	createCalls int
-	addCalls    int
-	getCtx      context.Context
-	createCtx   context.Context
-	addCtx      context.Context
+	current      *domaincart.Cart
+	getCalls     int
+	createCalls  int
+	addCalls     int
+	discardCalls int
+	addErr       error
+	getCtx       context.Context
+	createCtx    context.Context
+	addCtx       context.Context
 }
 
 func (r *recordingCarts) GetCart(ctx context.Context, cartID, customerID string) (*domaincart.Cart, error) {
@@ -174,6 +214,9 @@ func (r *recordingCarts) CreateCart(ctx context.Context, customerID, currency st
 func (r *recordingCarts) AddItem(ctx context.Context, cartID, customerID, variantID string, quantity int, opts cartApp.AddItemOptions) (*domaincart.Cart, error) {
 	r.addCalls++
 	r.addCtx = ctx
+	if r.addErr != nil {
+		return nil, r.addErr
+	}
 	created, err := domaincart.NewCart(cartID, "EUR")
 	if err != nil {
 		return nil, err
@@ -182,15 +225,19 @@ func (r *recordingCarts) AddItem(ctx context.Context, cartID, customerID, varian
 }
 
 func (r *recordingCarts) DiscardEmptyGuestCart(ctx context.Context, cartID string) error {
+	r.discardCalls++
 	return nil
 }
 
 type recordingLines struct {
-	design      string
-	calls       int
-	upsertCalls int
-	ctx         context.Context
-	upsertCtx   context.Context
+	design       string
+	calls        int
+	upsertCalls  int
+	deleteCalls  int
+	ctx          context.Context
+	upsertCtx    context.Context
+	deleteCtx    context.Context
+	deleteTarget domainext.Target
 }
 
 func (r *recordingLines) List(ctx context.Context, target domainext.Target, includePrivate bool) ([]domainext.Value, error) {
@@ -210,4 +257,36 @@ func (r *recordingLines) UpsertBatch(ctx context.Context, target domainext.Targe
 	r.upsertCalls++
 	r.upsertCtx = ctx
 	return nil, nil
+}
+
+func (r *recordingLines) DeleteAllForTarget(ctx context.Context, target domainext.Target) error {
+	r.deleteCalls++
+	r.deleteCtx = ctx
+	r.deleteTarget = target
+	return nil
+}
+
+type slugProducts struct {
+	catalog.ProductRepository
+	calls   int
+	product *catalog.Product
+}
+
+func (s *slugProducts) FindBySlug(context.Context, string) (*catalog.Product, error) {
+	s.calls++
+	return s.product, nil
+}
+
+type idVariants struct {
+	catalog.VariantRepository
+	calls int
+}
+
+func (v *idVariants) FindByID(_ context.Context, id string) (*catalog.Variant, error) {
+	v.calls++
+	productID := "tee"
+	if id == "other" {
+		productID = "other"
+	}
+	return &catalog.Variant{ID: id, ProductID: productID}, nil
 }

@@ -16,6 +16,7 @@ import (
 func TestCartValidation_DesignLines(t *testing.T) {
 	srv, db := newDesignCartServer(t)
 	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	variantL := teeVariantID(t, srv, "MDOGS-TEE-L")
 	otherVariant := insertPublishedOtherVariant(t, db)
 
 	t.Run("valid design has no issue without a token", func(t *testing.T) {
@@ -104,7 +105,7 @@ func TestCartValidation_DesignLines(t *testing.T) {
 		}
 	})
 
-	t.Run("design id does not match the custom tee", func(t *testing.T) {
+	t.Run("unknown design id", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 8)
 		cartID := addDesignLine(t, srv, design.ID, token, variantM)
 		if _, err := db.ExecContext(context.Background(), `
@@ -115,7 +116,92 @@ func TestCartValidation_DesignLines(t *testing.T) {
 			t.Fatal(err)
 		}
 		issues := cartValidationIssues(t, srv, cartID)
-		if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.DesignMismatchCode, "design does not match the custom tee", variantM) {
+		if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.DesignNotFoundCode, "design not found", variantM) {
+			t.Fatalf("issues=%+v", issues)
+		}
+	})
+
+	t.Run("failed add does not leave a design for a generic line", func(t *testing.T) {
+		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 13)
+		cartID := createPLNCart(t, srv)
+		status, body := cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+cartID+"/items", map[string]any{
+			"variant_id": otherVariant,
+			"quantity":   1,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("other product: status=%d body=%s", status, body)
+		}
+		setVariantStock(t, db, variantM, 0)
+		t.Cleanup(func() { setVariantStock(t, db, variantM, 5) })
+		status, body, _ = addDesignToCart(t, srv, design.ID, token, variantM, &http.Cookie{Name: sessionCartCookie, Value: cartID})
+		if status != http.StatusUnprocessableEntity {
+			t.Fatalf("add: status=%d body=%s", status, body)
+		}
+		setVariantStock(t, db, variantM, 5)
+		status, body = cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+cartID+"/items", map[string]any{
+			"variant_id": variantM,
+			"quantity":   1,
+		})
+		if status != http.StatusUnprocessableEntity || cartErrorCode(t, body) != "cart_validation_failed" {
+			t.Fatalf("status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
+		}
+		issues := validationIssuesFrom(t, body)
+		if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.DesignRequiredCode, "design required", variantM) {
+			t.Fatalf("issues=%+v", issues)
+		}
+		items := cartItems(t, srv, cartID)
+		if len(items) != 1 || items[0].VariantID != otherVariant {
+			t.Fatalf("items=%+v", items)
+		}
+	})
+
+	t.Run("stale line does not strip another design on remove", func(t *testing.T) {
+		good, goodToken := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 11)
+		stale, staleToken := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 12)
+		cartID := addDesignLine(t, srv, good.ID, goodToken, variantM)
+		status, body, _ := addDesignToCart(t, srv, stale.ID, staleToken, variantL, &http.Cookie{Name: sessionCartCookie, Value: cartID})
+		if status != http.StatusOK {
+			t.Fatalf("add L: status=%d body=%s", status, body)
+		}
+		if _, err := db.ExecContext(context.Background(), `UPDATE metaldogs_designs SET expires_at = now() - interval '1 hour' WHERE id = $1`, stale.ID); err != nil {
+			t.Fatal(err)
+		}
+		status, body = cartDo(t, srv, http.MethodPut, "/api/v1/carts/"+cartID+"/items/"+variantM, map[string]any{"quantity": 2})
+		if status != http.StatusOK {
+			t.Fatalf("quantity: status=%d body=%s", status, body)
+		}
+		status, body = cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+cartID+"/items", map[string]any{
+			"variant_id": otherVariant,
+			"quantity":   1,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("other product: status=%d body=%s", status, body)
+		}
+		items := cartItems(t, srv, cartID)
+		if extensionValue(t, lineByVariant(t, items, variantM)) != good.ID || lineByVariant(t, items, variantM).Quantity != 2 {
+			t.Fatalf("M=%+v", lineByVariant(t, items, variantM))
+		}
+		if extensionValue(t, lineByVariant(t, items, variantL)) != stale.ID {
+			t.Fatalf("L=%+v", lineByVariant(t, items, variantL))
+		}
+		status, body = cartDo(t, srv, http.MethodDelete, "/api/v1/carts/"+cartID+"/items/"+variantM, nil)
+		if status != http.StatusOK {
+			t.Fatalf("delete: status=%d body=%s", status, body)
+		}
+		items = cartItems(t, srv, cartID)
+		if len(items) != 2 {
+			t.Fatalf("items=%+v", items)
+		}
+		for _, item := range items {
+			if item.VariantID == variantM {
+				t.Fatalf("removed line still present: %+v", items)
+			}
+		}
+		if extensionValue(t, lineByVariant(t, items, variantL)) != stale.ID {
+			t.Fatalf("L lost design: %+v", lineByVariant(t, items, variantL))
+		}
+		issues := cartValidationIssues(t, srv, cartID)
+		if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.DesignExpiredCode, "design has expired", variantL) {
 			t.Fatalf("issues=%+v", issues)
 		}
 	})
