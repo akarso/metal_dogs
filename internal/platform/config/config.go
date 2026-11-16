@@ -678,8 +678,8 @@ type B2BPluginConfig struct {
 // SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/* (not a
 // process probe — use /healthz and /readyz for orchestrators).
 type MetalDogsPluginConfig struct {
-	Enabled    bool                         `yaml:"enabled"`
-	Generation MetalDogsGenerationConfig    `yaml:"generation"`
+	Enabled    bool                      `yaml:"enabled"`
+	Generation MetalDogsGenerationConfig `yaml:"generation"`
 }
 
 // MetalDogsGenerationConfig controls the async generate pipeline (C4/C7).
@@ -964,7 +964,7 @@ func defaults() Config {
 					Provider:             "fake",
 					MaxRetries:           3,
 					MaxAttemptsPerDesign: 3,
-					CooldownSeconds:       30,
+					CooldownSeconds:      30,
 				},
 			},
 		},
