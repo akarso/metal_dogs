@@ -58,7 +58,7 @@ func (e *CartError) Unwrap() error {
 // or a trusted-write marker from the caller beyond the context already granted.
 type SessionCart interface {
 	BelongsToCustomTee(ctx context.Context, variantID string) (bool, error)
-	// AddLine writes one quantity-one line. An empty session creates a guest cart.
-	// The returned session is the cookie value; callers must not put it in the response body.
+	// AddLine adds a quantity-one line, creating a guest cart when the session is empty.
+	// The same design on that variant is left unchanged; any other occupant is a conflict.
 	AddLine(ctx context.Context, session CartSession, line DesignLine) (CartSession, CartTarget, error)
 }

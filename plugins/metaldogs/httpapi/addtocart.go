@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -50,6 +51,10 @@ func AddDesignToCart(add *application.AddToCart) http.Handler {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&body); err != nil {
+			writeJSONError(w, http.StatusUnprocessableEntity, application.DesignErrUnprocessable)
+			return
+		}
+		if err := dec.Decode(&struct{}{}); err != io.EOF {
 			writeJSONError(w, http.StatusUnprocessableEntity, application.DesignErrUnprocessable)
 			return
 		}

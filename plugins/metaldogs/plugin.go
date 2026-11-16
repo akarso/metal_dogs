@@ -185,9 +185,6 @@ func (p *Plugin) Init(app *plugin.App) error {
 	addToCart := &application.AddToCart{
 		Designs: p.designs,
 		Cart:    pluginSessionCart{p: p},
-		Grant: func(ctx context.Context) (context.Context, error) {
-			return app.PluginWriteContext(ctx, PluginName, ports.DesignIDFieldCode)
-		},
 	}
 	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/add-to-cart", httpapi.AddDesignToCart(addToCart)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs add-to-cart route: %w", err)

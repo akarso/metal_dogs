@@ -25,6 +25,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/sessioncart"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
 
@@ -50,8 +51,10 @@ func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
-	return newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository) {
-		p.UseSessionCart(sessioncart.New(carts, products, variants))
+	return newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository, lines *extensionapp.ValueService) {
+		p.UseSessionCart(sessioncart.New(carts, products, variants, lines, func(ctx context.Context) (context.Context, error) {
+			return app.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
+		}))
 	}), db
 }
 
@@ -84,7 +87,7 @@ func setTeeStock(t *testing.T, db *sql.DB, qty int) {
 	}
 }
 
-func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, bind func(*cartApp.Service, catalog.ProductRepository, catalog.VariantRepository)) *httptest.Server {
+func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, bind func(*cartApp.Service, catalog.ProductRepository, catalog.VariantRepository, *extensionapp.ValueService)) *httptest.Server {
 	t.Helper()
 	products, err := postgres.NewProductRepo(db)
 	if err != nil {
@@ -170,7 +173,7 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 		}
 	}
 	if bind != nil {
-		bind(cartSvc, products, variants)
+		bind(cartSvc, products, variants, values)
 	}
 
 	stores, err := postgres.NewStoreRepo(db)

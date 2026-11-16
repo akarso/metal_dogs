@@ -1,0 +1,205 @@
+package sessioncart
+
+import (
+	"context"
+	"testing"
+
+	cartApp "github.com/akarso/shopanda/internal/application/cart"
+	domaincart "github.com/akarso/shopanda/internal/domain/cart"
+	domainext "github.com/akarso/shopanda/internal/domain/extension"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/platform/pluginwrite"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
+)
+
+func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
+	variant := "variant-m"
+	design := "design-a"
+	parent := pluginwrite.Grant(context.Background(), "metaldogs", ports.DesignIDFieldCode)
+
+	t.Run("new cart", func(t *testing.T) {
+		store := &recordingCarts{}
+		lines := &recordingLines{}
+		grants := 0
+		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+			grants++
+			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+		})
+		got, target, err := cart.AddLine(parent, "", ports.DesignLine{VariantID: variant, DesignID: design})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == "" || target.Path != "/cart" {
+			t.Fatalf("session=%q target=%+v", got, target)
+		}
+		if store.getCalls != 0 || store.createCalls != 1 || store.addCalls != 1 || grants != 1 {
+			t.Fatalf("get=%d create=%d add=%d grants=%d", store.getCalls, store.createCalls, store.addCalls, grants)
+		}
+		if granted(store.createCtx) || !granted(store.addCtx) {
+			t.Fatalf("create granted=%v add granted=%v", granted(store.createCtx), granted(store.addCtx))
+		}
+	})
+
+	t.Run("existing line absent", func(t *testing.T) {
+		current := mustCart(t, "cart-1", "")
+		store := &recordingCarts{current: current}
+		lines := &recordingLines{}
+		grants := 0
+		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+			grants++
+			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+		})
+		if _, _, err := cart.AddLine(parent, ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: design}); err != nil {
+			t.Fatal(err)
+		}
+		if store.getCalls != 1 || store.createCalls != 0 || store.addCalls != 1 || lines.calls != 0 || grants != 1 {
+			t.Fatalf("get=%d create=%d add=%d list=%d grants=%d", store.getCalls, store.createCalls, store.addCalls, lines.calls, grants)
+		}
+		if granted(store.getCtx) || !granted(store.addCtx) {
+			t.Fatalf("get granted=%v add granted=%v", granted(store.getCtx), granted(store.addCtx))
+		}
+	})
+
+	t.Run("same design", func(t *testing.T) {
+		current := mustCart(t, "cart-1", variant)
+		store := &recordingCarts{current: current}
+		lines := &recordingLines{design: design}
+		grants := 0
+		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+			grants++
+			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+		})
+		got, _, err := cart.AddLine(parent, ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: design})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != ports.CartSession(current.ID) {
+			t.Fatalf("session=%q", got)
+		}
+		if store.addCalls != 0 || store.createCalls != 0 || grants != 0 || lines.calls != 1 {
+			t.Fatalf("add=%d create=%d grants=%d list=%d", store.addCalls, store.createCalls, grants, lines.calls)
+		}
+		if granted(store.getCtx) || granted(lines.ctx) {
+			t.Fatal("read context can write the design field")
+		}
+	})
+
+	t.Run("other design", func(t *testing.T) {
+		current := mustCart(t, "cart-1", variant)
+		store := &recordingCarts{current: current}
+		lines := &recordingLines{design: "design-b"}
+		grants := 0
+		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+			grants++
+			return pluginwrite.Grant(ctx, "metaldogs", ports.DesignIDFieldCode), nil
+		})
+		_, _, err := cart.AddLine(context.Background(), ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: design})
+		cartErr, ok := err.(*ports.CartError)
+		if !ok || cartErr.Code != ports.CartConflict {
+			t.Fatalf("err=%v", err)
+		}
+		if store.addCalls != 0 || grants != 0 {
+			t.Fatalf("add=%d grants=%d", store.addCalls, grants)
+		}
+		if granted(store.getCtx) {
+			t.Fatal("GetCart context can write the design field")
+		}
+	})
+
+	t.Run("line without design", func(t *testing.T) {
+		current := mustCart(t, "cart-1", variant)
+		store := &recordingCarts{current: current}
+		lines := &recordingLines{}
+		grants := 0
+		cart := newCart(store, nil, nil, lines, func(ctx context.Context) (context.Context, error) {
+			grants++
+			return ctx, nil
+		})
+		_, _, err := cart.AddLine(context.Background(), ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: design})
+		cartErr, ok := err.(*ports.CartError)
+		if !ok || cartErr.Code != ports.CartConflict {
+			t.Fatalf("err=%v", err)
+		}
+		if store.addCalls != 0 || grants != 0 {
+			t.Fatalf("add=%d grants=%d", store.addCalls, grants)
+		}
+	})
+}
+
+func granted(ctx context.Context) bool {
+	_, ok := pluginwrite.For(ctx, ports.DesignIDFieldCode)
+	return ok
+}
+
+func mustCart(t *testing.T, id, variant string) *domaincart.Cart {
+	t.Helper()
+	current, err := domaincart.NewCart(id, "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if variant != "" {
+		if err := current.AddItem(variant, 2, shared.MustNewMoney(100, "EUR")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &current
+}
+
+type recordingCarts struct {
+	current     *domaincart.Cart
+	getCalls    int
+	createCalls int
+	addCalls    int
+	getCtx      context.Context
+	createCtx   context.Context
+	addCtx      context.Context
+}
+
+func (r *recordingCarts) GetCart(ctx context.Context, cartID, customerID string) (*domaincart.Cart, error) {
+	r.getCalls++
+	r.getCtx = ctx
+	return r.current, nil
+}
+
+func (r *recordingCarts) CreateCart(ctx context.Context, customerID, currency string) (*domaincart.Cart, error) {
+	r.createCalls++
+	r.createCtx = ctx
+	created, err := domaincart.NewCart("created", currency)
+	if err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (r *recordingCarts) AddItem(ctx context.Context, cartID, customerID, variantID string, quantity int, opts cartApp.AddItemOptions) (*domaincart.Cart, error) {
+	r.addCalls++
+	r.addCtx = ctx
+	created, err := domaincart.NewCart(cartID, "EUR")
+	if err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+func (r *recordingCarts) DiscardEmptyGuestCart(ctx context.Context, cartID string) error {
+	return nil
+}
+
+type recordingLines struct {
+	design string
+	calls  int
+	ctx    context.Context
+}
+
+func (r *recordingLines) List(ctx context.Context, target domainext.Target, includePrivate bool) ([]domainext.Value, error) {
+	r.calls++
+	r.ctx = ctx
+	if r.design == "" {
+		return nil, nil
+	}
+	design := r.design
+	return []domainext.Value{{
+		FieldCode: ports.DesignIDFieldCode,
+		Payload:   domainext.ValuePayload{StringValue: &design},
+	}}, nil
+}

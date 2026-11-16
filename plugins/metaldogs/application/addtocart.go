@@ -12,15 +12,12 @@ import (
 type AddToCart struct {
 	Designs *DesignService
 	Cart    ports.SessionCart
-	// Grant marks ctx as a trusted write for the fixed design field. The route
-	// calls it immediately before the cart write; it must not read the request.
-	Grant func(context.Context) (context.Context, error)
 }
 
 // Execute authorises the design and adds one line.
 // The returned session is the cookie value; path is the cart page.
 func (a *AddToCart) Execute(ctx context.Context, session ports.CartSession, designID, token, variantID string) (ports.CartSession, string, error) {
-	if a == nil || a.Designs == nil || a.Cart == nil || a.Grant == nil {
+	if a == nil || a.Designs == nil || a.Cart == nil {
 		return "", "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable"}
 	}
 	d, _, err := a.Designs.loadAuthorized(ctx, designID, token)
@@ -37,11 +34,7 @@ func (a *AddToCart) Execute(ctx context.Context, session ports.CartSession, desi
 	if !onTee {
 		return "", "", &DesignError{Code: DesignErrUnprocessable, Message: "variant is not part of the custom tee"}
 	}
-	writeCtx, err := a.Grant(ctx)
-	if err != nil {
-		return "", "", &DesignError{Code: DesignErrUnavailable, Message: "cart unavailable", Cause: err}
-	}
-	next, target, err := a.Cart.AddLine(writeCtx, session, ports.DesignLine{VariantID: variantID, DesignID: d.ID})
+	next, target, err := a.Cart.AddLine(ctx, session, ports.DesignLine{VariantID: variantID, DesignID: d.ID})
 	if err != nil {
 		return "", "", mapCartErr(err)
 	}
