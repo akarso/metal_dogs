@@ -5,6 +5,14 @@ import "context"
 // DesignIDFieldCode is the cart-line extension written only by the add-to-cart route.
 const DesignIDFieldCode = "metaldogs.design_id"
 
+// Cart-validation issue codes. Level is left empty so each issue blocks checkout.
+const (
+	DesignRequiredCode    = "metaldogs.design_required"
+	DesignNotApprovedCode = "metaldogs.design_not_approved"
+	DesignExpiredCode     = "metaldogs.design_expired"
+	DesignMismatchCode    = "metaldogs.design_mismatch"
+)
+
 // DesignLine is one custom-tee line. Quantity is always one; the field code is not part of this value.
 type DesignLine struct {
 	VariantID string
@@ -58,6 +66,9 @@ func (e *CartError) Unwrap() error {
 // or a trusted-write marker from the caller beyond the context already granted.
 type SessionCart interface {
 	BelongsToCustomTee(ctx context.Context, variantID string) (bool, error)
+	// LineDesign reads the design id stored for a cart line.
+	// present is false when the line has no design id, including before the line itself is saved.
+	LineDesign(ctx context.Context, cartID, variantID string) (designID string, present bool, err error)
 	// AddLine adds a quantity-one line, creating a guest cart when the session is empty.
 	// The same design on that variant is left unchanged; any other occupant is a conflict.
 	AddLine(ctx context.Context, session CartSession, line DesignLine) (CartSession, CartTarget, error)

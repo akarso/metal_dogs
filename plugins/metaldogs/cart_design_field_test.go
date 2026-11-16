@@ -5,10 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
-	srv, _ := newDesignCartServer(t)
+	srv, db := newDesignCartServer(t)
 	products := listCatalogProducts(t, srv)
 	if len(products) != 1 || products[0].Slug != "mdogs-tee" || products[0].Status != "active" {
 		t.Fatalf("catalog = %+v", products)
@@ -48,19 +52,29 @@ func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
 		"variant_id": variantID,
 		"quantity":   1,
 	})
-	if status != http.StatusOK {
-		t.Fatalf("plain add: status=%d body=%s", status, body)
+	if status != http.StatusUnprocessableEntity || cartErrorCode(t, body) != "cart_validation_failed" {
+		t.Fatalf("plain add: status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
 	}
-	items := cartItems(t, srv, cartID)
-	if len(items) != 1 || items[0].VariantID != variantID || items[0].Quantity != 1 {
-		t.Fatalf("plain add items = %+v", items)
+	issues := validationIssuesFrom(t, body)
+	if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.DesignRequiredCode, "design required", variantID) {
+		t.Fatalf("plain add issues=%+v", issues)
 	}
-	if len(items[0].Extensions) != 0 {
-		t.Fatalf("plain add stored extensions %+v", items[0].Extensions)
+	if items := cartItems(t, srv, cartID); len(items) != 0 {
+		t.Fatalf("plain add stored items=%+v", items)
 	}
-	before := items[0]
 
-	status, body = cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+cartID+"/items", map[string]any{
+	design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 4)
+	status, body, cookies := addDesignToCart(t, srv, design.ID, token, variantID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("design add: status=%d body=%s", status, body)
+	}
+	designCartID := cookieValue(cookies, sessionCartCookie)
+	before := cartItems(t, srv, designCartID)
+	if len(before) != 1 || extensionValue(t, before[0]) != design.ID {
+		t.Fatalf("design line=%+v", before)
+	}
+
+	status, body = cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+designCartID+"/items", map[string]any{
 		"variant_id": variantID,
 		"quantity":   1,
 		"extensions": []map[string]any{{
@@ -71,12 +85,9 @@ func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
 	if status != http.StatusForbidden || cartErrorCode(t, body) != "forbidden_plugin_only_field" {
 		t.Fatalf("update with design field: status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
 	}
-	items = cartItems(t, srv, cartID)
-	if len(items) != 1 || items[0].Quantity != before.Quantity || items[0].VariantID != before.VariantID {
+	items := cartItems(t, srv, designCartID)
+	if len(items) != 1 || items[0].Quantity != before[0].Quantity || items[0].VariantID != before[0].VariantID || extensionValue(t, items[0]) != design.ID {
 		t.Fatalf("cart after refused update = %+v, want %+v", items, before)
-	}
-	if len(items[0].Extensions) != 0 {
-		t.Fatalf("refused update stored extensions %+v", items[0].Extensions)
 	}
 }
 

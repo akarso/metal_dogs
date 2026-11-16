@@ -32,11 +32,11 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		if got == "" || target.Path != "/cart" {
 			t.Fatalf("session=%q target=%+v", got, target)
 		}
-		if store.getCalls != 0 || store.createCalls != 1 || store.addCalls != 1 || grants != 1 {
-			t.Fatalf("get=%d create=%d add=%d grants=%d", store.getCalls, store.createCalls, store.addCalls, grants)
+		if store.getCalls != 0 || store.createCalls != 1 || store.addCalls != 1 || lines.upsertCalls != 1 || grants != 1 {
+			t.Fatalf("get=%d create=%d add=%d upsert=%d grants=%d", store.getCalls, store.createCalls, store.addCalls, lines.upsertCalls, grants)
 		}
-		if granted(store.createCtx) || !granted(store.addCtx) {
-			t.Fatalf("create granted=%v add granted=%v", granted(store.createCtx), granted(store.addCtx))
+		if granted(store.createCtx) || !granted(store.addCtx) || !granted(lines.upsertCtx) {
+			t.Fatalf("create granted=%v add granted=%v upsert granted=%v", granted(store.createCtx), granted(store.addCtx), granted(lines.upsertCtx))
 		}
 	})
 
@@ -52,11 +52,11 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		if _, _, err := cart.AddLine(parent, ports.CartSession(current.ID), ports.DesignLine{VariantID: variant, DesignID: design}); err != nil {
 			t.Fatal(err)
 		}
-		if store.getCalls != 1 || store.createCalls != 0 || store.addCalls != 1 || lines.calls != 0 || grants != 1 {
-			t.Fatalf("get=%d create=%d add=%d list=%d grants=%d", store.getCalls, store.createCalls, store.addCalls, lines.calls, grants)
+		if store.getCalls != 1 || store.createCalls != 0 || store.addCalls != 1 || lines.calls != 0 || lines.upsertCalls != 1 || grants != 1 {
+			t.Fatalf("get=%d create=%d add=%d list=%d upsert=%d grants=%d", store.getCalls, store.createCalls, store.addCalls, lines.calls, lines.upsertCalls, grants)
 		}
-		if granted(store.getCtx) || !granted(store.addCtx) {
-			t.Fatalf("get granted=%v add granted=%v", granted(store.getCtx), granted(store.addCtx))
+		if granted(store.getCtx) || !granted(store.addCtx) || !granted(lines.upsertCtx) {
+			t.Fatalf("get granted=%v add granted=%v upsert granted=%v", granted(store.getCtx), granted(store.addCtx), granted(lines.upsertCtx))
 		}
 	})
 
@@ -76,8 +76,8 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		if got != ports.CartSession(current.ID) {
 			t.Fatalf("session=%q", got)
 		}
-		if store.addCalls != 0 || store.createCalls != 0 || grants != 0 || lines.calls != 1 {
-			t.Fatalf("add=%d create=%d grants=%d list=%d", store.addCalls, store.createCalls, grants, lines.calls)
+		if store.addCalls != 0 || store.createCalls != 0 || grants != 0 || lines.calls != 1 || lines.upsertCalls != 0 {
+			t.Fatalf("add=%d create=%d grants=%d list=%d upsert=%d", store.addCalls, store.createCalls, grants, lines.calls, lines.upsertCalls)
 		}
 		if granted(store.getCtx) || granted(lines.ctx) {
 			t.Fatal("read context can write the design field")
@@ -98,8 +98,8 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		if !ok || cartErr.Code != ports.CartConflict {
 			t.Fatalf("err=%v", err)
 		}
-		if store.addCalls != 0 || grants != 0 {
-			t.Fatalf("add=%d grants=%d", store.addCalls, grants)
+		if store.addCalls != 0 || grants != 0 || lines.upsertCalls != 0 {
+			t.Fatalf("add=%d grants=%d upsert=%d", store.addCalls, grants, lines.upsertCalls)
 		}
 		if granted(store.getCtx) {
 			t.Fatal("GetCart context can write the design field")
@@ -120,8 +120,8 @@ func TestAddLine_ReadContextHasNoWriteGrant(t *testing.T) {
 		if !ok || cartErr.Code != ports.CartConflict {
 			t.Fatalf("err=%v", err)
 		}
-		if store.addCalls != 0 || grants != 0 {
-			t.Fatalf("add=%d grants=%d", store.addCalls, grants)
+		if store.addCalls != 0 || grants != 0 || lines.upsertCalls != 0 {
+			t.Fatalf("add=%d grants=%d upsert=%d", store.addCalls, grants, lines.upsertCalls)
 		}
 	})
 }
@@ -186,9 +186,11 @@ func (r *recordingCarts) DiscardEmptyGuestCart(ctx context.Context, cartID strin
 }
 
 type recordingLines struct {
-	design string
-	calls  int
-	ctx    context.Context
+	design      string
+	calls       int
+	upsertCalls int
+	ctx         context.Context
+	upsertCtx   context.Context
 }
 
 func (r *recordingLines) List(ctx context.Context, target domainext.Target, includePrivate bool) ([]domainext.Value, error) {
@@ -202,4 +204,10 @@ func (r *recordingLines) List(ctx context.Context, target domainext.Target, incl
 		FieldCode: ports.DesignIDFieldCode,
 		Payload:   domainext.ValuePayload{StringValue: &design},
 	}}, nil
+}
+
+func (r *recordingLines) UpsertBatch(ctx context.Context, target domainext.Target, inputs []domainext.ValueInput, updatedBy string, canAccessPrivate bool) ([]domainext.Value, error) {
+	r.upsertCalls++
+	r.upsertCtx = ctx
+	return nil, nil
 }

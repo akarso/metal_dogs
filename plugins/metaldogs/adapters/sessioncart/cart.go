@@ -30,6 +30,7 @@ type cartStore interface {
 
 type lineValues interface {
 	List(ctx context.Context, target domainext.Target, includePrivate bool) ([]domainext.Value, error)
+	UpsertBatch(ctx context.Context, target domainext.Target, inputs []domainext.ValueInput, updatedBy string, canAccessPrivate bool) ([]domainext.Value, error)
 }
 
 // Cart adds a quantity-one line to the storefront session cart.
@@ -76,12 +77,40 @@ func (c *Cart) BelongsToCustomTee(ctx context.Context, variantID string) (bool, 
 	return variant.ProductID == product.ID, nil
 }
 
+// LineDesign reads the design id stored for a cart line, including a value written
+// before the line itself is saved.
+func (c *Cart) LineDesign(ctx context.Context, cartID, variantID string) (string, bool, error) {
+	if c == nil || c.lines == nil {
+		return "", false, &ports.CartError{Code: ports.CartUnavailable}
+	}
+	cartID = strings.TrimSpace(cartID)
+	variantID = strings.TrimSpace(variantID)
+	if cartID == "" || variantID == "" {
+		return "", false, nil
+	}
+	values, err := c.lines.List(ctx, domainext.CartItemTarget(cartID, variantID), false)
+	if err != nil {
+		return "", false, &ports.CartError{Code: ports.CartUnavailable, Err: err}
+	}
+	for _, value := range values {
+		if value.FieldCode != ports.DesignIDFieldCode || value.Payload.StringValue == nil {
+			continue
+		}
+		id := strings.TrimSpace(*value.Payload.StringValue)
+		if id == "" {
+			return "", false, nil
+		}
+		return id, true, nil
+	}
+	return "", false, nil
+}
+
 // AddLine creates a guest cart when the session is empty and writes the design field.
 func (c *Cart) AddLine(ctx context.Context, session ports.CartSession, line ports.DesignLine) (ports.CartSession, ports.CartTarget, error) {
 	if c == nil || c.carts == nil {
 		return "", ports.CartTarget{}, &ports.CartError{Code: ports.CartUnavailable}
 	}
-	// GetCart/CreateCart must not carry the trusted-write marker; only AddItem may.
+	// GetCart and CreateCart must not carry the trusted-write marker.
 	readCtx := pluginwrite.Strip(ctx)
 	current, err := c.activeCart(readCtx, session)
 	if err != nil {
@@ -116,6 +145,22 @@ func (c *Cart) AddLine(ctx context.Context, session ports.CartSession, line port
 			_ = c.carts.DiscardEmptyGuestCart(readCtx, current.ID)
 		}
 		return "", ports.CartTarget{}, &ports.CartError{Code: ports.CartUnavailable, Err: err}
+	}
+	if c.lines == nil {
+		if created {
+			_ = c.carts.DiscardEmptyGuestCart(readCtx, current.ID)
+		}
+		return "", ports.CartTarget{}, &ports.CartError{Code: ports.CartUnavailable}
+	}
+	// cart.validate runs before AddItem stores extensions, so the field has to be there already.
+	if _, err := c.lines.UpsertBatch(writeCtx, domainext.CartItemTarget(current.ID, line.VariantID), []domainext.ValueInput{{
+		FieldCode: ports.DesignIDFieldCode,
+		Value:     line.DesignID,
+	}}, "guest", false); err != nil {
+		if created {
+			_ = c.carts.DiscardEmptyGuestCart(readCtx, current.ID)
+		}
+		return "", ports.CartTarget{}, classifyCart(err)
 	}
 	updated, err := c.carts.AddItem(writeCtx, current.ID, "", line.VariantID, 1, cartApp.AddItemOptions{
 		Extensions: []domainext.ValueInput{{

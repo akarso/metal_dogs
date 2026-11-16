@@ -20,6 +20,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
@@ -453,5 +454,35 @@ func TestPlugin_Init_Disabled_DoesNotRegisterDesignIDField(t *testing.T) {
 	}
 	if _, ok := app.ExtensionRegistry().Get("metaldogs.design_id"); ok {
 		t.Fatal("metaldogs.design_id registered while the plugin is disabled")
+	}
+	if reg := app.HookRegistry(); reg != nil {
+		for _, entry := range reg.Catalog() {
+			if entry.Name == string(extapi.HookCartValidate) {
+				t.Fatal("cart validation registered while the plugin is disabled")
+			}
+		}
+	}
+}
+
+func TestPlugin_Init_Enabled_RegistersCartValidation(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	initMetalDogs(t, app)
+	reg := app.HookRegistry()
+	if reg == nil {
+		t.Fatal("hook registry missing")
+	}
+	var handlers int
+	for _, entry := range reg.Catalog() {
+		if entry.Name != string(extapi.HookCartValidate) {
+			continue
+		}
+		handlers = len(entry.Handlers)
+		if handlers != 1 || entry.Handlers[0].Registrant != metaldogs.PluginName {
+			t.Fatalf("handlers=%+v", entry.Handlers)
+		}
+	}
+	if handlers != 1 {
+		t.Fatal("cart validation is not registered")
 	}
 }

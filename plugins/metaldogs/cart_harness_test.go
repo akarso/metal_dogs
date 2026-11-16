@@ -13,6 +13,7 @@ import (
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
 	"github.com/akarso/shopanda/internal/application/composition"
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
+	"github.com/akarso/shopanda/internal/application/hooks"
 	appPricing "github.com/akarso/shopanda/internal/application/pricing"
 	"github.com/akarso/shopanda/internal/domain/catalog"
 	"github.com/akarso/shopanda/internal/domain/inventory"
@@ -120,6 +121,10 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 	log := logger.NewWithWriter(io.Discard, "error")
 	bus := event.NewBus(log)
 	values := extensionapp.NewValueService(extReg, extValues)
+	var hookReg *hooks.Registry
+	if pluginApp != nil {
+		hookReg = pluginApp.HookRegistry()
+	}
 	pipeline := domainPricing.NewPipeline(
 		appPricing.NewBasePriceStep(appPricing.UnitPriceSources{
 			Prices:     prices,
@@ -129,7 +134,7 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 		}),
 		domainPricing.NewFinalizeStep(),
 	)
-	cartSvc := cartApp.NewService(carts, prices, nil, nil, variants, products, components, stock, pipeline, log, bus, values, nil)
+	cartSvc := cartApp.NewService(carts, prices, nil, nil, variants, products, components, stock, pipeline, log, bus, values, hookReg)
 	cartHandler := storefront.NewCartHandler(cartSvc, extensionapp.AsValueAPI(values))
 	categories, err := postgres.NewCategoryRepo(db)
 	if err != nil {

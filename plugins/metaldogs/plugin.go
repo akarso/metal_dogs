@@ -117,6 +117,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := registerDesignIDField(app); err != nil {
 		return fmt.Errorf("metaldogs plugin: design field: %w", err)
 	}
+	if err := registerCartValidation(app, p); err != nil {
+		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
+	}
 
 	registerCLICommands(app, p)
 
@@ -345,6 +348,14 @@ func (s pluginSessionCart) BelongsToCustomTee(ctx context.Context, variantID str
 		return false, err
 	}
 	return cart.BelongsToCustomTee(ctx, variantID)
+}
+
+func (s pluginSessionCart) LineDesign(ctx context.Context, cartID, variantID string) (string, bool, error) {
+	cart, err := s.cart()
+	if err != nil {
+		return "", false, err
+	}
+	return cart.LineDesign(ctx, cartID, variantID)
 }
 
 func (s pluginSessionCart) AddLine(ctx context.Context, session ports.CartSession, line ports.DesignLine) (ports.CartSession, ports.CartTarget, error) {
