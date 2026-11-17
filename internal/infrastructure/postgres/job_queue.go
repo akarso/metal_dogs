@@ -431,7 +431,27 @@ func (q *JobQueue) Retry(ctx context.Context, id string) error {
 
 // Requeue returns a job to pending without resetting attempts. Pending and
 // young processing are no-ops (requeued=false). See jobs.Admin.
-func (q *JobQueue) Requeue(ctx context.Context, id string, lease time.Duration) (bool, error) {
+// Requeue implements jobs.Queue. The lease reclaim used by the generate claim
+// fence is RequeueLease (jobs.Admin).
+func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int) error {
+	const query = `UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status = 'processing' AND attempts = $2
+		  AND updated_at < NOW() - ($3::text || ' milliseconds')::interval`
+	result, err := q.db.ExecContext(ctx, query, id, attempt, jobs.DefaultRequeueMinAge.Milliseconds())
+	if err != nil {
+		return fmt.Errorf("job_queue: requeue: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("job_queue: requeue rows: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("job_queue: requeue %s attempt %d: %w", id, attempt, jobs.ErrRequeueConflict)
+	}
+	return nil
+}
+
+func (q *JobQueue) RequeueLease(ctx context.Context, id string, lease time.Duration) (bool, error) {
 	if id == "" {
 		return false, apperror.NotFound("job not found")
 	}

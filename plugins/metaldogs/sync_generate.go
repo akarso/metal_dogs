@@ -91,7 +91,7 @@ func resolveGenerateEnqueueConflict(queue jobs.Queue, ctx context.Context, gener
 	if !ok {
 		return fmt.Errorf("metaldogs generate enqueue: job %s already exists but queue does not support Requeue (require queue.driver=postgres)", generationJobID)
 	}
-	_, err := admin.Requeue(ctx, generationJobID, domain.DefaultClaimLease)
+	_, err := admin.RequeueLease(ctx, generationJobID, domain.DefaultClaimLease)
 	if err != nil {
 		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
 	}

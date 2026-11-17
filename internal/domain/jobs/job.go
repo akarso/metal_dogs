@@ -56,6 +56,25 @@ type Handler interface {
 	Handle(ctx context.Context, job Job) error
 }
 
+// ErrOutcomeNotApplied means Complete/Fail matched zero rows (missing id,
+// wrong attempt, or row no longer processing). The worker must not treat
+// this as a committed success — the handler may already have run and the
+// job may still be processing or claimed by a newer attempt.
+var ErrOutcomeNotApplied = errors.New("jobs: outcome not applied")
+
+// ErrRequeueUnsupported is returned by broker-backed queues that have no
+// queryable processing row to reclaim.
+var ErrRequeueUnsupported = errors.New("jobs: requeue unsupported for this queue driver")
+
+// ErrRequeueConflict means Requeue matched zero rows (wrong attempt, not
+// processing, or not yet past DefaultRequeueMinAge).
+var ErrRequeueConflict = errors.New("jobs: requeue conflict")
+
+// DefaultRequeueMinAge is how long a processing row must sit before
+// Requeue may reclaim it. Protects a live handler whose Complete has not
+// landed yet from being set back to pending by jobs:requeue / a sweeper.
+const DefaultRequeueMinAge = time.Minute
+
 // Queue is the port for job queue backends.
 type Queue interface {
 	// Enqueue adds a job to the queue.
@@ -74,6 +93,12 @@ type Queue interface {
 	// If attempts < maxRetries, the job is re-queued with a delay.
 	// Otherwise, the job is marked as permanently failed.
 	Fail(ctx context.Context, id string, attempts int, jobErr error) error
+
+	// Requeue moves a processing job back to pending without resetting
+	// attempts. attempt must match the live claim and the row must be
+	// older than DefaultRequeueMinAge. Lease reclaim stays on Admin
+	// (RequeueLease): one type cannot implement both signatures.
+	Requeue(ctx context.Context, id string, attempt int) error
 }
 
 // NewJob creates a Job with sensible defaults.

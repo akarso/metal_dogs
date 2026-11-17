@@ -237,6 +237,9 @@ func (q *qtyCart) DeleteLineExtension(context.Context, string, string, string, s
 	return nil
 }
 
+func (q *qtyCart) DiscardEmptyGuestCart(context.Context, http.ResponseWriter, *http.Request, string) error {
+	return nil
+}
 func (q *qtyCart) UpsertLineExtension(context.Context, string, string, string, []pluginsdk.CartExtensionValue, string) error {
 	q.upsertCalls++
 	return nil

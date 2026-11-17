@@ -50,4 +50,4 @@ app plugins report
 - Event → durable work: `RegisterOnEvent`. Run-now: `Enqueue` after boot. Keep any custom `OnAsync` body tiny; a failed bus enqueue is not retried by the event bus (durability starts once the queue accepts the job).
 - After dequeue, event payloads are JSON maps (`payload["data"].(map[string]interface{})`), not domain structs — typed asserts only work on in-memory test queues.
 
-See also: [DEVELOPER.md](https://github.com/akarso/shopanda/blob/a411c970bbc869d54d44852bc30f7427be9b2745/docs/guides/DEVELOPER.md) · [PLUGINS.md](../../PLUGINS.md)
+See also: [DEVELOPER.md](https://github.com/akarso/shopanda/blob/7c982b00e40d4389ad7e5f211831101963272154/docs/guides/DEVELOPER.md) · [PLUGINS.md](../../PLUGINS.md)

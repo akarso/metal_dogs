@@ -54,7 +54,9 @@ func (f *fakeAdmin) Retry(_ context.Context, id string) error {
 	return f.retryErr
 }
 
-func (f *fakeAdmin) Requeue(context.Context, string, time.Duration) (bool, error) { return false, nil }
+func (f *fakeAdmin) RequeueLease(context.Context, string, time.Duration) (bool, error) {
+	return false, nil
+}
 
 func (f *fakeAdmin) Cancel(_ context.Context, id string) error {
 	f.cancelID = id

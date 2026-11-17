@@ -388,7 +388,7 @@ func (t *transientProvider) Generate(context.Context, generation.GenerationReque
 
 func TestGenerateService_RequestAndIdempotency(t *testing.T) {
 	t.Parallel()
-	svc, _, designs, jobs, assets, _, _, _, designID, token, _ := genFixture(t)
+	svc, _, designs, jobs, assets, _, _, clock, designID, token, _ := genFixture(t)
 	view, err := svc.RequestGenerate(context.Background(), designID, token, "key-1", "corr")
 	if err != nil {
 		t.Fatal(err)
@@ -401,8 +401,9 @@ func TestGenerateService_RequestAndIdempotency(t *testing.T) {
 		t.Fatalf("%+v", d)
 	}
 	src, _, _ := assets.GetByID(context.Background(), d.SourceAssetID)
-	if !src.DeleteAfter.After(time.Now().UTC()) {
-		t.Fatalf("source delete_after not slid: %v", src.DeleteAfter)
+	wantDelete := clock.Now().Add(domain.SourceAttachedRetention)
+	if !src.DeleteAfter.Equal(wantDelete) {
+		t.Fatalf("source delete_after = %v, want %v", src.DeleteAfter, wantDelete)
 	}
 	again, err := svc.RequestGenerate(context.Background(), designID, token, "key-1", "corr")
 	if err != nil || again.ID != view.ID {

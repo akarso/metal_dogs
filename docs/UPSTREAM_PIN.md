@@ -6,9 +6,9 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `a411c970bbc869d54d44852bc30f7427be9b2745` |
-| Pinned subject | Merge pull request #588 from akarso/pr-1554-1555-product-consumer-followups |
-| Verified locally | 2026-11-16 (explicit SHA). Fetched `upstream/main` tip `9a8d2b7c` (PR #589) has the same tree |
+| Pinned commit | `7c982b00e40d4389ad7e5f211831101963272154` |
+| Pinned subject | Merge pull request #606 from akarso/dev |
+| Verified locally | 2026-11-17 (explicit SHA from `upstream/main`) |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
 
@@ -35,5 +35,16 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 - [shopanda#584](https://github.com/akarso/shopanda/pull/584) — public extension SDK, PR-1540–1552 (`4f9de269`)
 - [shopanda#586](https://github.com/akarso/shopanda/pull/586) — `CartPort` consumer follow-ups, PR-1553 (`cec3e492`)
 - [shopanda#588](https://github.com/akarso/shopanda/pull/588) — optional customer identity and `CatalogPort` slug, PR-1554/1555 (`a411c970`)
+- [shopanda#590](https://github.com/akarso/shopanda/pull/590) — `pending_line`, `DiscardEmptyGuestCart`, `ProductVisible` / `ClassifyProductSlug`, PR-1556–1558 (`1f500783`)
+- [shopanda#592](https://github.com/akarso/shopanda/pull/592) — `App.BoundQueue()` and sync `request_id` reinjection, PR-1559 (`e2b418b8`)
+- [shopanda#593](https://github.com/akarso/shopanda/pull/593) — `registerProductPlugins`, PR-1560 (`4e90b492`)
+- [shopanda#594](https://github.com/akarso/shopanda/pull/594) — `pluginsdk.NoCache`, PR-1561 (`4cdb0caa`)
+- [shopanda#595](https://github.com/akarso/shopanda/pull/595) — product-owned `merge=ours` / `Makefile.product` docs, PR-1562 (`5874ee36`)
+- [shopanda#597](https://github.com/akarso/shopanda/pull/597) — `plugins.<slug>` Extra config, PR-1563 (`39f104ca`)
+- [shopanda#598](https://github.com/akarso/shopanda/pull/598) — `CatalogSeedPort`, PR-1564 (`246b5bde`)
+- [shopanda#599](https://github.com/akarso/shopanda/pull/599) — attempt-aware `Complete`/`Fail`, `ErrSkipOutcome`, PR-1565a (`28b6695b`)
+- [shopanda#602](https://github.com/akarso/shopanda/pull/602) — `OnQueueBound`, `OnRequeued`, `Queue.Requeue`, PR-1565b (`f94f0894`)
+- [shopanda#605](https://github.com/akarso/shopanda/pull/605) — catalog seed Status/Type/Attributes, PR-1566 (`b026d581`)
+- [shopanda#606](https://github.com/akarso/shopanda/pull/606) — promote that `dev` tip onto `main` (`7c982b00`)
 
-**Still Metal Dogs–only** (do not claim full F3 absorb): `App.BoundQueue()`, sync-handler `request_id`→ctx reinjection, plus registration/cache-control wiring — listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. Two `pkg/pluginsdk` test files differ from this pin for the same reason: `sdk_test.go` (`Complete`/`Fail` attempt argument) and `harness/harness_test.go` (upstream `TestAdaptInit_CartPortBound` does not compile against `CartPort` and expects `AddItem` where `Host.Cart()` fail-closes). `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` is removed.
+**Still Metal Dogs–only** (do not claim the deviations are gone): our copies of `BoundQueue`, sync `request_id` reinjection, the C4 attempt fence, and `Admin.RequeueLease` were kept on this pin. Upstream now ships the same extension points; later UPG4 tickets delete the copies. Listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `pkg/pluginsdk/sdk_test.go` and `harness/harness_test.go` match this pin. `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` is removed. Seed still uses `cmd/api/metaldogs_catalog.go` (ticket 02 deferred).

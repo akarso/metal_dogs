@@ -14,11 +14,14 @@ type fenceQueueStub struct {
 	hookSet  bool
 }
 
-func (f *fenceQueueStub) Enqueue(context.Context, jobs.Job) error             { return nil }
-func (f *fenceQueueStub) Dequeue(context.Context) (*jobs.Job, error)           { return nil, nil }
-func (f *fenceQueueStub) Complete(context.Context, string, int) error          { return nil }
-func (f *fenceQueueStub) Fail(context.Context, string, int, error) error       { return nil }
-func (f *fenceQueueStub) RequireOnRequeued(jobTypes ...string)                 { f.required = append(f.required, jobTypes...) }
+func (f *fenceQueueStub) Enqueue(context.Context, jobs.Job) error        { return nil }
+func (f *fenceQueueStub) Dequeue(context.Context) (*jobs.Job, error)     { return nil, nil }
+func (f *fenceQueueStub) Complete(context.Context, string, int) error    { return nil }
+func (f *fenceQueueStub) Fail(context.Context, string, int, error) error { return nil }
+func (f *fenceQueueStub) Requeue(context.Context, string, int) error     { return nil }
+func (f *fenceQueueStub) RequireOnRequeued(jobTypes ...string) {
+	f.required = append(f.required, jobTypes...)
+}
 func (f *fenceQueueStub) SetOnRequeued(func(context.Context, infraPostgres.RequeueExec, string, string) error) {
 	f.hookSet = true
 }

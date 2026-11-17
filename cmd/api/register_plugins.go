@@ -68,4 +68,5 @@ func registerPlugins(registry *plugin.Registry, cfg *config.Config) {
 	if cfg.Plugins.MetalDogs.Enabled {
 		registerMetalDogs(registry)
 	}
+	registerProductPlugins(registry, cfg)
 }

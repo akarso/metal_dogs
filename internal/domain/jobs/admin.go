@@ -21,14 +21,15 @@ type Admin interface {
 	// failed or stale-processing.
 	Retry(ctx context.Context, id string) error
 
-	// Requeue returns a job to pending for another delivery without resetting
+	// RequeueLease returns a job to pending for another delivery without resetting
 	// attempts. requeued is true only when the row was moved to pending.
 	// Pending and young processing leave the row alone (requeued=false, err=nil).
 	// Allowed from failed, done, cancelled, or processing older than lease.
 	// Returns CodeNotFound when missing. Implementations that fence product
 	// state must do so in the same transaction as the pending update; a fence
-	// failure must fail the Requeue (row stays unrepended).
-	Requeue(ctx context.Context, id string, lease time.Duration) (requeued bool, err error)
+	// failure must fail the call (row stays unrepended).
+	// Named apart from Queue.Requeue(ctx, id, attempt): Postgres implements both.
+	RequeueLease(ctx context.Context, id string, lease time.Duration) (requeued bool, err error)
 
 	// Cancel marks a pending job cancelled — it will never be dequeued.
 	// There is no in-flight cancellation: a processing job cannot be

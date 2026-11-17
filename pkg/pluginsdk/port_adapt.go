@@ -2,8 +2,11 @@ package pluginsdk
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
@@ -11,9 +14,13 @@ import (
 	"github.com/akarso/shopanda/internal/domain/catalog"
 	domaincustomer "github.com/akarso/shopanda/internal/domain/customer"
 	domainext "github.com/akarso/shopanda/internal/domain/extension"
+	"github.com/akarso/shopanda/internal/domain/inventory"
 	domainorder "github.com/akarso/shopanda/internal/domain/order"
+	"github.com/akarso/shopanda/internal/domain/pricing"
+	"github.com/akarso/shopanda/internal/domain/shared"
 	"github.com/akarso/shopanda/internal/domain/store"
 	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/internal/platform/id"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/storefrontsession"
 )
@@ -81,11 +88,12 @@ func (p *catalogPort) FindVariants(ctx context.Context, ids []string) (map[strin
 			Name:      v.Name,
 		}
 		if prod := products[v.ProductID]; prod != nil {
+			cv.ProductVisible = true
 			cv.ProductSlug = prod.Slug
 		}
-		// Empty ProductSlug with nil error: parent missing, non-active under
-		// storefront read scope, empty slug column, or products repo nil.
-		// Hooks must treat empty as fail-closed for "belongs to slug X", not skip.
+		// !ProductVisible: parent missing, non-active / visibility-gated under
+		// storefront read scope, or products repo nil. Hooks must not treat
+		// empty ProductSlug alone as "not my product" (fail-open).
 		out[reqID] = cv
 	}
 	return out, nil
@@ -109,6 +117,528 @@ func (p *catalogPort) FindProduct(ctx context.Context, id string) (*extapi.Catal
 		Type:   string(prod.Type),
 		Status: string(prod.Status),
 	}, nil
+}
+
+// catalogSeedTxStarter begins a transaction for atomic price + history writes.
+type catalogSeedTxStarter interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+type catalogSeedTxProducts interface {
+	catalog.ProductRepository
+	WithTx(tx *sql.Tx) catalog.ProductRepository
+}
+
+type catalogSeedTxVariants interface {
+	catalog.VariantRepository
+	WithTx(tx *sql.Tx) catalog.VariantRepository
+}
+
+type catalogSeedTxPrice interface {
+	pricing.PriceRepository
+	WithTx(tx *sql.Tx) pricing.PriceRepository
+}
+
+type catalogSeedTxHistory interface {
+	pricing.PriceHistoryRepository
+	WithTx(tx *sql.Tx) pricing.PriceHistoryRepository
+}
+
+type catalogSeedTxStock interface {
+	inventory.StockRepository
+	WithTx(tx *sql.Tx) inventory.StockRepository
+}
+
+// NewCatalogSeedPort adapts catalog/pricing/inventory repositories to CatalogSeedPort.
+// When db is set and repos support WithTx (postgres), Import uses one transaction.
+func NewCatalogSeedPort(
+	products catalog.ProductRepository,
+	variants catalog.VariantRepository,
+	prices pricing.PriceRepository,
+	history pricing.PriceHistoryRepository,
+	stock inventory.StockRepository,
+	db catalogSeedTxStarter,
+) CatalogSeedPort {
+	return &catalogSeedPort{
+		products: products,
+		variants: variants,
+		prices:   prices,
+		history:  history,
+		stock:    stock,
+		db:       db,
+	}
+}
+
+type catalogSeedPort struct {
+	products catalog.ProductRepository
+	variants catalog.VariantRepository
+	prices   pricing.PriceRepository
+	history  pricing.PriceHistoryRepository
+	stock    inventory.StockRepository
+	db       catalogSeedTxStarter
+}
+
+func (p *catalogSeedPort) withTx(tx *sql.Tx) (*catalogSeedPort, error) {
+	out := *p
+	if tp, ok := p.products.(catalogSeedTxProducts); ok {
+		out.products = tp.WithTx(tx)
+	} else if p.products != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: products repo does not support WithTx")
+	}
+	if tv, ok := p.variants.(catalogSeedTxVariants); ok {
+		out.variants = tv.WithTx(tx)
+	} else if p.variants != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: variants repo does not support WithTx")
+	}
+	if tp, ok := p.prices.(catalogSeedTxPrice); ok {
+		out.prices = tp.WithTx(tx)
+	} else if p.prices != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: prices repo does not support WithTx")
+	}
+	if th, ok := p.history.(catalogSeedTxHistory); ok {
+		out.history = th.WithTx(tx)
+	} else if p.history != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: price history repo does not support WithTx")
+	}
+	if ts, ok := p.stock.(catalogSeedTxStock); ok {
+		out.stock = ts.WithTx(tx)
+	} else if p.stock != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: stock repo does not support WithTx")
+	}
+	out.db = nil // nested Import must not open another tx
+	return &out, nil
+}
+
+// Import applies the seed batch in one transaction when db + WithTx repos are bound.
+func (p *catalogSeedPort) Import(ctx context.Context, batch CatalogSeedBatch) (*CatalogSeedResult, error) {
+	if p == nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: not configured")
+	}
+	run := p
+	var tx *sql.Tx
+	if p.db != nil {
+		var err error
+		tx, err = p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("pluginsdk: catalog seed port: begin tx: %w", err)
+		}
+		defer func() {
+			if tx != nil {
+				_ = tx.Rollback()
+			}
+		}()
+		run, err = p.withTx(tx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	result := &CatalogSeedResult{
+		ProductIDs: make(map[string]string, len(batch.Products)),
+		VariantIDs: make(map[string]string, len(batch.Variants)),
+	}
+	for _, prod := range batch.Products {
+		id, _, err := run.EnsureProduct(ctx, prod)
+		if err != nil {
+			return nil, err
+		}
+		result.ProductIDs[strings.TrimSpace(prod.Slug)] = id
+	}
+	for _, v := range batch.Variants {
+		in := v
+		if strings.TrimSpace(in.ProductID) == "" {
+			slug := strings.TrimSpace(in.ProductSlug)
+			pid, ok := result.ProductIDs[slug]
+			if !ok || pid == "" {
+				return nil, fmt.Errorf("pluginsdk: catalog seed port: variant SKU %q: unknown product slug %q", in.SKU, slug)
+			}
+			in.ProductID = pid
+		}
+		id, _, err := run.EnsureVariant(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		result.VariantIDs[strings.TrimSpace(in.SKU)] = id
+	}
+	for _, price := range batch.Prices {
+		in := price
+		if strings.TrimSpace(in.VariantID) == "" {
+			sku := strings.TrimSpace(in.VariantSKU)
+			vid, ok := result.VariantIDs[sku]
+			if !ok || vid == "" {
+				return nil, fmt.Errorf("pluginsdk: catalog seed port: price: unknown variant sku %q", sku)
+			}
+			in.VariantID = vid
+		}
+		if _, err := run.EnsurePrice(ctx, in); err != nil {
+			return nil, err
+		}
+	}
+	for _, st := range batch.Stock {
+		vid := strings.TrimSpace(st.VariantID)
+		if vid == "" {
+			sku := strings.TrimSpace(st.VariantSKU)
+			id, ok := result.VariantIDs[sku]
+			if !ok || id == "" {
+				return nil, fmt.Errorf("pluginsdk: catalog seed port: stock: unknown variant sku %q", sku)
+			}
+			vid = id
+		}
+		if err := run.SetStock(ctx, vid, st.Qty); err != nil {
+			return nil, err
+		}
+	}
+
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("pluginsdk: catalog seed port: commit: %w", err)
+		}
+		tx = nil
+	}
+	return result, nil
+}
+
+func (p *catalogSeedPort) EnsureProduct(ctx context.Context, in CatalogProductSeed) (string, bool, error) {
+	if p == nil || p.products == nil {
+		return "", false, fmt.Errorf("pluginsdk: catalog seed port: products not configured")
+	}
+	slug := strings.TrimSpace(in.Slug)
+	if slug == "" {
+		return "", false, fmt.Errorf("pluginsdk: catalog seed port: product slug must not be empty")
+	}
+	ctx = catalog.WithOperatorProductReadScope(ctx)
+	existing, err := p.products.FindBySlug(ctx, slug)
+	if err != nil {
+		return "", false, err
+	}
+	if existing != nil {
+		if err := catalogSeedProductMatch(existing, in); err != nil {
+			return "", false, err
+		}
+		return existing.ID, false, nil
+	}
+
+	prod, err := catalog.NewProduct(id.New(), strings.TrimSpace(in.Name), slug)
+	if err != nil {
+		return "", false, err
+	}
+	prod.Description = strings.TrimSpace(in.Description)
+	// NewProduct already defaults StatusDraft / TypeSimple. Never force active.
+	if s := strings.TrimSpace(in.Status); s != "" {
+		st := catalog.Status(s)
+		if !st.IsValid() {
+			return "", false, fmt.Errorf("pluginsdk: catalog seed port: %s", catalog.InvalidStatusMessage(st))
+		}
+		prod.Status = st
+	}
+	if t := strings.TrimSpace(in.Type); t != "" {
+		typ := catalog.Type(t)
+		if !typ.IsValid() {
+			return "", false, fmt.Errorf("pluginsdk: catalog seed port: %s", catalog.InvalidTypeMessage(typ))
+		}
+		prod.Type = typ
+	}
+	if in.Attributes != nil {
+		cloned, err := cloneStringAnyMap(in.Attributes)
+		if err != nil {
+			return "", false, err
+		}
+		prod.Attributes = cloned
+	}
+	// Same guard as admin/CSV create: seed never attaches downloadable files.
+	if prod.Type == catalog.TypeDownloadable && prod.Status == catalog.StatusActive {
+		return "", false, fmt.Errorf("pluginsdk: catalog seed port: %s", catalog.DownloadableRequiresFileMessage)
+	}
+	if err := prod.Validate(); err != nil {
+		return "", false, fmt.Errorf("pluginsdk: catalog seed port: %w", err)
+	}
+
+	if err := p.products.Create(ctx, &prod); err != nil {
+		if apperror.Is(err, apperror.CodeConflict) {
+			ret, err2 := p.products.FindBySlug(ctx, slug)
+			if err2 != nil {
+				return "", false, err2
+			}
+			if ret == nil {
+				return "", false, err
+			}
+			if err := catalogSeedProductMatch(ret, in); err != nil {
+				return "", false, err
+			}
+			return ret.ID, false, nil
+		}
+		return "", false, err
+	}
+	return prod.ID, true, nil
+}
+
+func (p *catalogSeedPort) EnsureVariant(ctx context.Context, in CatalogVariantSeed) (string, bool, error) {
+	if p == nil || p.variants == nil {
+		return "", false, fmt.Errorf("pluginsdk: catalog seed port: variants not configured")
+	}
+	productID := strings.TrimSpace(in.ProductID)
+	if productID == "" {
+		slug := strings.TrimSpace(in.ProductSlug)
+		if slug == "" {
+			return "", false, fmt.Errorf("pluginsdk: catalog seed port: variant product_id or product_slug must not be empty")
+		}
+		if p.products == nil {
+			return "", false, fmt.Errorf("pluginsdk: catalog seed port: products not configured")
+		}
+		ctx = catalog.WithOperatorProductReadScope(ctx)
+		prod, err := p.products.FindBySlug(ctx, slug)
+		if err != nil {
+			return "", false, err
+		}
+		if prod == nil {
+			return "", false, fmt.Errorf("pluginsdk: catalog seed port: product slug %q not found", slug)
+		}
+		productID = prod.ID
+	}
+	sku := strings.TrimSpace(in.SKU)
+	if sku == "" {
+		return "", false, fmt.Errorf("pluginsdk: catalog seed port: variant sku must not be empty")
+	}
+
+	existing, err := p.variants.FindBySKU(ctx, sku)
+	if err != nil {
+		return "", false, err
+	}
+	if existing != nil {
+		if existing.ProductID != productID {
+			return "", false, fmt.Errorf("pluginsdk: catalog seed port: variant SKU %q belongs to product %q, expected %q",
+				sku, existing.ProductID, productID)
+		}
+		if err := catalogSeedVariantMatch(existing, in); err != nil {
+			return "", false, err
+		}
+		return existing.ID, false, nil
+	}
+
+	v, err := catalog.NewVariant(id.New(), productID, sku)
+	if err != nil {
+		return "", false, err
+	}
+	v.Name = strings.TrimSpace(in.Name)
+	if in.Attributes != nil {
+		cloned, err := cloneStringAnyMap(in.Attributes)
+		if err != nil {
+			return "", false, err
+		}
+		v.Attributes = cloned
+	}
+
+	if err := p.variants.Create(ctx, &v); err != nil {
+		if apperror.Is(err, apperror.CodeConflict) {
+			ret, err2 := p.variants.FindBySKU(ctx, sku)
+			if err2 != nil {
+				return "", false, err2
+			}
+			if ret == nil {
+				return "", false, err
+			}
+			if ret.ProductID != productID {
+				return "", false, fmt.Errorf("pluginsdk: catalog seed port: variant SKU %q belongs to product %q, expected %q",
+					sku, ret.ProductID, productID)
+			}
+			if err := catalogSeedVariantMatch(ret, in); err != nil {
+				return "", false, err
+			}
+			return ret.ID, false, nil
+		}
+		return "", false, err
+	}
+	return v.ID, true, nil
+}
+
+func (p *catalogSeedPort) EnsurePrice(ctx context.Context, in CatalogPriceSeed) (bool, error) {
+	if p == nil || p.prices == nil {
+		return false, fmt.Errorf("pluginsdk: catalog seed port: prices not configured")
+	}
+	if p.history == nil {
+		return false, fmt.Errorf("pluginsdk: catalog seed port: price history not configured")
+	}
+	variantID := strings.TrimSpace(in.VariantID)
+	if variantID == "" {
+		return false, fmt.Errorf("pluginsdk: catalog seed port: price variant_id must not be empty")
+	}
+	currency := strings.TrimSpace(in.Currency)
+	if currency == "" {
+		return false, fmt.Errorf("pluginsdk: catalog seed port: price currency must not be empty")
+	}
+	storeID := strings.TrimSpace(in.StoreID)
+	existing, err := p.prices.FindByVariantCurrencyAndStore(ctx, variantID, currency, storeID)
+	if err != nil {
+		return false, err
+	}
+	if existing != nil {
+		return false, nil
+	}
+	money, err := shared.NewMoney(in.Amount, currency)
+	if err != nil {
+		return false, fmt.Errorf("pluginsdk: catalog seed port: invalid money: %w", err)
+	}
+	price, err := pricing.NewPrice(id.New(), variantID, storeID, money)
+	if err != nil {
+		return false, err
+	}
+	snap, err := pricing.NewPriceSnapshot(id.New(), variantID, storeID, money)
+	if err != nil {
+		return false, err
+	}
+
+	// When already inside Import's transaction, repos are WithTx-bound and db is nil.
+	if p.db != nil {
+		if txPrices, ok := p.prices.(catalogSeedTxPrice); ok {
+			if txHistory, ok := p.history.(catalogSeedTxHistory); ok {
+				tx, err := p.db.BeginTx(ctx, nil)
+				if err != nil {
+					return false, fmt.Errorf("pluginsdk: catalog seed port: begin tx: %w", err)
+				}
+				if err := txPrices.WithTx(tx).Upsert(ctx, &price); err != nil {
+					_ = tx.Rollback()
+					return false, err
+				}
+				if err := txHistory.WithTx(tx).Record(ctx, &snap); err != nil {
+					_ = tx.Rollback()
+					return false, err
+				}
+				if err := tx.Commit(); err != nil {
+					return false, fmt.Errorf("pluginsdk: catalog seed port: commit price+history: %w", err)
+				}
+				return true, nil
+			}
+		}
+	}
+
+	if err := p.prices.Upsert(ctx, &price); err != nil {
+		return false, err
+	}
+	if err := p.history.Record(ctx, &snap); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (p *catalogSeedPort) SetStock(ctx context.Context, variantID string, qty int) error {
+	if p == nil || p.stock == nil {
+		return fmt.Errorf("pluginsdk: catalog seed port: stock not configured")
+	}
+	variantID = strings.TrimSpace(variantID)
+	if variantID == "" {
+		return fmt.Errorf("pluginsdk: catalog seed port: stock variant_id must not be empty")
+	}
+	entry, err := inventory.NewStockEntry(variantID, qty)
+	if err != nil {
+		return err
+	}
+	return p.stock.SetStock(ctx, &entry)
+}
+
+// catalogSeedProductMatch enforces create-only honesty: when the seed sets
+// Status / Type / Attributes, they must already agree with the stored product.
+// Name / Description are still soft-ignored on an existing slug (create-only).
+func catalogSeedProductMatch(existing *catalog.Product, in CatalogProductSeed) error {
+	if existing == nil {
+		return nil
+	}
+	slug := strings.TrimSpace(in.Slug)
+	if s := strings.TrimSpace(in.Status); s != "" {
+		st := catalog.Status(s)
+		if !st.IsValid() {
+			return fmt.Errorf("pluginsdk: catalog seed port: %s", catalog.InvalidStatusMessage(st))
+		}
+		if existing.Status != st {
+			return fmt.Errorf("pluginsdk: catalog seed port: product slug %q already exists with status %q, seed requested %q (create-only)",
+				slug, existing.Status, st)
+		}
+	}
+	if t := strings.TrimSpace(in.Type); t != "" {
+		typ := catalog.Type(t)
+		if !typ.IsValid() {
+			return fmt.Errorf("pluginsdk: catalog seed port: %s", catalog.InvalidTypeMessage(typ))
+		}
+		if existing.Type != typ {
+			return fmt.Errorf("pluginsdk: catalog seed port: product slug %q already exists with type %q, seed requested %q (create-only)",
+				slug, existing.Type, typ)
+		}
+	}
+	if in.Attributes != nil {
+		if err := catalogSeedAttributesMatch(existing.Attributes, in.Attributes); err != nil {
+			return fmt.Errorf("pluginsdk: catalog seed port: product slug %q already exists with different attributes (create-only): %w", slug, err)
+		}
+	}
+	return nil
+}
+
+func catalogSeedVariantMatch(existing *catalog.Variant, in CatalogVariantSeed) error {
+	if existing == nil || in.Attributes == nil {
+		return nil
+	}
+	if err := catalogSeedAttributesMatch(existing.Attributes, in.Attributes); err != nil {
+		return fmt.Errorf("pluginsdk: catalog seed port: variant SKU %q already exists with different attributes (create-only): %w",
+			strings.TrimSpace(in.SKU), err)
+	}
+	return nil
+}
+
+// catalogSeedAttributesMatch: nil seed Attributes is not checked (caller skips).
+// Non-nil empty map asserts the stored map is empty. Non-empty seed requires
+// every seed key to equal the stored value (extra stored keys are OK).
+func catalogSeedAttributesMatch(stored map[string]interface{}, seed map[string]any) error {
+	if seed == nil {
+		return nil
+	}
+	if len(seed) == 0 {
+		if len(stored) != 0 {
+			return fmt.Errorf("attributes not empty")
+		}
+		return nil
+	}
+	for k, want := range seed {
+		got, ok := stored[k]
+		if !ok || !jsonValuesEqual(got, want) {
+			return fmt.Errorf("attribute %q mismatch", k)
+		}
+	}
+	return nil
+}
+
+func jsonValuesEqual(a, b any) bool {
+	aj, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	bj, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	var an, bn any
+	if err := json.Unmarshal(aj, &an); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(bj, &bn); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(an, bn)
+}
+
+// cloneStringAnyMap deep-copies via JSON so concrete containers ([]string,
+// map[string]string, …) are not shared with the caller after Ensure*.
+// Non-JSON-serializable values return an error (no shallow fallback).
+func cloneStringAnyMap(in map[string]any) (map[string]interface{}, error) {
+	if in == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: attributes not JSON-serializable: %w", err)
+	}
+	out := make(map[string]interface{})
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("pluginsdk: catalog seed port: attributes not JSON-serializable: %w", err)
+	}
+	return out, nil
 }
 
 // NewOrdersPort adapts an order repository to OrderPort.
@@ -175,6 +705,7 @@ type cartService interface {
 	GetCart(ctx context.Context, cartID, customerID string) (*domaincart.Cart, error)
 	CreateCart(ctx context.Context, customerID, currency string) (*domaincart.Cart, error)
 	EnsureActiveCart(ctx context.Context, customerID, currency string) (*domaincart.Cart, error)
+	DiscardEmptyGuestCart(ctx context.Context, cartID string) (discarded bool, err error)
 	CartView(ctx context.Context, c *domaincart.Cart) (*extapi.CartView, error)
 	FilterCartViewForPlugin(view *extapi.CartView, pluginName string) *extapi.CartView
 	DeleteLineExtension(ctx context.Context, cartID, customerID, variantID, fieldCode string) error
@@ -301,6 +832,23 @@ func (p *cartPort) EnsureStorefrontCart(ctx context.Context, w http.ResponseWrit
 	}
 	storefrontsession.SetCartCookieSecure(w, c.ID, storefrontsession.CookieSecure(ctx, r))
 	return p.viewFor(ctx, c)
+}
+
+func (p *cartPort) DiscardEmptyGuestCart(ctx context.Context, w http.ResponseWriter, r *http.Request, cartID string) error {
+	if p == nil || p.svc == nil {
+		return fmt.Errorf("pluginsdk: cart port: not configured")
+	}
+	cartID = strings.TrimSpace(cartID)
+	if cartID == "" {
+		return nil
+	}
+	discarded, err := p.svc.DiscardEmptyGuestCart(ctx, cartID)
+	// Clear the cookie as soon as the row is gone — even if orphan purge failed —
+	// so Ensure's Set-Cookie is not left pointing at a deleted cart.
+	if discarded && w != nil {
+		storefrontsession.ClearCartCookieSecure(w, storefrontsession.CookieSecure(ctx, r))
+	}
+	return err
 }
 
 func (p *cartPort) DeleteLineExtension(ctx context.Context, cartID, customerID, variantID, fieldCode string) error {

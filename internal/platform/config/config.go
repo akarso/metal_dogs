@@ -582,6 +582,10 @@ type PluginsConfig struct {
 	B2B             B2BPluginConfig             `yaml:"b2b"`
 	ExtRef          ExtRefPluginConfig          `yaml:"extref"`
 	MetalDogs       MetalDogsPluginConfig       `yaml:"metaldogs"`
+	// Extra holds unknown plugins.<slug> maps for product plugins (see
+	// UnmarshalYAML). Flattened as plugins.<slug>.<key>; env overlay
+	// SHOPANDA_PLUGINS_<SLUG>_<KEY>. Typed fields above win when both exist.
+	Extra map[string]map[string]string `yaml:"-"`
 }
 
 // GraphQLPluginConfig toggles the optional read-only GraphQL API core plugin.
@@ -677,6 +681,10 @@ type B2BPluginConfig struct {
 // Default enabled=false (dark); set plugins.metaldogs.enabled or
 // SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/* (not a
 // process probe — use /healthz and /readyz for orchestrators).
+//
+// migrate-next: product forks should prefer Extra / Host.Config* for new
+// product slugs instead of adding typed fields here; MetalDogs remains typed
+// until a dedicated migration removes this field.
 type MetalDogsPluginConfig struct {
 	Enabled    bool                      `yaml:"enabled"`
 	Generation MetalDogsGenerationConfig `yaml:"generation"`
@@ -1372,6 +1380,7 @@ func applyEnv(cfg *Config) {
 			cfg.Plugins.MetalDogs.Generation.CooldownSeconds = n
 		}
 	}
+	applyPluginsExtraEnv(cfg)
 	if v := os.Getenv("SHOPANDA_FRONTEND_ENABLED"); v != "" {
 		cfg.Frontend.Enabled = parseEnvBool(v)
 	}
@@ -1646,6 +1655,7 @@ func flattenWith(cfg *Config, redact func(string) string) map[string]string {
 	m["plugins.metaldogs.generation.max_retries"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxRetries)
 	m["plugins.metaldogs.generation.max_attempts_per_design"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign)
 	m["plugins.metaldogs.generation.cooldown_seconds"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.CooldownSeconds)
+	flattenPluginsExtra(m, cfg, redact)
 	m["frontend.enabled"] = strconv.FormatBool(cfg.Frontend.Enabled)
 	m["frontend.mode"] = cfg.Frontend.Mode
 	m["frontend.theme_path"] = cfg.Frontend.ThemePath

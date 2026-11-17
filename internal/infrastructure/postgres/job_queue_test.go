@@ -630,7 +630,7 @@ func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
 	clear()
 	pending, _ := jobs.NewJob(id.New(), "test", nil)
 	_ = q.Enqueue(ctx, pending)
-	if _, err := q.Requeue(ctx, pending.ID, time.Minute); err != nil {
+	if _, err := q.RequeueLease(ctx, pending.ID, time.Minute); err != nil {
 		t.Fatalf("requeue pending: %v", err)
 	}
 
@@ -641,7 +641,7 @@ func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
 	if got == nil || got.ID != young.ID {
 		t.Fatalf("dequeue young: %+v", got)
 	}
-	if _, err := q.Requeue(ctx, young.ID, time.Hour); err != nil {
+	if _, err := q.RequeueLease(ctx, young.ID, time.Hour); err != nil {
 		t.Fatalf("requeue young processing: %v", err)
 	}
 	var status string
@@ -658,7 +658,7 @@ func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	attemptsBefore := got.Attempts
-	if _, err := q.Requeue(ctx, got.ID, time.Minute); err != nil {
+	if _, err := q.RequeueLease(ctx, got.ID, time.Minute); err != nil {
 		t.Fatalf("requeue stale: %v", err)
 	}
 	var attempts int
@@ -672,7 +672,7 @@ func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
 	_ = q.Enqueue(ctx, done)
 	got, _ = q.Dequeue(ctx)
 	_ = q.Complete(ctx, got.ID, got.Attempts)
-	if _, err := q.Requeue(ctx, got.ID, time.Minute); err != nil {
+	if _, err := q.RequeueLease(ctx, got.ID, time.Minute); err != nil {
 		t.Fatalf("requeue done: %v", err)
 	}
 	_ = db.QueryRow("SELECT status FROM jobs WHERE id = $1", got.ID).Scan(&status)
@@ -696,7 +696,7 @@ func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
 	}
 	// Generate type requires OnRequeued (product fence); no-op is enough here.
 	q.SetOnRequeued(func(context.Context, postgres.RequeueExec, string, string) error { return nil })
-	if _, err := q.Requeue(ctx, genID, 2*time.Minute); err != nil {
+	if _, err := q.RequeueLease(ctx, genID, 2*time.Minute); err != nil {
 		t.Fatalf("requeue after conflict: %v", err)
 	}
 	next, err := q.Dequeue(ctx)
@@ -722,7 +722,7 @@ func TestJobQueue_Requeue_GenerateTypeRequiresHook(t *testing.T) {
 	got, _ := q.Dequeue(ctx)
 	_, _ = db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, got.ID)
 
-	requeued, err := q.Requeue(ctx, got.ID, time.Minute)
+	requeued, err := q.RequeueLease(ctx, got.ID, time.Minute)
 	if err == nil || requeued {
 		t.Fatalf("want missing-hook error, got requeued=%v err=%v", requeued, err)
 	}
@@ -763,7 +763,7 @@ func TestJobQueue_Requeue_OnRequeuedRunsBeforePendingVisible(t *testing.T) {
 		_, err := exec.ExecContext(ctx, `SELECT 1`)
 		return err
 	})
-	requeued, err := q.Requeue(ctx, got.ID, time.Minute)
+	requeued, err := q.RequeueLease(ctx, got.ID, time.Minute)
 	if err != nil || !requeued {
 		t.Fatalf("requeue: requeued=%v err=%v", requeued, err)
 	}
@@ -797,7 +797,7 @@ func TestJobQueue_Requeue_OnRequeuedErrorRollsBack(t *testing.T) {
 	q.SetOnRequeued(func(context.Context, postgres.RequeueExec, string, string) error {
 		return errors.New("fence failed")
 	})
-	requeued, err := q.Requeue(ctx, got.ID, time.Minute)
+	requeued, err := q.RequeueLease(ctx, got.ID, time.Minute)
 	if err == nil || requeued {
 		t.Fatalf("want fence error and requeued=false, got requeued=%v err=%v", requeued, err)
 	}

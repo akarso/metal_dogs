@@ -228,11 +228,13 @@ func (q *JobQueue) removeInflight(id string) {
 }
 
 // Complete marks a job as done.
-func (q *JobQueue) Complete(ctx context.Context, id string, attempts int) error {
-	_ = attempts
+func (q *JobQueue) Complete(ctx context.Context, id string, attempt int) error {
 	entry, err := q.inflightEntry(id)
 	if err != nil {
 		return err
+	}
+	if entry.job.Attempts != attempt {
+		return fmt.Errorf("job_queue: complete %s attempt %d: %w", id, attempt, jobs.ErrOutcomeNotApplied)
 	}
 	if err := q.ch.Ack(entry.tag, false); err != nil {
 		return fmt.Errorf("job_queue: complete ack: %w", err)
@@ -252,11 +254,13 @@ func queueRetryDelay(attempt int) time.Duration {
 }
 
 // Fail re-queues a job for retry or marks it as permanently failed.
-func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
-	_ = attempts
+func (q *JobQueue) Fail(ctx context.Context, id string, attempt int, jobErr error) error {
 	entry, err := q.inflightEntry(id)
 	if err != nil {
 		return err
+	}
+	if entry.job.Attempts != attempt {
+		return fmt.Errorf("job_queue: fail %s attempt %d: %w", id, attempt, jobs.ErrOutcomeNotApplied)
 	}
 
 	msg := entry.job
@@ -286,6 +290,12 @@ func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr err
 	q.removeInflight(id)
 	return nil
 }
+
+// Requeue is unsupported on this broker-backed queue (no queryable processing row).
+func (q *JobQueue) Requeue(context.Context, string, int) error {
+	return jobs.ErrRequeueUnsupported
+}
+
 
 func jsonMarshalJobMessage(msg jobMessage) ([]byte, error) {
 	data, err := json.Marshal(msg)

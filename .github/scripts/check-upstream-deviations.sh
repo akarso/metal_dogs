@@ -19,6 +19,7 @@ ALLOWLIST=(
   cmd/api/cache_control_prefixes_test.go
   cmd/api/job_queue_bind.go
   cmd/api/jobs_cli.go
+  cmd/api/jobs_cli_test.go
   cmd/api/main.go
   cmd/api/metaldogs_catalog.go
   cmd/api/migrate_plugins_test.go
@@ -36,10 +37,10 @@ ALLOWLIST=(
   internal/platform/config/config_test.go
   internal/platform/plugin/providers.go
   internal/platform/plugin/providers_test.go
+  internal/platform/plugin/queue_hooks.go
+  internal/platform/plugin/queue_hooks_test.go
   internal/platform/plugin/sync_job_test.go
   internal/platform/runtime/scheduler_test.go
-  pkg/pluginsdk/harness/harness_test.go
-  pkg/pluginsdk/sdk_test.go
 )
 
 mapfile -t dirty < <(

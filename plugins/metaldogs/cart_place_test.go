@@ -226,6 +226,9 @@ func (g *gateCart) EnsureStorefrontCart(context.Context, http.ResponseWriter, *h
 func (g *gateCart) DeleteLineExtension(context.Context, string, string, string, string) error {
 	return nil
 }
+func (g *gateCart) DiscardEmptyGuestCart(context.Context, http.ResponseWriter, *http.Request, string) error {
+	return nil
+}
 func (g *gateCart) UpsertLineExtension(context.Context, string, string, string, []pluginsdk.CartExtensionValue, string) error {
 	return nil
 }

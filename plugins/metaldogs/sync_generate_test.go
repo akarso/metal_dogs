@@ -46,7 +46,7 @@ func (a *conflictAdmin) Retry(_ context.Context, _ string) error {
 	}
 }
 func (a *conflictAdmin) Cancel(context.Context, string) error { return nil }
-func (a *conflictAdmin) Requeue(_ context.Context, _ string, lease time.Duration) (bool, error) {
+func (a *conflictAdmin) RequeueLease(_ context.Context, _ string, lease time.Duration) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.status == jobs.StatusPending {
@@ -90,6 +90,7 @@ func (q *queueWithAdmin) Complete(context.Context, string, int) error { return n
 func (q *queueWithAdmin) Fail(context.Context, string, int, error) error {
 	return nil
 }
+func (q *queueWithAdmin) Requeue(context.Context, string, int) error { return nil }
 
 func TestResolveGenerateEnqueueConflict_LiveClaimNoOp(t *testing.T) {
 	t.Parallel()
