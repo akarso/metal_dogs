@@ -15,7 +15,6 @@ import (
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
 	"github.com/akarso/shopanda/internal/application/hooks"
 	appPricing "github.com/akarso/shopanda/internal/application/pricing"
-	"github.com/akarso/shopanda/internal/domain/catalog"
 	"github.com/akarso/shopanda/internal/domain/inventory"
 	domainPricing "github.com/akarso/shopanda/internal/domain/pricing"
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
@@ -25,9 +24,8 @@ import (
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
-	"github.com/akarso/shopanda/plugins/metaldogs/adapters/sessioncart"
-	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
 
@@ -53,15 +51,7 @@ func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
-	saved, err := postgres.NewCartRepo(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository, lines *extensionapp.ValueService) {
-		p.UseSessionCart(sessioncart.New(carts, products, variants, lines, saved, func(ctx context.Context) (context.Context, error) {
-			return app.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
-		}))
-	}), db
+	return newStorefrontAndCart(t, db, extReg, app), db
 }
 
 // Plugin stays enabled, but Init returns before design services when media is absent.
@@ -94,15 +84,7 @@ func newDesignCartServerWithoutMedia(t *testing.T) (*httptest.Server, *sql.DB, *
 	if p.DesignService() != nil {
 		t.Fatal("design service wired without media")
 	}
-	saved, err := postgres.NewCartRepo(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := newStorefrontAndCart(t, db, extReg, app, func(carts *cartApp.Service, products catalog.ProductRepository, variants catalog.VariantRepository, lines *extensionapp.ValueService) {
-		p.UseSessionCart(sessioncart.New(carts, products, variants, lines, saved, func(ctx context.Context) (context.Context, error) {
-			return app.PluginWriteContext(ctx, metaldogs.PluginName, ports.DesignIDFieldCode)
-		}))
-	})
+	srv := newStorefrontAndCart(t, db, extReg, app)
 	return srv, db, p
 }
 
@@ -150,7 +132,7 @@ func setTeeStock(t *testing.T, db *sql.DB, qty int) {
 	}
 }
 
-func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, bind func(*cartApp.Service, catalog.ProductRepository, catalog.VariantRepository, *extensionapp.ValueService)) *httptest.Server {
+func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App) *httptest.Server {
 	t.Helper()
 	products, err := postgres.NewProductRepo(db)
 	if err != nil {
@@ -238,9 +220,12 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 		for _, route := range pluginApp.PublicRoutes() {
 			mux.Handle(route.Pattern, route.Handler)
 		}
-	}
-	if bind != nil {
-		bind(cartSvc, products, variants, values)
+		if err := pluginApp.BindCatalogPort(pluginsdk.NewCatalogPort(products, variants)); err != nil {
+			t.Fatal(err)
+		}
+		if err := pluginApp.BindCartPort(pluginsdk.NewCartPort(cartSvc)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	stores, err := postgres.NewStoreRepo(db)
