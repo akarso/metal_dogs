@@ -187,7 +187,7 @@ CSV checks are unchanged: draft + configurable in the file, price parsing, valid
 ## Ticket 00c — pin `7bd34bef`
 
 - Date: 2026-11-18
-- Pin: `7bd34befc176a2baa3b81e82117c3b1b15e933d6` (`upstream/main`, PR #615)
+- Pin: `7bd34bef…` (`upstream/main`, PR #615)
 - Previous pin on this branch: `ab35e965…`
 
 ### Conflict resolution
@@ -211,4 +211,24 @@ CSV checks are unchanged: draft + configurable in the file, price parsing, valid
 - Shopanda guides `EXTENSION_POINTS.md`, `DEVELOPER.md`, `PRODUCT_SITES.md` and phase-17 PR notes were not vendored.
 
 `config.go` and `plugins_extra.go` equal the pin. Serve and worker do not require `CapCatalogSeed`. `metaldogs:catalog-seed` binds it and checks every other declared capability, including `CapCatalog`. A `parent_sku` mismatch error contains the stored value (`OTHER` or `<missing>`) and the requested value (`MDOGS-TEE`).
+
+The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` deviation from this section are superseded by PR-1574 (ticket 00d). Upstream `runPluginCLICommand` keeps the Init App and binds `CatalogSeedPort` only for the command owner.
+
+## Ticket 00d — pin `565dde5a`
+
+- Date: 2026-11-18
+- Pin: `565dde5a284ea3983b431e915acb4a37ae166a3c` (`upstream/main`, PR #617)
+- Previous pin on this branch: `7bd34bef…`
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `cmd/api/cli_plugins.go`, `cmd/api/cli_plugins_test.go` | Upstream (PR-1574). Both files left the allowlist |
+| `cmd/api/main.go` | Upstream CLI runtime (`pluginCLIRuntime`). `jobs:retry` help stays ours; `jobs:requeue` was not taken |
+| `PLUGINS.md` | Upstream CLI / cart / catalog rows in the conflict; product GitHub pin links stay |
+| Shopanda guides (DEVELOPER, EXTENSION_POINTS) and phase-17 PR-1574 notes | Deleted (modify/delete). Stub indexes stay |
+| `cmd/api/register_products.go` | Registration only. `prepareProductCLI` and `wireCatalogSeedCLI` deleted |
+
+`metaldogs:catalog-seed` declares `RequiresDB` and `Need(CapCatalogSeed)`. The write test calls `runPluginCLICommandWithDeps` with `bindPluginCLIPorts` and an injected `OpenDB`. The command does not read `cli.Context.DB`: this root never sets it. Writes go through `Host.CatalogSeed()`. Serve and worker still skip the seed port. A `parent_sku` mismatch error names `parent_sku` next to the stored and requested values.
 

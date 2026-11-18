@@ -2,21 +2,30 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/platform/config"
+	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
+	"github.com/akarso/shopanda/internal/platform/migrate"
 	"github.com/akarso/shopanda/internal/platform/plugin"
-	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
@@ -283,56 +292,181 @@ func concreteCustomizerPath(pattern string) string {
 	}
 }
 
-type needsCatalogSDKPlugin struct{}
-
-func (needsCatalogSDKPlugin) Name() string { return "test/needscatalog" }
-
-func (needsCatalogSDKPlugin) Needs() []pluginsdk.Capability {
-	return []pluginsdk.Capability{pluginsdk.CapCatalog}
-}
-
-func (needsCatalogSDKPlugin) Init(h pluginsdk.Host) error {
-	h.Require(pluginsdk.CapCatalog)
-	return nil
-}
-
-func TestWireCatalogSeedCLI_BindsSeedAndSkipsOnlyCart(t *testing.T) {
+func TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed(t *testing.T) {
+	cfg := metalDogsEnabledConfig()
 	log := logger.NewWithWriter(io.Discard, "error")
 	reg := plugin.NewRegistry(log)
-	reg.Register(pluginsdk.Adapt(needsCartSDKPlugin{}))
-	reg.Register(pluginsdk.Adapt(needsCatalogSDKPlugin{}))
-	reg.Register(pluginsdk.Adapt(needsCatalogSeedSDKPlugin{}))
-	app := &plugin.App{Logger: log}
+	reg.Register(metaldogs.New())
+	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
+	boot := &plugin.Bootstrap{
+		Products: seedBootProducts{},
+		Variants: seedBootVariants{},
+	}
+	if err := bindProductPorts(app, boot); err != nil {
+		t.Fatal(err)
+	}
 	summary := reg.InitAll(app)
 	if summary.Failed != 0 {
 		t.Fatalf("InitAll = %+v", summary)
 	}
-	if err := app.AssertNeedsMetExcept(plugin.CapCart); err == nil {
-		t.Fatal("unbound CapCatalogSeed must fail the seed CLI check")
+	if !app.CapabilityDeclaredBy(plugin.CapCatalogSeed, metaldogs.PluginName) {
+		t.Fatal("metaldogs must Need CapCatalogSeed")
 	}
-	boot := &plugin.Bootstrap{
-		Products:     seedBootProducts{},
-		Variants:     seedBootVariants{},
-		Prices:       seedBootPrices{},
-		PriceHistory: seedBootHistory{},
-		Stock:        seedBootStock{},
+	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandCatalogSeed)
+	if !ok || !cmd.RequiresDB || cmd.Plugin != metaldogs.PluginName {
+		t.Fatalf("catalog-seed cmd = %+v, want RequiresDB owned by metaldogs", cmd)
 	}
-	if err := wireCatalogSeedCLI(app, boot); err != nil {
+	if _, bound := app.CatalogSeedPort(); bound {
+		t.Fatal("bindProductPorts must not bind CapCatalogSeed")
+	}
+	if err := app.AssertNeedsMetExcept(plugin.CapCart, plugin.CapCatalogSeed); err != nil {
+		t.Fatalf("worker boot: %v", err)
+	}
+	if err := app.BindCartPort(struct{}{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := app.CatalogSeedPort(); !ok {
-		t.Fatal("CatalogSeedPort unbound")
+	if err := app.AssertNeedsMetExcept(plugin.CapCatalogSeed); err != nil {
+		t.Fatalf("serve boot: %v", err)
 	}
-	if err := app.AssertNeedsMetExcept(plugin.CapCart); err != nil {
-		t.Fatalf("seed CLI check: %v", err)
-	}
-	if err := app.AssertNeedsMet(); err == nil {
-		t.Fatal("CapCart must stay unbound on the seed CLI")
+	if _, bound := app.CatalogSeedPort(); bound {
+		t.Fatal("serve and worker must leave CatalogSeedPort unbound")
 	}
 }
 
-func TestWireCatalogSeedCLI_NilApp(t *testing.T) {
-	if err := wireCatalogSeedCLI(nil, &plugin.Bootstrap{}); err == nil {
-		t.Fatal("expected error for nil app")
+var metalDogsCLISchemaSeq atomic.Uint64
+
+func TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant(t *testing.T) {
+	dsn := useIsolatedCatalogSchema(t)
+	cfg := metalDogsEnabledConfig()
+	log := logger.NewWithWriter(io.Discard, "error")
+	deps := pluginCLIDeps{
+		OpenDB: func(*config.Config) (*sql.DB, error) {
+			return db.Open(dsn)
+		},
+		Bind: bindPluginCLIPorts,
 	}
+	ran, err := runPluginCLICommandWithDeps(cfg, log, func() (*pluginCLIRuntime, error) {
+		return bootstrapPluginCLIRegistry(cfg, log)
+	}, metaldogs.CommandCatalogSeed, []string{"-dir", metalDogsCatalogDir(t)}, deps)
+	if err != nil {
+		t.Fatalf("runPluginCLICommandWithDeps: %v", err)
+	}
+	if !ran {
+		t.Fatal("metaldogs:catalog-seed was not found")
+	}
+
+	dbConn := openDatabaseURL(t, dsn)
+	defer dbConn.Close()
+	var products, variants int
+	if err := dbConn.QueryRow(`SELECT count(*) FROM products WHERE slug = 'mdogs-tee'`).Scan(&products); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbConn.QueryRow(`SELECT count(*) FROM variants WHERE sku = 'MDOGS-TEE-S'`).Scan(&variants); err != nil {
+		t.Fatal(err)
+	}
+	if products != 1 || variants != 1 {
+		t.Fatalf("products=%d variants=%d, want 1 and 1", products, variants)
+	}
+}
+
+func metalDogsEnabledConfig() *config.Config {
+	return &config.Config{
+		Plugins: config.PluginsConfig{
+			Extra: map[string]map[string]string{
+				"metaldogs": {"enabled": "true"},
+			},
+		},
+	}
+}
+
+func metalDogsCatalogDir(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate register_plugins_metaldogs_test.go")
+	}
+	dir := filepath.Join(filepath.Dir(file), "..", "..", "plugins", "metaldogs", "catalog")
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Fatalf("catalog dir %s: %v", dir, err)
+	}
+	return dir
+}
+
+func useIsolatedCatalogSchema(t *testing.T) string {
+	t.Helper()
+	base := os.Getenv("SHOPANDA_TEST_DSN")
+	if base == "" {
+		t.Skip("SHOPANDA_TEST_DSN not set")
+	}
+	schema := fmt.Sprintf("md_cliseed_%d_%d", os.Getpid(), metalDogsCLISchemaSeq.Add(1))
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+	if err := admin.Ping(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+	})
+	isolated := dsnWithSearchPath(t, base, schema)
+	mig := openDatabaseURL(t, isolated)
+	defer mig.Close()
+	var current string
+	if err := mig.QueryRow(`SELECT current_schema()`).Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current != schema {
+		t.Fatalf("current_schema=%q want %q", current, schema)
+	}
+	if _, err := migrate.Run(mig, coreMigrationsDir(t)); err != nil {
+		t.Fatalf("core migrations: %v", err)
+	}
+	return isolated
+}
+
+func openDatabaseURL(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	conn, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Ping(); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func dsnWithSearchPath(t *testing.T, base, schema string) string {
+	t.Helper()
+	if strings.Contains(base, "://") {
+		u, err := url.Parse(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := u.Query()
+		q.Set("search_path", schema)
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+	return strings.TrimSpace(base) + " search_path=" + schema
+}
+
+func coreMigrationsDir(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate register_plugins_metaldogs_test.go")
+	}
+	dir := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "migrations"))
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		t.Fatalf("migrations dir %s: %v", dir, err)
+	}
+	return dir
 }

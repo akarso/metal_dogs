@@ -113,7 +113,7 @@ func TestCatalogSeed_ParentSKUMismatch(t *testing.T) {
 	}
 
 	err = runCatalogSeedErr(t, db, dir)
-	if err == nil || !strings.Contains(err.Error(), "mdogs-tee") || !strings.Contains(err.Error(), "OTHER") || !strings.Contains(err.Error(), "MDOGS-TEE") {
+	if err == nil || !strings.Contains(err.Error(), "mdogs-tee") || !strings.Contains(err.Error(), "parent_sku") || !strings.Contains(err.Error(), "OTHER") || !strings.Contains(err.Error(), "MDOGS-TEE") {
 		t.Fatalf("err = %v", err)
 	}
 

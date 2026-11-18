@@ -88,9 +88,6 @@ func (p *Plugin) runCatalogSeed(ctx cli.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if ctx.DB == nil {
-		return fmt.Errorf("%s: database required", CommandCatalogSeed)
-	}
 	c := ctx.Ctx
 	if c == nil {
 		c = context.Background()
