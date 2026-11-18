@@ -200,7 +200,7 @@ CSV checks are unchanged: draft + configurable in the file, price parsing, valid
 | `cmd/api/cache_cli.go`, `extension_field_cli.go`, `providers.go`, `schedule_cli.go`, `plugin_ports.go`, `wire_services.go` | Upstream (PR-1572) |
 | `configs/config.example.yaml` | Upstream Extra comment (empty env is unset) plus the Metal Dogs `plugins.metaldogs` example |
 | Shopanda guides (DEVELOPER, EXTENSION_POINTS, PRODUCT_SITES) and phase-17 PR notes | Deleted (modify/delete and new PR notes). Stub indexes stay |
-| `cmd/api/cli_plugins.go` | Ours, added after the merge: `metaldogs:catalog-seed` calls `wireCatalogSeedCLI` (`bindProductPorts` + `bindCatalogSeedPort` + `AssertNeedsMetExcept(CapCart)` only) |
+| `cmd/api/cli_plugins.go` | Ours, added after the merge: DB-backed plugin commands call `prepareProductCLI` with the App returned by `bootstrapPluginCLIRegistry`. The Metal Dogs command map (`metaldogs:catalog-seed` → `wireCatalogSeedCLI`) lives in `register_products.go` |
 
 ### Upstream range `ab35e965..7bd34bef` touching files we use
 

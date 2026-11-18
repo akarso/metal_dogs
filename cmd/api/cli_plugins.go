@@ -10,32 +10,30 @@ import (
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
-	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
-// pluginCLIApp is the App passed to InitAll. Catalog seed binds CapCatalogSeed
-// on that same App: Host.CatalogSeed reads it, and help/eval must not open a DB.
-var pluginCLIApp *plugin.App
+// pluginCLIOpen returns the registry and the App passed to InitAll together.
+// Callers that bind ports (catalog seed) must use that App, not a later one.
+type pluginCLIOpen func() (*plugin.Registry, *plugin.App, error)
 
-func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*plugin.Registry, error) {
+func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*plugin.Registry, *plugin.App, error) {
 	registry := plugin.NewRegistry(log)
 	registerPlugins(registry, cfg)
 	app := &plugin.App{
 		Logger: log,
 		Config: cfg,
 	}
-	pluginCLIApp = app
 	preparePermissionRegistry(app)
 	summary := registry.InitAll(app)
 	freezePermissionRegistry(app) // CLI: freeze only (no BindRuntime; avoid multi-App collisions)
 	if err := plugin.InitSummaryError(summary); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return registry, nil
+	return registry, app, nil
 }
 
-func runPluginCLICommand(cfg *config.Config, log logger.Logger, registryFn func() (*plugin.Registry, error), name string, args []string) (bool, error) {
-	registry, err := registryFn()
+func runPluginCLICommand(cfg *config.Config, log logger.Logger, open pluginCLIOpen, name string, args []string) (bool, error) {
+	registry, app, err := open()
 	if err != nil {
 		return false, err
 	}
@@ -61,38 +59,17 @@ func runPluginCLICommand(cfg *config.Config, log logger.Logger, registryFn func(
 		}
 		defer conn.Close()
 		ctx.DB = conn
-		if name == metaldogs.CommandCatalogSeed {
-			boot, err := newPluginBootstrap(conn)
-			if err != nil {
-				return true, err
-			}
-			if err := wireCatalogSeedCLI(pluginCLIApp, boot); err != nil {
-				return true, err
-			}
+		if err := prepareProductCLI(name, app, func() (*plugin.Bootstrap, error) {
+			return newPluginBootstrap(conn)
+		}); err != nil {
+			return true, err
 		}
 	}
 	return true, cmdRegistry.Run(name, ctx, args)
 }
 
-// wireCatalogSeedCLI binds the write port and skips CapCart only, so a missing CapCatalogSeed fails the command.
-func wireCatalogSeedCLI(app *plugin.App, boot *plugin.Bootstrap) error {
-	if app == nil {
-		return fmt.Errorf("catalog seed CLI: plugin app is not initialized")
-	}
-	if err := bindProductPorts(app, boot); err != nil {
-		return err
-	}
-	if err := bindCatalogSeedPort(app, boot); err != nil {
-		return err
-	}
-	if err := app.AssertNeedsMetExcept(plugin.CapCart); err != nil {
-		return fmt.Errorf("plugin capabilities: %w", err)
-	}
-	return nil
-}
-
-func pluginCLIHelpLines(registryFn func() (*plugin.Registry, error)) []string {
-	registry, err := registryFn()
+func pluginCLIHelpLines(open pluginCLIOpen) []string {
+	registry, _, err := open()
 	if err != nil || registry == nil || registry.CLIRegistry() == nil {
 		return nil
 	}
@@ -108,8 +85,8 @@ func pluginCLIHelpLines(registryFn func() (*plugin.Registry, error)) []string {
 	return lines
 }
 
-func appendPluginCLIHelp(registryFn func() (*plugin.Registry, error), base string) string {
-	lines := pluginCLIHelpLines(registryFn)
+func appendPluginCLIHelp(open pluginCLIOpen, base string) string {
+	lines := pluginCLIHelpLines(open)
 	if len(lines) == 0 {
 		return base
 	}

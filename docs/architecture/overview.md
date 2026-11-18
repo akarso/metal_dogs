@@ -195,8 +195,8 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
-| `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin). Catalog seed uses `Host.CatalogSeed()`; `cmd/api/metaldogs_catalog.go` is gone | UPG4-01 / 02 |
-| `cmd/api/cli_plugins.go` | `metaldogs:catalog-seed` calls `bindCatalogSeedPort` and `AssertNeedsMetExcept(CapCart)` only (`TestWireCatalogSeedCLI_BindsSeedAndSkipsOnlyCart`). Serve and worker skip `CapCatalogSeed` (PR-1572) | UPG4-00c |
+| `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin). `prepareProductCLI` maps `metaldogs:catalog-seed` to `wireCatalogSeedCLI` (`bindCatalogSeedPort` + `AssertNeedsMetExcept(CapCart)` only). Catalog seed uses `Host.CatalogSeed()`; `cmd/api/metaldogs_catalog.go` is gone | UPG4-01 / 02 / 00c |
+| `cmd/api/cli_plugins.go` | After a DB-backed plugin command, calls `prepareProductCLI` with the App from `bootstrapPluginCLIRegistry` (no package-global App). Serve and worker skip `CapCatalogSeed` (PR-1572). `TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` | UPG4-00c |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
 | `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Product registration / migrate coverage. Guest GET/HEAD `no-store` comes from `pluginsdk.NoCache()` on each registered `/api/customizer/*` route. Exact `/api/customizer` is not registered ([CR-21](../cr-rounds/CR-21-upg4-pin-7c982b00.md)) | UPG4-01 / 01c |

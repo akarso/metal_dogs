@@ -236,7 +236,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`7bd34bef…` on `upstream/main`; PR-1570–1573 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00c binds catalog seed only on `metaldogs:catalog-seed`.
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`7bd34bef…` on `upstream/main`; PR-1570–1573 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00c binds catalog seed only on `metaldogs:catalog-seed` (`prepareProductCLI` in `register_products.go`).
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
