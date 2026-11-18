@@ -146,6 +146,7 @@ func (s *surface) Cart() (pluginsdk.CartPort, bool) { return s.cart, s.cart != n
 func (s *surface) Catalog() (pluginsdk.CatalogPort, bool) {
 	return s.catalog, s.catalog != nil
 }
+func (s *surface) CatalogSeed() (pluginsdk.CatalogSeedPort, bool) { return nil, false }
 func (s *surface) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
 	s.writeCalls++
 	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)

@@ -172,6 +172,7 @@ func (q quietHost) Cart() (pluginsdk.CartPort, bool) { return q.cart, q.cart != 
 func (q quietHost) Catalog() (pluginsdk.CatalogPort, bool) {
 	return q.catalog, q.catalog != nil
 }
+func (q quietHost) CatalogSeed() (pluginsdk.CatalogSeedPort, bool) { return nil, false }
 func (q quietHost) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
 	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)
 }

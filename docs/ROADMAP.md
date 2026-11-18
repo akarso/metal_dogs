@@ -236,7 +236,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`ab35e965…` on `upstream/main`; PR-1567–1569 merged, Metal Dogs deviations still listed in overview until later UPG4 tickets delete them).
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`ab35e965…` on `upstream/main`; PR-1567–1569 merged, Metal Dogs deviations still listed in overview until later UPG4 tickets delete them). Ticket 02 removed `cmd/api/metaldogs_catalog.go`.
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
@@ -430,7 +430,7 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 - **Goal:** One Shopanda product "Metal Dogs custom tee" with size variants and SKUs, pricing, tax class, and stock policy (ADR-0009). Delivered as a seed/CSV import and documented, not hand-edited in admin.
 - **Tests:** Import script idempotent; feature test reads variants through Shopanda API.
 - **Safe delivery:** Product unpublished/hidden in Shopanda until M3. Draft status and zero stock are independent protections; launch clears both.
-- **Docs:** [ADR-0009](adr/0009-pod-provider-and-catalog-modelling.md) catalog modelling Accepted (fulfilment stays Proposed until P0); plugin README catalog section; [CR-18](cr-rounds/CR-18-e1-catalog.md).
+- **Docs:** [ADR-0009](adr/0009-pod-provider-and-catalog-modelling.md) catalog modelling Accepted (fulfilment stays Proposed until P0); plugin README catalog section; [CR-18](cr-rounds/CR-18-e1-catalog.md). UPG4 ticket 02 runs the same command through `Host.CatalogSeed().Import` ([CR-21](cr-rounds/CR-21-upg4-pin-7c982b00.md)).
 
 #### E2 · Cart line design attach — size M — **DONE** (CR-19, 2026-11-16)
 

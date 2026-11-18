@@ -14,7 +14,6 @@ import (
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
-	"github.com/akarso/shopanda/plugins/metaldogs/catalog"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -26,15 +25,14 @@ const PluginName = "metaldogs"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets       ports.AssetStore
-	uploads      *application.UploadService
-	designs      *application.DesignService
-	generate     *application.GenerateService
-	worker       *application.GenerateWorker
-	catalogRepos func(*sql.DB) (catalog.Repos, error)
-	host         cartSurface
-	pendingMu    sync.Mutex
-	pendingSeq   uint64
+	assets     ports.AssetStore
+	uploads    *application.UploadService
+	designs    *application.DesignService
+	generate   *application.GenerateService
+	worker     *application.GenerateWorker
+	host       cartSurface
+	pendingMu  sync.Mutex
+	pendingSeq uint64
 	// One slot per AddItem goroutine: cart.validate does not receive the Place context.
 	pending map[uint64]pendingCall
 }
@@ -44,19 +42,15 @@ type Plugin struct {
 type cartSurface interface {
 	Cart() (pluginsdk.CartPort, bool)
 	Catalog() (pluginsdk.CatalogPort, bool)
+	CatalogSeed() (pluginsdk.CatalogSeedPort, bool)
 	WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context
 	Logger() pluginsdk.Logger
 }
 
-// Needs declares CapCart and CapCatalog. Cart is bound on serve after Init.
+// Needs declares CapCart, CapCatalog, and CapCatalogSeed.
+// Cart is bound on serve after Init. Catalog seed is bound with the other product ports.
 func (p *Plugin) Needs() []plugin.Capability {
-	return []plugin.Capability{plugin.CapCart, plugin.CapCatalog}
-}
-
-// UseCatalogRepos supplies catalog repositories for metaldogs:catalog-seed.
-// The plugin cannot import infrastructure adapters (PR-1017); the composition root builds them.
-func (p *Plugin) UseCatalogRepos(open func(*sql.DB) (catalog.Repos, error)) {
-	p.catalogRepos = open
+	return []plugin.Capability{plugin.CapCart, plugin.CapCatalog, plugin.CapCatalogSeed}
 }
 
 // New returns the Metal Dogs plugin.
@@ -100,6 +94,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 	}
 	h.Require(pluginsdk.CapCart)
 	h.Require(pluginsdk.CapCatalog)
+	h.Require(pluginsdk.CapCatalogSeed)
 	p.host = h
 
 	providerName := settings.Provider

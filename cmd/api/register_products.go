@@ -19,3 +19,7 @@ func registerProductPlugins(registry *plugin.Registry, cfg *config.Config) {
 		registerMetalDogs(registry)
 	}
 }
+
+func registerMetalDogs(registry *plugin.Registry) {
+	registry.Register(metaldogs.New())
+}

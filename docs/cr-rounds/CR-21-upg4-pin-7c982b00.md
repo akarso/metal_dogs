@@ -115,7 +115,7 @@ Nested YAML `generation:` loads the same explicit fields as the old typed `Metal
 
 ### Upstream range `7c982b00..ab35e965` touching files we use
 
-- `CatalogPriceSeed.Update` and `EnsurePrice` → `(written bool, err)` (`pkg/pluginsdk/ports.go`, `port_adapt.go`, `cmd/api/plugin_ports.go`). Create-only remains the default. Attributes stay create-only. Seed CLI is still `cmd/api/metaldogs_catalog.go` (ticket 02).
+- `CatalogPriceSeed.Update` and `EnsurePrice` → `(written bool, err)` (`pkg/pluginsdk/ports.go`, `port_adapt.go`, `cmd/api/plugin_ports.go`). Create-only remains the default. Attributes stay create-only. At this bump the seed CLI was still `cmd/api/metaldogs_catalog.go` (moved in ticket 02).
 - Price tx: bridged seed `WithTx` without `*sql.Tx` fails closed (`port_adapt.go`).
 - NoCache: static path before `{`; refuse empty, single-segment-after-cut, and roots `/` and `/api`. Static one-segment mounts are allowed. `GET /api/customizer` still registered at this pin bump (removed in ticket 01c).
 - `Config.Extra`: nested YAML → dotted keys; `.` and `_` are aliases; conflict fails closed; lists error. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` still arrives as `generation_*` and is mirrored to `generation.*`.
@@ -154,4 +154,25 @@ Decisions (do not re-litigate):
 - Cooldown 0 → 30 is an intentional behaviour change. YAML `generation:` with `provider` / `max_retries` and no `cooldown_seconds` yields cooldown 30 (omitted counts stay 3). The old typed struct zeroed an omitted `cooldown_seconds` to 0 when the map was present, because `UnmarshalYAML` replaced defaults. That wipe is not restored. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
 - Bare `/api/customizer` is not an endpoint. The route is removed entirely (`plugins/metaldogs/httpapi/notfound.go` deleted). No NoCache workaround route remains. The exact path is a plain 404 and may be cached. `/api` stays refused.
 - Every registered `/api/customizer/*` route uses `pluginsdk.NoCache()`. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`. `GET /api/customizer/enabled` denylists `/api/customizer/enabled`. `GET /api/customizer/designs/{id}` denylists `/api/customizer/designs` (cut at `{`). Test `TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator` lists every registered customizer route and fails if one lacks NoCache.
+
+## Ticket 02 — seed on CatalogSeedPort
+
+Verified on this tree before the command moved (no core workaround):
+
+- (a) Empty `Status` on an existing `active` product does not error. `catalogSeedProductMatch` checks status only when the seed sets it. `TestCatalogSeedPort_EnsureProduct_EmptyStatusOnActiveIsNoOp` passed.
+- (b) Create with empty `Status` stays `draft` (`NewProduct`). `Type` `configurable` is valid (`catalog.TypeConfigurable`) and is assigned on the same path as the tested `virtual` type (`TestCatalogSeedPort_EnsureProduct_StatusTypeAttributes`).
+- (c) Variant attribute `size` is stored on create (`TestCatalogSeedPort_EnsureVariant_Attributes`, `TestCatalogSeedPort_Import_StatusTypeAttributes`).
+- (d) `CatalogPriceSeed.Update` writes a price-history row when the amount changes; the same amount is a no-op (`TestCatalogSeedPort_EnsurePrice_CreateOnlyAndUpdate`, `TestCatalogSeedPort_Import_PriceUpdate`).
+
+Attributes stay create-only. A missing `parent_sku` on an existing product is not backfilled. Local databases are recreated, so that backfill is not required.
+
+`metaldogs:catalog-seed` declares `CapCatalogSeed` and calls `Import` once per run. `cmd/api/metaldogs_catalog.go` is deleted. The plugin does not import `internal/infrastructure/postgres`.
+
+Behaviour that changed because the port does not offer the old writes:
+
+- A missing or different `parent_sku` fails the batch and rolls it back. The error names the slug and `parent_sku`; it does not repeat both SKU strings.
+- `SetStock` runs for every stock row. An equal quantity stays equal; `stock.updated_at` moves.
+- Product, variant, price, and stock share one transaction.
+
+CSV checks are unchanged: draft + configurable in the file, price parsing, validate-before-write, a bad file writes nothing. A changed price updates with history. A second run on an `active` product does not change status.
 

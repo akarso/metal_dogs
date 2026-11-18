@@ -160,7 +160,6 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 ```text
 /                         Shopanda fork, pinned by commit (ADR-0001, UPSTREAM_PIN.md)
 ├── cmd/api/register_products.go  registerMetalDogs when plugins.metaldogs.enabled  # UPG4-01
-├── cmd/api/metaldogs_catalog.go  core catalog repos for metaldogs:catalog-seed  # E1
 ├── plugins/metaldogs/            Go plugin, hexagonal per module (see above)
 │   ├── customizer/
 │   ├── generation/
@@ -196,8 +195,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
-| `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin) | UPG4-01 |
-| `cmd/api/metaldogs_catalog.go` | Builds core product, variant, price, price-history and stock repos for `metaldogs:catalog-seed`. The plugin package does not import infrastructure adapters | E1 |
+| `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin). Catalog seed uses `Host.CatalogSeed()`; `cmd/api/metaldogs_catalog.go` is gone | UPG4-01 / 02 |
 | `internal/platform/config/config.go` | upstream still types metaldogs; remove when Shopanda drops it. Typed `Plugins.MetalDogs` stays removed so `plugins.metaldogs` remains `Config.Extra` | UPG4-01 / 01c |
 | `internal/platform/config/plugins_extra.go` | upstream still types metaldogs; remove when Shopanda drops it. `metaldogs` stays out of `typedPluginYAMLKeys` (the pin lists it). Nested `generation:` uses the pin's dotted flatten | UPG4-01 / 00b / 01c |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
@@ -223,6 +221,6 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
 | `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
 
-**Pin absorb honesty:** Pin is `ab35e965` (PR-1567–1569 on top of `7c982b00`). Ticket 00b kept Metal Dogs deviations where they overlap upstream; later UPG4 tickets delete them. `pkg/pluginsdk` matches the pin, including `CatalogPriceSeed.Update` and NoCache prefix rules. `internal/platform/plugin/public_routes.go` matches the pin (NoCache cuts at `{` and refuses `/` and `/api`). F3 files `providers.go` and `sync_runtime.go` still differ. C4 still carries the generate claim fence (`postgres.JobQueue.SetOnRequeued`, outside this allowlist) and the attempts delivery fence. `Admin.RequeueLease` is the lease reclaim. Postgres `Requeue` ignores `RequeueOption` and still refuses fenced job types outside the re-pend transaction. E1 still adds `cmd/api/metaldogs_catalog.go`. Add-to-cart still uses `pluginsdk.Host.Cart()` and `Host.Catalog()` ([CR-20](../cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `DiscardEmptyGuestCart` and `ClassifyProductSlug` exist on the pin and are not used yet. Treat the rows above as the conflict allowlist.
+**Pin absorb honesty:** Pin is `ab35e965` (PR-1567–1569 on top of `7c982b00`). Ticket 00b kept Metal Dogs deviations where they overlap upstream; later UPG4 tickets delete them. `pkg/pluginsdk` matches the pin, including `CatalogPriceSeed.Update` and NoCache prefix rules. `internal/platform/plugin/public_routes.go` matches the pin (NoCache cuts at `{` and refuses `/` and `/api`). F3 files `providers.go` and `sync_runtime.go` still differ. C4 still carries the generate claim fence (`postgres.JobQueue.SetOnRequeued`, outside this allowlist) and the attempts delivery fence. `Admin.RequeueLease` is the lease reclaim. Postgres `Requeue` ignores `RequeueOption` and still refuses fenced job types outside the re-pend transaction. E1 catalog seed uses `Host.CatalogSeed().Import` (`cmd/api/metaldogs_catalog.go` removed in UPG4 ticket 02). Add-to-cart still uses `pluginsdk.Host.Cart()` and `Host.Catalog()` ([CR-20](../cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `DiscardEmptyGuestCart` and `ClassifyProductSlug` exist on the pin and are not used yet. Treat the rows above as the conflict allowlist.
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface. G0 adds offline `metaldogs:eval` (fake provider).
