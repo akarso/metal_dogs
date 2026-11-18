@@ -4,7 +4,7 @@
 - Date: 2026-11-17
 - Slice: UPG4 ticket 00
 - Base: `3593795d` (`origin/main` after PR #40)
-- Pin: `7c982b00e40d4389ad7e5f211831101963272154` (`upstream/main`, PR #606)
+- Pin: `7c982b00…` (`upstream/main`, PR #606)
 
 ## Conflict resolution
 
@@ -74,9 +74,50 @@ Env names (working):
 
 ## Shopanda gaps
 
-- `pathPrefixFromPattern` (`internal/platform/plugin/public_routes.go`) should cut the path at the first `{`. Until that ships, the dummy `GET /api/customizer` route stays. Remove it once the prefix is `/api/customizer` without that route.
-- `yamlMapToStringMap` (`internal/platform/config/plugins_extra.go`) stringifies a nested map (`map[...]`) instead of flattening it. Product code expands only `plugins.metaldogs.generation` into Extra keys `generation.provider`, `generation.max_retries`, `generation.max_attempts_per_design`, and `generation.cooldown_seconds`. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` still arrives as `generation_*`. Drop `expandMetalDogsGeneration` when upstream flattens every Extra slug.
+Closed on pin `ab35e965` (ticket 00b). Record of what ticket 01 was waiting on:
+
+- `pathPrefixFromPattern` now cuts at the first `{`. `GET /api/customizer` stays: param routes denylist `/api/customizer/designs`, not `/api/customizer`, and `/api` alone is refused.
+- `yamlMapToStringMap` flattens nested maps to dotted keys and stores `.` / `_` aliases. `expandMetalDogsGeneration` is removed. Lists fail Load.
 
 ## Ticket 01 config criterion
 
-Nested YAML `generation:` loads the same explicit fields as the old typed `MetalDogsGenerationConfig`. No PO decision rejects that map. Omitted keys inside the map use the documented defaults (fake / 3 / 3 / 30). The old struct zeroed an omitted `cooldown_seconds` to 0 when `plugins:` was present, because `UnmarshalYAML` replaced defaults; that wipe is not restored. A non-scalar under `generation:` fails Load. A non-integer scalar fails Init.
+Nested YAML `generation:` loads the same explicit fields as the old typed `MetalDogsGenerationConfig`. No PO decision rejects that map. Omitted keys inside the map use the documented defaults (fake / 3 / 3 / 30). The old struct zeroed an omitted `cooldown_seconds` to 0 when `plugins:` was present, because `UnmarshalYAML` replaced defaults; that wipe is not restored. A non-integer scalar fails Init. A list under `generation:` fails Load. A further nested map flattens (the old expander rejected any non-scalar).
+
+## Ticket 00b — pin `ab35e965`
+
+- Date: 2026-11-18
+- Pin: `ab35e965e23463126e5ad9dc85e306e13e485550` (`upstream/main`, PR #611)
+- Previous pin on this branch: `7c982b00…`
+
+### Conflict resolution
+
+`pkg/pluginsdk/*` did not conflict (tree matched `7c982b00…`); the merge took the pin. `internal/platform/plugin/public_routes.go` likewise.
+
+| File | Kept |
+| --- | --- |
+| `PLUGINS.md`, `RUNBOOK.md`, `README.md`, `configs/config.example.yaml`, `cmd/api/main.go`, `cmd/api/jobs_cli.go` | Metal Dogs. `jobs_cli_test.go` auto-merged a `parseJobsRequeueArgs` test; restored from HEAD because `jobs_cli.go` has no `jobs:requeue` |
+| `cmd/api/bind_queue_test.go` and other queue test doubles | Ours, then `Requeue` gained `...jobs.RequeueOption` so they still implement `jobs.Queue` |
+| `internal/domain/jobs/job.go`, `worker.go`, `worker_test.go` | Ours (`ErrSkipOutcome` text `job: skip outcome`, `DefaultRequeueMinAge` = 1m, `DefaultStaleProcessingLease`). Added pin types: `StatusReclaiming`, `RequeueOption`, `RequeueHookable`, `ErrRequeueTooFresh` / `WrongAttempt` / `NotProcessing` / `InProgress`. `Queue.Requeue` is variadic |
+| `internal/infrastructure/postgres/job_queue.go` (+ test) | Ours. `Requeue` accepts and ignores options; min-age stays `DefaultRequeueMinAge`; fenced types still refused outside the re-pend transaction |
+| `internal/platform/plugin/providers.go` (+ test) | Ours (`BoundQueue` fallback, no `queueChainContains`) |
+| `internal/platform/plugin/queue_hooks.go` (+ test) | Ours, plus the pin hook signature `(ctx, id, attempt) error`. Hook still runs after commit; error and panic do not fail `Requeue` |
+| `internal/platform/config/config.go` | Ours (no typed `MetalDogs`). `applyEnv` returns the Extra env error |
+| `internal/platform/config/plugins_extra.go` | Pin flatten / alias conflict rules. `metaldogs` stays out of `typedPluginYAMLKeys` (pin lists it; our typed field is already gone, so keeping the key would drop YAML and env). `expandMetalDogsGeneration` removed |
+| `internal/application/integration` sync tests, `scheduler_test.go` | Ours, variadic `Requeue` |
+| `.github/workflows/ci.yml` | Auto-merge: Metal Dogs jobs kept; integration job gained upstream `redis5` + `SHOPANDA_TEST_REDIS_URL` |
+| Shopanda guides `EXTENSION_POINTS.md`, `PRODUCT_SITES.md`, `docs/phase-17-product-packaging/**` | Deleted (modify/delete and new PR notes). Stub indexes stay |
+
+### Upstream range `7c982b00..ab35e965` touching files we use
+
+- `CatalogPriceSeed.Update` and `EnsurePrice` → `(written bool, err)` (`pkg/pluginsdk/ports.go`, `port_adapt.go`, `cmd/api/plugin_ports.go`). Create-only remains the default. Attributes stay create-only. Seed CLI is still `cmd/api/metaldogs_catalog.go` (ticket 02).
+- Price tx: bridged seed `WithTx` without `*sql.Tx` fails closed (`port_adapt.go`).
+- NoCache: static path before `{`; refuse empty, single-segment-after-cut, and roots `/` and `/api`. Static one-segment mounts are allowed. `GET /api/customizer` still registers.
+- `Config.Extra`: nested YAML → dotted keys; `.` and `_` are aliases; conflict fails closed; lists error. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` still arrives as `generation_*` and is mirrored to `generation.*`.
+- `Host.OnRequeued` is `(ctx, jobID, attempt) error`. `pluginsdk.RequeueTx` reads the reclaim `*sql.Tx`. Our notify wrapper does not use it yet.
+- Redis job-queue reclaim (`25158fbd`) landed in `internal/infrastructure/redis`. Metal Dogs generate fence stays on Postgres.
+- `jobs:requeue --min-age` on the pin was not taken (`jobs_cli.go` stayed ours).
+
+### Compile adaptations that are not behavior changes
+
+- Every `jobs.Queue` stub we kept gained the variadic `Requeue` parameter.
+- Postgres `Requeue` ignores `WithRequeueMinAge`. Pin default min-age is 5m; this queue still uses 1m.

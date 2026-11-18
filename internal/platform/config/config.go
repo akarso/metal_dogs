@@ -774,7 +774,9 @@ func Load(path string) (*LoadResult, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 
-	applyEnv(&cfg)
+	if err := applyEnv(&cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
 
 	if err := normalizePublicBaseURL(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -982,7 +984,7 @@ func normalizePublicBaseURL(cfg *Config) error {
 }
 
 // applyEnv overlays environment variables with SHOPANDA_ prefix.
-func applyEnv(cfg *Config) {
+func applyEnv(cfg *Config) error {
 	if v := os.Getenv("SHOPANDA_SERVER_HOST"); v != "" {
 		cfg.Server.Host = v
 	}
@@ -1323,7 +1325,9 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("SHOPANDA_PLUGINS_B2B_LICENSE_KEY"); v != "" {
 		cfg.Plugins.B2B.LicenseKey = v
 	}
-	applyPluginsExtraEnv(cfg)
+	if err := applyPluginsExtraEnv(cfg); err != nil {
+		return err
+	}
 	if v := os.Getenv("SHOPANDA_FRONTEND_ENABLED"); v != "" {
 		cfg.Frontend.Enabled = parseEnvBool(v)
 	}
@@ -1459,6 +1463,7 @@ func applyEnv(cfg *Config) {
 			cfg.StoreCredit.MaxIssueAmount = n
 		}
 	}
+	return nil
 }
 
 func redactSecret(value string) string {

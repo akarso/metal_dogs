@@ -48,15 +48,17 @@ func (q *readerQueueFull) Enqueue(context.Context, jobs.Job) error        { retu
 func (q *readerQueueFull) Dequeue(context.Context) (*jobs.Job, error)     { return nil, nil }
 func (q *readerQueueFull) Complete(context.Context, string, int) error    { return nil }
 func (q *readerQueueFull) Fail(context.Context, string, int, error) error { return nil }
-func (q *readerQueueFull) Requeue(context.Context, string, int) error     { return nil }
+func (q *readerQueueFull) Requeue(context.Context, string, int, ...jobs.RequeueOption) error {
+	return nil
+}
 
 type plainQueue struct{}
 
-func (plainQueue) Enqueue(context.Context, jobs.Job) error        { return nil }
-func (plainQueue) Dequeue(context.Context) (*jobs.Job, error)     { return nil, nil }
-func (plainQueue) Complete(context.Context, string, int) error    { return nil }
-func (plainQueue) Fail(context.Context, string, int, error) error { return nil }
-func (plainQueue) Requeue(context.Context, string, int) error     { return nil }
+func (plainQueue) Enqueue(context.Context, jobs.Job) error                           { return nil }
+func (plainQueue) Dequeue(context.Context) (*jobs.Job, error)                        { return nil, nil }
+func (plainQueue) Complete(context.Context, string, int) error                       { return nil }
+func (plainQueue) Fail(context.Context, string, int, error) error                    { return nil }
+func (plainQueue) Requeue(context.Context, string, int, ...jobs.RequeueOption) error { return nil }
 
 func withObsPing(app *plugin.App) {
 	_ = app.Integration("metaldogs").RegisterSyncJob(extapi.SyncJob{

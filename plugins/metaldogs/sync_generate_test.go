@@ -90,7 +90,9 @@ func (q *queueWithAdmin) Complete(context.Context, string, int) error { return n
 func (q *queueWithAdmin) Fail(context.Context, string, int, error) error {
 	return nil
 }
-func (q *queueWithAdmin) Requeue(context.Context, string, int) error { return nil }
+func (q *queueWithAdmin) Requeue(context.Context, string, int, ...jobs.RequeueOption) error {
+	return nil
+}
 
 func TestResolveGenerateEnqueueConflict_LiveClaimNoOp(t *testing.T) {
 	t.Parallel()

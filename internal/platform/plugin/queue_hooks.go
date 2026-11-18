@@ -16,10 +16,10 @@ import (
 // (CLI retry/cancel/requeue share the bound instance).
 type QueueBoundHook func(jobs.Queue) jobs.Queue
 
-// RequeuedHook is invoked after Queue.Requeue succeeds (stale processing
-// reclaim). Not called for Admin.Retry (failed → pending). Hooks run with
-// panic recovery so a bad callback cannot skip the caller's audit path.
-type RequeuedHook func(ctx context.Context, jobID string)
+// RequeuedHook matches pluginsdk.Host.OnRequeued. This wrapper still calls it
+// after Requeue has committed and ignores a hook error or panic: the row is
+// already pending. Ticket 03 moves the hook under the reclaim lock.
+type RequeuedHook func(ctx context.Context, jobID string, attempt int) error
 
 // OnQueueBound registers a wrap hook applied in resolveAndBindJobQueue.
 // Safe to call during plugin Init (sequential). Registrations after bind
@@ -212,11 +212,11 @@ func (q *requeueNotifyQueue) Fail(ctx context.Context, id string, attempt int, j
 	return q.inner.Fail(ctx, id, attempt, jobErr)
 }
 
-func (q *requeueNotifyQueue) Requeue(ctx context.Context, id string, attempt int) error {
+func (q *requeueNotifyQueue) Requeue(ctx context.Context, id string, attempt int, opts ...jobs.RequeueOption) error {
 	if q == nil || q.inner == nil {
 		return fmt.Errorf("plugin: requeue: queue not configured")
 	}
-	if err := q.inner.Requeue(ctx, id, attempt); err != nil {
+	if err := q.inner.Requeue(ctx, id, attempt, opts...); err != nil {
 		return err
 	}
 	for _, h := range q.hooks {
@@ -235,7 +235,7 @@ func (q *requeueNotifyQueue) Requeue(ctx context.Context, id string, attempt int
 					}
 				}
 			}()
-			hook(ctx, id)
+			_ = hook(ctx, id, attempt)
 		}(h)
 	}
 	return nil

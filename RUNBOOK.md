@@ -23,9 +23,9 @@ Govuln exceptions for this tree: [`docs/GOVULN_BASELINE.md`](docs/GOVULN_BASELIN
 
 Full Shopanda operator runbook and guides are **not** vendored in this fork. Read them at the pinned upstream commit:
 
-- Runbook: https://github.com/akarso/shopanda/blob/7c982b00e40d4389ad7e5f211831101963272154/RUNBOOK.md
-- Guides index: https://github.com/akarso/shopanda/tree/7c982b00e40d4389ad7e5f211831101963272154/docs/guides
-- Deployment: https://github.com/akarso/shopanda/blob/7c982b00e40d4389ad7e5f211831101963272154/docs/guides/DEPLOYMENT.md
-- Developer: https://github.com/akarso/shopanda/blob/7c982b00e40d4389ad7e5f211831101963272154/docs/guides/DEVELOPER.md
+- Runbook: https://github.com/akarso/shopanda/blob/ab35e965e23463126e5ad9dc85e306e13e485550/RUNBOOK.md
+- Guides index: https://github.com/akarso/shopanda/tree/ab35e965e23463126e5ad9dc85e306e13e485550/docs/guides
+- Deployment: https://github.com/akarso/shopanda/blob/ab35e965e23463126e5ad9dc85e306e13e485550/docs/guides/DEPLOYMENT.md
+- Developer: https://github.com/akarso/shopanda/blob/ab35e965e23463126e5ad9dc85e306e13e485550/docs/guides/DEVELOPER.md
 
 Pin record: [`docs/UPSTREAM_PIN.md`](docs/UPSTREAM_PIN.md).

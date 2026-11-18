@@ -19,6 +19,9 @@ const (
 	StatusProcessing Status = "processing"
 	StatusDone       Status = "done"
 	StatusFailed     Status = "failed"
+	// StatusReclaiming is a Redis intermediate during RequeueWithBeforeCommit.
+	// Dequeue ignores it. Postgres keeps the row processing under FOR UPDATE.
+	StatusReclaiming Status = "reclaiming"
 	// StatusCancelled is a terminal state reached only via an admin-triggered
 	// Cancel (see jobs.Admin) on a still-pending job — never set by the
 	// worker itself. A processing job cannot be cancelled (no in-flight
@@ -66,14 +69,67 @@ var ErrOutcomeNotApplied = errors.New("jobs: outcome not applied")
 // queryable processing row to reclaim.
 var ErrRequeueUnsupported = errors.New("jobs: requeue unsupported for this queue driver")
 
-// ErrRequeueConflict means Requeue matched zero rows (wrong attempt, not
-// processing, or not yet past DefaultRequeueMinAge).
+// ErrRequeueConflict is a generic reclaim miss. Prefer the more specific
+// errors below when the backend can distinguish the predicate.
 var ErrRequeueConflict = errors.New("jobs: requeue conflict")
 
+// ErrRequeueTooFresh means the processing claim is younger than the caller min-age.
+var ErrRequeueTooFresh = errors.New("jobs: requeue claim too fresh")
+
+// ErrRequeueWrongAttempt means attempts did not match the live claim.
+var ErrRequeueWrongAttempt = errors.New("jobs: requeue wrong attempt")
+
+// ErrRequeueNotProcessing means the row is missing or not status=processing.
+var ErrRequeueNotProcessing = errors.New("jobs: requeue not processing")
+
+// ErrRequeueInProgress means another Requeue already holds reclaiming.
+var ErrRequeueInProgress = errors.New("jobs: requeue already in progress")
+
 // DefaultRequeueMinAge is how long a processing row must sit before
-// Requeue may reclaim it. Protects a live handler whose Complete has not
-// landed yet from being set back to pending by jobs:requeue / a sweeper.
+// Requeue may reclaim it on the Metal Dogs postgres queue. Upstream's
+// pin default is 5m; this tree keeps 1m until ticket 03 replaces Requeue.
 const DefaultRequeueMinAge = time.Minute
+
+// MinRequeueMinAge is the lowest WithRequeueMinAge value backends honor.
+const MinRequeueMinAge = time.Second
+
+// RequeueOption configures Queue.Requeue.
+type RequeueOption func(*requeueConfig)
+
+type requeueConfig struct {
+	MinAge time.Duration
+}
+
+// WithRequeueMinAge sets how old a processing claim must be before reclaim.
+// Values <= 0 fall back to DefaultRequeueMinAge.
+func WithRequeueMinAge(d time.Duration) RequeueOption {
+	return func(c *requeueConfig) { c.MinAge = d }
+}
+
+// ApplyRequeueOptions resolves min-age for backends. Values <= 0 or below
+// MinRequeueMinAge fall back to DefaultRequeueMinAge.
+func ApplyRequeueOptions(opts []RequeueOption) time.Duration {
+	cfg := requeueConfig{MinAge: DefaultRequeueMinAge}
+	for _, o := range opts {
+		if o != nil {
+			o(&cfg)
+		}
+	}
+	if cfg.MinAge < MinRequeueMinAge {
+		return DefaultRequeueMinAge
+	}
+	return cfg.MinAge
+}
+
+// RequeueBeforeCommit runs after reclaim predicates pass and before the
+// job becomes dequeueable. Return non-nil to abort.
+type RequeueBeforeCommit func(ctx context.Context, jobID string, attempt int) error
+
+// RequeueHookable is implemented by backends that run a before-commit
+// callback under the same lock as the pending update.
+type RequeueHookable interface {
+	RequeueWithBeforeCommit(ctx context.Context, id string, attempt int, before RequeueBeforeCommit, opts ...RequeueOption) error
+}
 
 // Queue is the port for job queue backends.
 type Queue interface {
@@ -98,7 +154,7 @@ type Queue interface {
 	// attempts. attempt must match the live claim and the row must be
 	// older than DefaultRequeueMinAge. Lease reclaim stays on Admin
 	// (RequeueLease): one type cannot implement both signatures.
-	Requeue(ctx context.Context, id string, attempt int) error
+	Requeue(ctx context.Context, id string, attempt int, opts ...RequeueOption) error
 }
 
 // NewJob creates a Job with sensible defaults.

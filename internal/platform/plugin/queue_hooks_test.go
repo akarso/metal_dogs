@@ -15,7 +15,7 @@ type hookQueue struct {
 	requeueErr error
 }
 
-func (q *hookQueue) Requeue(_ context.Context, id string, _ int) error {
+func (q *hookQueue) Requeue(_ context.Context, id string, _ int, _ ...jobs.RequeueOption) error {
 	if q.requeueErr != nil {
 		return q.requeueErr
 	}
@@ -51,8 +51,9 @@ func TestApp_WrapRequeueNotify_FiresOnRequeued(t *testing.T) {
 	app := &plugin.App{}
 	inner := &hookQueue{}
 	var seen []string
-	app.OnRequeued(func(_ context.Context, jobID string) {
+	app.OnRequeued(func(_ context.Context, jobID string, _ int) error {
 		seen = append(seen, jobID)
+		return nil
 	})
 	q := app.WrapRequeueNotify(inner)
 	if err := q.Requeue(context.Background(), "job-1", 1); err != nil {
@@ -71,7 +72,7 @@ func TestApp_WrapRequeueNotify_QuietOnError(t *testing.T) {
 	inner := &hookQueue{}
 	inner.requeueErr = jobs.ErrRequeueConflict
 	called := false
-	app.OnRequeued(func(context.Context, string) { called = true })
+	app.OnRequeued(func(context.Context, string, int) error { called = true; return nil })
 	q := app.WrapRequeueNotify(inner)
 	if err := q.Requeue(context.Background(), "job-1", 1); err == nil {
 		t.Fatal("expected error")
@@ -84,7 +85,7 @@ func TestApp_WrapRequeueNotify_QuietOnError(t *testing.T) {
 func TestApp_WrapRequeueNotify_RecoversHookPanic(t *testing.T) {
 	app := &plugin.App{}
 	inner := &hookQueue{}
-	app.OnRequeued(func(context.Context, string) { panic("boom") })
+	app.OnRequeued(func(context.Context, string, int) error { panic("boom") })
 	q := app.WrapRequeueNotify(inner)
 	if err := q.Requeue(context.Background(), "job-1", 1); err != nil {
 		t.Fatalf("Requeue must still succeed after hook panic: %v", err)

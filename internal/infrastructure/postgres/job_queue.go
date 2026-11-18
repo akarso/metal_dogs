@@ -433,7 +433,8 @@ func (q *JobQueue) Retry(ctx context.Context, id string) error {
 // Requeue moves a processing job back to pending when attempt matches and the
 // row is older than jobs.DefaultRequeueMinAge. Types that must run OnRequeued
 // are refused: this update is outside the re-pend transaction (UPG4 ticket 03).
-func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int) error {
+// opts are ignored so WithRequeueMinAge cannot shorten that age before ticket 03.
+func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int, _ ...jobs.RequeueOption) error {
 	var jobType string
 	err := q.db.QueryRowContext(ctx, `SELECT type FROM jobs WHERE id = $1`, id).Scan(&jobType)
 	if errors.Is(err, sql.ErrNoRows) {

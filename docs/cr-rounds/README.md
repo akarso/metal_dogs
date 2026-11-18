@@ -72,4 +72,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-18 | E1 catalog product and variants | M3 → E1 | [`CR-18-e1-catalog.md`](CR-18-e1-catalog.md) |
 | CR-19 | E2 cart line design attach | M3 → E2 | [`CR-19-e2-cart-design-attach.md`](CR-19-e2-cart-design-attach.md) |
 | CR-20 | MIG1 cart path on pluginsdk | M3 cart SDK | [`CR-20-mig1-cart-pluginsdk.md`](CR-20-mig1-cart-pluginsdk.md) |
-| CR-21 | UPG4 pin `7c982b00` (ticket 00; deviations kept) | M3 pin | [`CR-21-upg4-pin-7c982b00.md`](CR-21-upg4-pin-7c982b00.md) |
+| CR-21 | UPG4 pin `ab35e965` (tickets 00 and 00b; deviations kept) | M3 pin | [`CR-21-upg4-pin-7c982b00.md`](CR-21-upg4-pin-7c982b00.md) |
