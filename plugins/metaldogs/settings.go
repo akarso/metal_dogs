@@ -86,8 +86,7 @@ func metalDogsKey(key string) string {
 	return "plugins." + metalDogsSlug + "." + key
 }
 
-// Env writes the all-underscore key. Nested YAML also leaves a mixed key
-// (generation.max_retries) that setPluginExtraKey does not overwrite.
+// Env does not overwrite mixed YAML keys (generation.max_retries); see CR-21 Shopanda gaps.
 func preferUnderscore(get func(string) string, dotted, underscore string) string {
 	if v := get(metalDogsKey(underscore)); strings.TrimSpace(v) != "" {
 		return v

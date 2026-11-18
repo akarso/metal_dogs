@@ -145,6 +145,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 		}
 	}
 
+	if err := mountCustomizerRoute(h, "GET /api/customizer", httpapi.NotFound()); err != nil {
+		return fmt.Errorf("metaldogs plugin: customizer route: %w", err)
+	}
 	if err := mountCustomizerRoute(h, "GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}

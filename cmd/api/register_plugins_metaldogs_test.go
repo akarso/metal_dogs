@@ -164,10 +164,7 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	for _, r := range routes {
 		patterns[r.Pattern] = true
 	}
-	if patterns["GET /api/customizer"] {
-		t.Fatal("dummy GET /api/customizer route still registered")
-	}
-	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
+	if !patterns["GET /api/customizer"] || !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
 		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
 		!patterns["POST /api/customizer/uploads"] ||
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
@@ -210,22 +207,54 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	}
 
 	prefixes := plugin.NoCachePathPrefixes(app.PublicRoutes())
+	hasCustomizer := false
 	for _, prefix := range prefixes {
-		if prefix == "/api" || prefix == "/api/customizer" {
-			t.Fatalf("NoCachePathPrefixes = %#v, want child prefixes only", prefixes)
+		if prefix == "/api" {
+			t.Fatalf("NoCachePathPrefixes = %#v, refuse /api", prefixes)
 		}
+		if prefix == "/api/customizer" {
+			hasCustomizer = true
+		}
+	}
+	if !hasCustomizer {
+		t.Fatalf("NoCachePathPrefixes = %#v, want /api/customizer", prefixes)
 	}
 	mw := shared.CacheControlMiddleware(prefixes)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		for _, path := range []string{"/api/customizer/enabled", "/api/customizer/designs/design-1"} {
+		for _, path := range []string{"/api/customizer", "/api/customizer/enabled", "/api/customizer/designs/design-1"} {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 				t.Fatalf("%s %s Cache-Control = %q, want no-store (prefixes %#v)", method, path, got, prefixes)
 			}
+		}
+	}
+	var root plugin.PublicRoute
+	for _, r := range routes {
+		if r.Pattern == "GET /api/customizer" {
+			root = r
+		}
+	}
+	rootMux := http.NewServeMux()
+	rootMux.Handle(root.Pattern, root.Handler)
+	rootH := mw(rootMux)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		rec := httptest.NewRecorder()
+		rootH.ServeHTTP(rec, httptest.NewRequest(method, "/api/customizer", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s /api/customizer status = %d, want 404", method, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s /api/customizer Cache-Control = %q, want no-store", method, got)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Fatalf("%s /api/customizer Content-Type = %q, want application/json", method, ct)
+		}
+		if method == http.MethodGet && !strings.Contains(rec.Body.String(), `"error":"not_found"`) {
+			t.Fatalf("GET /api/customizer body = %q, want JSON not_found", rec.Body.String())
 		}
 	}
 	rec = httptest.NewRecorder()
