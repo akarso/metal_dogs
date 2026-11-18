@@ -62,6 +62,13 @@ func (p *PluginsConfig) UnmarshalYAML(value *yaml.Node) error {
 		if err != nil {
 			return fmt.Errorf("plugins.%s: %w", slug, err)
 		}
+		if slug == metalDogsExtraSlug {
+			var err error
+			flat, err = expandMetalDogsGeneration(&node, flat)
+			if err != nil {
+				return fmt.Errorf("plugins.%s: %w", slug, err)
+			}
+		}
 		if len(flat) == 0 {
 			continue
 		}
@@ -143,6 +150,56 @@ func flattenPluginsExtra(m map[string]string, cfg *Config, redactFn func(string)
 			}
 		}
 	}
+}
+
+const metalDogsExtraSlug = "metaldogs"
+
+// expandMetalDogsGeneration copies plugins.metaldogs.generation into dotted Extra keys.
+// Upstream yamlMapToStringMap stringifies nested maps; this keeps the old typed block loading (CR-21). Remove once Extra flattens.
+func expandMetalDogsGeneration(node *yaml.Node, flat map[string]string) (map[string]string, error) {
+	gen := yamlMappingChild(node, "generation")
+	if gen == nil || gen.Kind != yaml.MappingNode {
+		return flat, nil
+	}
+	if flat == nil {
+		flat = make(map[string]string)
+	}
+	delete(flat, "generation")
+	for i := 0; i+1 < len(gen.Content); i += 2 {
+		key := strings.ToLower(strings.TrimSpace(gen.Content[i].Value))
+		if key == "" {
+			continue
+		}
+		val := gen.Content[i+1]
+		if val.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("generation.%s must be a scalar", key)
+		}
+		var raw interface{}
+		if err := val.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("generation.%s: %w", key, err)
+		}
+		flat["generation."+key] = stringifyYAMLScalar(raw)
+	}
+	return flat, nil
+}
+
+func yamlMappingChild(node *yaml.Node, want string) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := strings.ToLower(strings.TrimSpace(node.Content[i].Value))
+		if key == want {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }
 
 func looksSecretPluginKey(key string) bool {

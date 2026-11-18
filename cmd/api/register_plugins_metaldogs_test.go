@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/akarso/shopanda/internal/domain/media"
@@ -70,6 +71,46 @@ func TestRegisterPlugins_MetalDogs_Disabled_NotRegistered(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/enabled", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 when registerPlugins skips metaldogs", rec.Code)
+	}
+}
+
+func TestRegisterPlugins_MetalDogs_BadEnabled_InitFails(t *testing.T) {
+	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
+	t.Setenv("SHOPANDA_AUTH_JWT_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("SHOPANDA_DEV_MODE", "true")
+	t.Setenv("SHOPANDA_MEDIA_LOCAL_SIGN_SECRET", "unit-test-media-local-sign-secret-32b")
+	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "maybe")
+
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	if err := os.WriteFile(path, []byte("server:\n  host: 127.0.0.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	res, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	log := logger.NewWithWriter(io.Discard, "error")
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, res.Config)
+	if findPlugin(t, registry, metaldogs.PluginName) == nil {
+		t.Fatal("metaldogs not registered for a bad enabled value")
+	}
+	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: res.Config}
+	summary := registry.InitAll(app)
+	if summary.Failed == 0 {
+		t.Fatalf("InitAll summary = %+v, want failure", summary)
+	}
+	var initErr error
+	for _, e := range registry.Entries() {
+		if e.Name == metaldogs.PluginName {
+			initErr = e.Err
+		}
+	}
+	if initErr == nil || !strings.Contains(initErr.Error(), "is not a bool") {
+		t.Fatalf("err = %v", initErr)
 	}
 }
 

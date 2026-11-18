@@ -245,7 +245,7 @@ Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, 
 - `plugins.metaldogs.generation.max_retries` — queue retries (default 3; `<=0` becomes 3). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES`. A non-integer fails Init
 - `plugins.metaldogs.generation.max_attempts_per_design` — customer regenerations (default 3; `<=0` becomes 3). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_ATTEMPTS_PER_DESIGN`
 - `plugins.metaldogs.generation.cooldown_seconds` — minimum gap between distinct attempts (default 30; `0` disables; max 86400). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS`
-- Nested YAML `generation:` is rejected. `Extra` stores one level of strings. `plugins.metaldogs.enabled` stays `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false; `1`/`true`/`yes`)
+- Nested YAML `generation:` (`provider`, `max_retries`, `max_attempts_per_design`, `cooldown_seconds`) loads the same fields. `plugins.metaldogs.enabled` stays `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false; `1`/`true`/`yes`)
 
 ## Approve and clone (C6)
 

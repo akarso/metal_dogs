@@ -145,7 +145,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 		}
 	}
 
-	// NoCachePathPrefixes keeps "{id}" in the pattern, so the tree prefix is its own route.
+	// pathPrefixFromPattern does not cut at '{' (CR-21). Remove this route once /api/customizer is a prefix without it.
 	if err := mountCustomizerRoute(h, "GET /api/customizer", http.NotFoundHandler()); err != nil {
 		return fmt.Errorf("metaldogs plugin: customizer prefix route: %w", err)
 	}

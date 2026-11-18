@@ -66,7 +66,7 @@ plugins/metaldogs/
 
 Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
 
-Generation config (C4/C7) is `Config.Extra["metaldogs"]`, read with `Host.ConfigValue`. Env names are unchanged: `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` (Extra key `generation_provider`; dotted alias `generation.provider`; fake only), `..._MAX_RETRIES`, `..._MAX_ATTEMPTS_PER_DESIGN`, `..._COOLDOWN_SECONDS` (default 30; `0` disables). A nested YAML `generation:` map is rejected (`Extra` is one level of strings). A non-integer is an error.
+Generation config (C4/C7) is `Config.Extra["metaldogs"]`, read with `Host.ConfigValue`. Env names are unchanged: `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` (Extra key `generation_provider`; dotted alias `generation.provider`; fake only), `..._MAX_RETRIES`, `..._MAX_ATTEMPTS_PER_DESIGN`, `..._COOLDOWN_SECONDS` (default 30; `0` disables). A nested YAML `generation:` map (`provider`, `max_retries`, `max_attempts_per_design`, `cooldown_seconds`) loads those same fields. A non-integer is an error.
 
 ## Private assets (F4 / C2 / ADR-0004)
 

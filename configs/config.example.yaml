@@ -298,8 +298,11 @@ queue:
 #     license_key: "DEV-local"
 #   metaldogs:                   # Metal Dogs product plugin (dark by default; Extra slug)
 #     enabled: false             # or SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
-#     generation_provider: fake  # SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER
-#     # Nested `generation:` maps are rejected. Dotted keys (generation.provider) also work.
+#     generation:                # or generation_provider / generation.provider; env SHOPANDA_PLUGINS_METALDOGS_GENERATION_*
+#       provider: fake
+#       max_retries: 3
+#       max_attempts_per_design: 3
+#       cooldown_seconds: 30
 #   graphql:
 #     enabled: false
 

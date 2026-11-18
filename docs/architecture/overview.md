@@ -198,7 +198,7 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | --- | --- | --- |
 | `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin) | UPG4-01 |
 | `cmd/api/metaldogs_catalog.go` | Builds core product, variant, price, price-history and stock repos for `metaldogs:catalog-seed`. The plugin package does not import infrastructure adapters | E1 |
-| `internal/platform/config/config.go`, `plugins_extra.go` | Typed `Plugins.MetalDogs` removed (pin still has it) so `plugins.metaldogs` is `Config.Extra`. Env names unchanged; nested `generation:` YAML is rejected | UPG4-01 |
+| `internal/platform/config/config.go`, `plugins_extra.go` | Typed `Plugins.MetalDogs` removed (pin still has it) so `plugins.metaldogs` is `Config.Extra`. Env names unchanged. Nested `generation:` is expanded to dotted Extra keys until upstream flattens maps | UPG4-01 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
 | `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Product registration / migrate coverage. `/api/customizer/*` no-store comes from `pluginsdk.NoCache()` plus upstream `NoCachePathPrefixes` (`wire_routes.go` matches the pin) | UPG4-01 |

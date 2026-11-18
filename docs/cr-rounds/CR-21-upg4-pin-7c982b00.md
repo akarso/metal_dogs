@@ -64,8 +64,9 @@ Moved:
 Tests:
 
 - `plugins/metaldogs/settings_test.go` loads production env names `SHOPANDA_PLUGINS_METALDOGS_ENABLED` and `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` through `Host.ConfigValue`.
+- Nested YAML `generation:` with provider / max_retries / max_attempts_per_design / cooldown_seconds yields the same Settings. A non-integer in that map fails Init.
 - Bad ints/bools fail. Defaults stay fake / 3 / 3 / 30. Cooldown `0` stays 0. Counts `<=0` stay 3.
-- `cmd/api/register_plugins_metaldogs_test.go` checks registration and GET/HEAD `no-store` for `/api/customizer/enabled` and `/api/customizer/designs/design-1`.
+- `cmd/api/register_plugins_metaldogs_test.go` checks registration, GET/HEAD `no-store` for `/api/customizer/enabled` and `/api/customizer/designs/design-1`, and `SHOPANDA_PLUGINS_METALDOGS_ENABLED=maybe` fails Init.
 
 Env names (working):
 
@@ -74,8 +75,8 @@ Env names (working):
 ## Shopanda gaps
 
 - `pathPrefixFromPattern` (`internal/platform/plugin/public_routes.go`) should cut the path at the first `{`. Until that ships, the dummy `GET /api/customizer` route stays. Remove it once the prefix is `/api/customizer` without that route.
-- `yamlMapToStringMap` (`internal/platform/config/plugins_extra.go`) stringifies a nested map (`map[...]`) instead of flattening it. `plugins.metaldogs.generation: {provider, max_retries, ...}` must become Extra keys `generation.provider`, `generation.max_retries`, and the same for the other generation fields. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` already arrives as `generation_*`.
+- `yamlMapToStringMap` (`internal/platform/config/plugins_extra.go`) stringifies a nested map (`map[...]`) instead of flattening it. Product code expands only `plugins.metaldogs.generation` into Extra keys `generation.provider`, `generation.max_retries`, `generation.max_attempts_per_design`, and `generation.cooldown_seconds`. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` still arrives as `generation_*`. Drop `expandMetalDogsGeneration` when upstream flattens every Extra slug.
 
-## Ticket 01 config criterion — open
+## Ticket 01 config criterion
 
-No PO decision accepts rejecting nested YAML `generation:`. Init currently errors on that map, so operator YAML that loaded before this ticket fails at startup. That line of the ticket stays open until Extra flattens nested maps, or a PO records acceptance of the rejection. Do not treat UPG4-01 config as done.
+Nested YAML `generation:` loads the same explicit fields as the old typed `MetalDogsGenerationConfig`. No PO decision rejects that map. Omitted keys inside the map use the documented defaults (fake / 3 / 3 / 30). The old struct zeroed an omitted `cooldown_seconds` to 0 when `plugins:` was present, because `UnmarshalYAML` replaced defaults; that wipe is not restored. A non-scalar under `generation:` fails Load. A non-integer scalar fails Init.

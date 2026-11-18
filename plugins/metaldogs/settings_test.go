@@ -85,7 +85,7 @@ plugins:
 	}
 }
 
-func TestSettingsFrom_NestedGenerationMapRejected(t *testing.T) {
+func TestSettingsFrom_NestedGenerationYAMLMatchesTyped(t *testing.T) {
 	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
 	cfg := loadMetalDogsConfig(t, `
 server:
@@ -96,11 +96,34 @@ plugins:
     generation:
       provider: fake
       max_retries: 4
+      max_attempts_per_design: 6
+      cooldown_seconds: 9
+`)
+	got := settingsViaHost(t, cfg)
+	if !got.Enabled || got.Provider != "fake" || got.MaxRetries != 4 || got.MaxAttemptsPerDesign != 6 || got.CooldownSeconds != 9 {
+		t.Fatalf("settings = %+v", got)
+	}
+	if raw := cfg.Plugins.Extra["metaldogs"]["generation"]; raw != "" {
+		t.Fatalf("generation Extra key = %q, want dotted keys only", raw)
+	}
+}
+
+func TestSettingsFrom_NestedGenerationBadInt(t *testing.T) {
+	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
+	cfg := loadMetalDogsConfig(t, `
+server:
+  host: 127.0.0.1
+plugins:
+  metaldogs:
+    enabled: true
+    generation:
+      provider: fake
+      max_retries: nope
 `)
 	app := &plugin.App{Config: cfg}
 	h := pluginsdk.AsHostFor(app, PluginName)
 	_, err := SettingsFrom(h.ConfigValue)
-	if err == nil || !strings.Contains(err.Error(), "not a flat key") {
+	if err == nil || !strings.Contains(err.Error(), "is not an int") {
 		t.Fatalf("err = %v", err)
 	}
 }
