@@ -16,6 +16,7 @@ fi
 ALLOWLIST=(
   cmd/api/bind_queue_test.go
   cmd/api/cli_plugins.go
+  cmd/api/cli_plugins_test.go
   cmd/api/job_queue_bind.go
   cmd/api/jobs_cli.go
   cmd/api/jobs_cli_test.go
