@@ -1,33 +1,47 @@
 package main
 
 import (
+	"context"
 	"database/sql"
-	"fmt"
 	"io"
-	"net/url"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-
+	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/logger"
-	"github.com/akarso/shopanda/internal/platform/migrate"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/example"
-	"github.com/akarso/shopanda/plugins/metaldogs"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-var cliSeedSchemaSeq atomic.Uint64
+func cliContextForTest(t *testing.T) cli.Context {
+	t.Helper()
+	return cli.Context{
+		Ctx:    context.Background(),
+		Logger: logger.NewWithWriter(io.Discard, "error"),
+	}
+}
+
+// stubPluginCLIDeps opens a non-connecting *sql.DB and binds via stubSeedBoot.
+func stubPluginCLIDeps(t *testing.T) pluginCLIDeps {
+	t.Helper()
+	return pluginCLIDeps{
+		OpenDB: func(*config.Config) (*sql.DB, error) {
+			return sql.Open("pgx", "host=/dev/null")
+		},
+		Bind: func(a *plugin.App, _ *sql.DB, cmd cli.Command) error {
+			return bindPluginCLIPortsFromBoot(a, stubSeedBoot(), cmd)
+		},
+	}
+}
 
 func TestRunPluginCLICommand_UnknownReturnsFalse(t *testing.T) {
 	cfg := &config.Config{}
 	log := logger.New("error")
-	ran, err := runPluginCLICommand(cfg, log, func() (*plugin.Registry, *plugin.App, error) {
+	ran, err := runPluginCLICommand(cfg, log, func() (*pluginCLIRuntime, error) {
 		return bootstrapPluginCLIRegistry(cfg, log)
 	}, "does-not-exist", nil)
 	if err != nil {
@@ -45,7 +59,7 @@ func TestPluginCLIHelpLines_IncludesExampleWhenEnabled(t *testing.T) {
 		},
 	}
 	log := logger.New("error")
-	registryFn := func() (*plugin.Registry, *plugin.App, error) {
+	registryFn := func() (*pluginCLIRuntime, error) {
 		return bootstrapPluginCLIRegistry(cfg, log)
 	}
 	lines := pluginCLIHelpLines(registryFn)
@@ -65,154 +79,256 @@ func TestPluginCLIHelpLines_IncludesExampleWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant(t *testing.T) {
-	useIsolatedCatalogSchema(t, true)
-	cfg := metalDogsCLIConfig()
+// seedCLIProbePlugin Needs CapCatalogSeed and registers a RequiresDB command
+// that resolves Host.CatalogSeed() — mirrors a product seed CLI without
+// editing cli_plugins.go.
+type seedCLIProbePlugin struct {
+	host pluginsdk.Host
+	saw  bool
+}
+
+func (p *seedCLIProbePlugin) Name() string { return "test/seedcli" }
+
+func (p *seedCLIProbePlugin) Needs() []pluginsdk.Capability {
+	return []pluginsdk.Capability{pluginsdk.CapCatalogSeed}
+}
+
+func (p *seedCLIProbePlugin) Init(h pluginsdk.Host) error {
+	p.host = h
+	h.Require(pluginsdk.CapCatalogSeed)
+	sdk := pluginsdk.NewHost(h, p.Name())
+	sdk.CLI().RegisterCommand(pluginsdk.CLICommand{
+		Name:        "test:seed-probe",
+		Description: "Probe CatalogSeedPort after auto-bind",
+		RequiresDB:  true,
+		Run: func(pluginsdk.CLIContext, []string) error {
+			port, ok := p.host.CatalogSeed()
+			if !ok || port == nil {
+				return errCatalogSeedUnbound
+			}
+			p.saw = true
+			return nil
+		},
+	})
+	return nil
+}
+
+type catalogSeedUnboundError struct{}
+
+func (catalogSeedUnboundError) Error() string { return "catalog seed port unbound" }
+
+var errCatalogSeedUnbound = catalogSeedUnboundError{}
+
+type seedCLINoDBPlugin struct{}
+
+func (seedCLINoDBPlugin) Name() string { return "test/seednodb" }
+
+func (seedCLINoDBPlugin) Needs() []pluginsdk.Capability {
+	return []pluginsdk.Capability{pluginsdk.CapCatalogSeed}
+}
+
+func (seedCLINoDBPlugin) Init(h pluginsdk.Host) error {
+	h.Require(pluginsdk.CapCatalogSeed)
+	sdk := pluginsdk.NewHost(h, "test/seednodb")
+	sdk.CLI().RegisterCommand(pluginsdk.CLICommand{
+		Name:        "test:seed-nodb",
+		Description: "Seed Need without RequiresDB — must fail closed",
+		RequiresDB:  false,
+		Run:         func(pluginsdk.CLIContext, []string) error { return nil },
+	})
+	return nil
+}
+
+// peerRequiresDBPlugin does not Need CapCatalogSeed but registers RequiresDB.
+// Bind absence is asserted via App.CatalogSeedPort() in the test (Host getters
+// deny undeclared caps even if the port were wrongly bound).
+type peerRequiresDBPlugin struct {
+	saw bool
+}
+
+func (p *peerRequiresDBPlugin) Name() string { return "test/peerdb" }
+
+func (p *peerRequiresDBPlugin) Init(h pluginsdk.Host) error {
+	sdk := pluginsdk.NewHost(h, p.Name())
+	sdk.CLI().RegisterCommand(pluginsdk.CLICommand{
+		Name:        "test:peer-db",
+		Description: "RequiresDB without CapCatalogSeed",
+		RequiresDB:  true,
+		Run: func(pluginsdk.CLIContext, []string) error {
+			p.saw = true
+			return nil
+		},
+	})
+	return nil
+}
+
+// integrationRequireFailPlugin Requires CapIntegrationStock then fails Init
+// (mirrors warehousedemo without syncer). Leaves CapIntegration* in required.
+type integrationRequireFailPlugin struct{}
+
+func (integrationRequireFailPlugin) Name() string { return "test/intfail" }
+
+func (integrationRequireFailPlugin) Init(h pluginsdk.Host) error {
+	h.Require(pluginsdk.CapIntegrationStock)
+	return errIntegrationUninit
+}
+
+type integrationUninitError struct{}
+
+func (integrationUninitError) Error() string { return "integration stock syncer not configured" }
+
+var errIntegrationUninit = integrationUninitError{}
+
+func stubSeedBoot() *plugin.Bootstrap {
+	return &plugin.Bootstrap{
+		Products:     seedBootProducts{},
+		Variants:     seedBootVariants{},
+		Prices:       seedBootPrices{},
+		PriceHistory: seedBootHistory{},
+		Stock:        seedBootStock{},
+	}
+}
+
+func initSeedCLIRuntime(t *testing.T, plugs ...pluginsdk.Plugin) (*plugin.Registry, *plugin.App) {
+	t.Helper()
 	log := logger.NewWithWriter(io.Discard, "error")
-	ran, err := runPluginCLICommand(cfg, log, func() (*plugin.Registry, *plugin.App, error) {
-		return bootstrapPluginCLIRegistry(cfg, log)
-	}, metaldogs.CommandCatalogSeed, []string{"-dir", metalDogsCatalogDir(t)})
+	reg := plugin.NewRegistry(log)
+	for _, p := range plugs {
+		reg.Register(pluginsdk.Adapt(p))
+	}
+	app := &plugin.App{Logger: log, Config: &config.Config{}}
+	preparePermissionRegistry(app)
+	summary := reg.InitAll(app)
+	freezePermissionRegistry(app)
+	if err := plugin.InitSummaryError(summary); err != nil {
+		t.Fatalf("InitSummaryError: %v", err)
+	}
+	return reg, app
+}
+
+func TestRunPluginCLICommand_RequiresDBBindsCatalogSeed(t *testing.T) {
+	probe := &seedCLIProbePlugin{}
+	reg, app := initSeedCLIRuntime(t, probe)
+
+	cmd, ok := reg.CLIRegistry().Get("test:seed-probe")
+	if !ok {
+		t.Fatal("command not registered")
+	}
+	if cmd.Plugin != probe.Name() {
+		t.Fatalf("cmd.Plugin = %q, want %q (SDK RegisterCommand attribution)", cmd.Plugin, probe.Name())
+	}
+
+	ran, err := runPluginCLICommandWithDeps(&config.Config{}, logger.NewWithWriter(io.Discard, "error"),
+		func() (*pluginCLIRuntime, error) {
+			return &pluginCLIRuntime{Registry: reg, App: app}, nil
+		}, "test:seed-probe", nil, stubPluginCLIDeps(t))
 	if err != nil {
 		t.Fatalf("runPluginCLICommand: %v", err)
 	}
 	if !ran {
-		t.Fatal("metaldogs:catalog-seed was not found")
+		t.Fatal("expected ran=true")
 	}
-
-	db := openDatabaseURL(t)
-	defer db.Close()
-	var products, variants int
-	if err := db.QueryRow(`SELECT count(*) FROM products WHERE slug = 'mdogs-tee'`).Scan(&products); err != nil {
-		t.Fatal(err)
+	if !probe.saw {
+		t.Fatal("Host.CatalogSeed must succeed after RequiresDB auto-bind via runPluginCLICommand")
 	}
-	if err := db.QueryRow(`SELECT count(*) FROM variants WHERE sku = 'MDOGS-TEE-S'`).Scan(&variants); err != nil {
-		t.Fatal(err)
-	}
-	if products != 1 || variants != 1 {
-		t.Fatalf("products=%d variants=%d, want 1 and 1", products, variants)
+	if _, ok := app.CatalogSeedPort(); !ok {
+		t.Fatal("CatalogSeedPort must stay bound on App")
 	}
 }
 
-func TestRunPluginCLICommand_CatalogSeedGetWithoutUnboundPort(t *testing.T) {
-	useIsolatedCatalogSchema(t, false)
-	cfg := metalDogsCLIConfig()
+func TestRunPluginCLICommand_PeerRequiresDBDoesNotBindSeed(t *testing.T) {
+	probe := &seedCLIProbePlugin{}
+	peer := &peerRequiresDBPlugin{}
+	reg, app := initSeedCLIRuntime(t, probe, peer)
+
+	if !app.CapabilityDeclaredBy(plugin.CapCatalogSeed, probe.Name()) {
+		t.Fatal("premise: seed peer must Need CapCatalogSeed")
+	}
+	peerCmd, ok := reg.CLIRegistry().Get("test:peer-db")
+	if !ok || peerCmd.Plugin != peer.Name() {
+		t.Fatalf("peer cmd Plugin = %q, want %q", peerCmd.Plugin, peer.Name())
+	}
+
+	ran, err := runPluginCLICommandWithDeps(&config.Config{}, logger.NewWithWriter(io.Discard, "error"),
+		func() (*pluginCLIRuntime, error) {
+			return &pluginCLIRuntime{Registry: reg, App: app}, nil
+		}, "test:peer-db", nil, stubPluginCLIDeps(t))
+	if err != nil {
+		t.Fatalf("peer RequiresDB: %v", err)
+	}
+	if !ran || !peer.saw {
+		t.Fatalf("ran=%v saw=%v", ran, peer.saw)
+	}
+	if port, ok := app.CatalogSeedPort(); ok || port != nil {
+		t.Fatalf("CatalogSeedPort() = (%v, %v): peer RequiresDB must leave write port unbound despite seed peer Need", port, ok)
+	}
+}
+
+func TestRunPluginCLICommand_SeedNeedWithoutRequiresDBFailsClosed(t *testing.T) {
+	reg, app := initSeedCLIRuntime(t, seedCLINoDBPlugin{})
+
+	ran, err := runPluginCLICommand(&config.Config{}, logger.NewWithWriter(io.Discard, "error"),
+		func() (*pluginCLIRuntime, error) {
+			return &pluginCLIRuntime{Registry: reg, App: app}, nil
+		}, "test:seed-nodb", nil)
+	if !ran || err == nil || !strings.Contains(err.Error(), "RequiresDB is false") {
+		t.Fatalf("ran=%v err=%v, want RequiresDB fail-closed", ran, err)
+	}
+}
+
+func TestRunPluginCLICommand_FailedIntegrationInitDoesNotBreakSeedAssert(t *testing.T) {
+	probe := &seedCLIProbePlugin{}
+	reg, app := initSeedCLIRuntime(t, &integrationRequireFailPlugin{}, probe)
+	// initSeedCLIRuntime ignores Failed count — re-check premise.
+	if !app.CapabilityDeclaredBy(plugin.CapIntegrationStock, "test/intfail") {
+		t.Fatal("failed Init must leave CapIntegrationStock attributed to intfail")
+	}
+
+	ran, err := runPluginCLICommandWithDeps(&config.Config{}, logger.NewWithWriter(io.Discard, "error"),
+		func() (*pluginCLIRuntime, error) {
+			return &pluginCLIRuntime{Registry: reg, App: app}, nil
+		}, "test:seed-probe", nil, stubPluginCLIDeps(t))
+	if err != nil {
+		t.Fatalf("seed CLI must not fail on CapIntegration* left by failed Init: %v", err)
+	}
+	if !ran || !probe.saw {
+		t.Fatalf("ran=%v saw=%v", ran, probe.saw)
+	}
+}
+
+func TestRunPluginCLICommand_NilAppRequiresDBFailsClosed(t *testing.T) {
+	probe := &seedCLIProbePlugin{}
+	reg, _ := initSeedCLIRuntime(t, probe)
+
+	ran, err := runPluginCLICommandWithDeps(&config.Config{}, logger.NewWithWriter(io.Discard, "error"),
+		func() (*pluginCLIRuntime, error) {
+			return &pluginCLIRuntime{Registry: reg, App: nil}, nil
+		}, "test:seed-probe", nil, stubPluginCLIDeps(t))
+	if !ran || err == nil || !strings.Contains(err.Error(), "app is nil") {
+		t.Fatalf("ran=%v err=%v, want app is nil", ran, err)
+	}
+}
+
+func TestRunPluginCLICommand_EmptyPluginOwnerFailsClosedWhenSeedNeeded(t *testing.T) {
 	log := logger.NewWithWriter(io.Discard, "error")
-	dir := t.TempDir()
-	ran, err := runPluginCLICommand(cfg, log, func() (*plugin.Registry, *plugin.App, error) {
-		return bootstrapPluginCLIRegistry(cfg, log)
-	}, metaldogs.CommandCatalogSeed, []string{"-dir", dir})
-	if !ran {
-		t.Fatal("metaldogs:catalog-seed was not found")
-	}
-	if err == nil {
-		t.Fatal("empty catalog dir must fail")
-	}
-	if strings.Contains(err.Error(), "catalog seed port is not configured") {
-		t.Fatalf("port unbound: %v", err)
-	}
-}
-
-func metalDogsCLIConfig() *config.Config {
-	return &config.Config{
-		Plugins: config.PluginsConfig{
-			Extra: map[string]map[string]string{
-				"metaldogs": {"enabled": "true"},
-			},
-		},
-	}
-}
-
-func metalDogsCatalogDir(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate cli_plugins_test.go")
-	}
-	dir := filepath.Join(filepath.Dir(file), "..", "..", "plugins", "metaldogs", "catalog")
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		t.Fatalf("catalog dir %s: %v", dir, err)
-	}
-	return dir
-}
-
-func useIsolatedCatalogSchema(t *testing.T, migrateCore bool) {
-	t.Helper()
-	base := os.Getenv("SHOPANDA_TEST_DSN")
-	if base == "" {
-		t.Skip("SHOPANDA_TEST_DSN not set")
-	}
-	schema := fmt.Sprintf("md_cliseed_%d_%d", os.Getpid(), cliSeedSchemaSeq.Add(1))
-	admin, err := sql.Open("pgx", base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = admin.Close() })
-	if err := admin.Ping(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
+	reg := plugin.NewRegistry(log)
+	app := &plugin.App{Logger: log, Config: &config.Config{}}
+	preparePermissionRegistry(app)
+	app.RecordNeedsFor("ghost/seed", plugin.CapCatalogSeed)
+	reg.CLIRegistry().Register(cli.Command{
+		Name:        "ghost:seed",
+		Description: "RequiresDB with empty Plugin",
+		RequiresDB:  true,
+		Plugin:      "", // explicit empty owner
+		Run:         func(cli.Context, []string) error { return nil },
 	})
-	isolated := dsnWithSearchPath(t, base, schema)
-	t.Setenv("DATABASE_URL", isolated)
-	if !migrateCore {
-		return
-	}
-	db := openDatabaseURL(t)
-	defer db.Close()
-	var current string
-	if err := db.QueryRow(`SELECT current_schema()`).Scan(&current); err != nil {
-		t.Fatal(err)
-	}
-	if current != schema {
-		t.Fatalf("current_schema=%q want %q", current, schema)
-	}
-	if _, err := migrate.Run(db, coreMigrationsDir(t)); err != nil {
-		t.Fatalf("core migrations: %v", err)
-	}
-}
+	freezePermissionRegistry(app)
 
-func openDatabaseURL(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
-	if err != nil {
-		t.Fatal(err)
+	ran, err := runPluginCLICommandWithDeps(&config.Config{}, log,
+		func() (*pluginCLIRuntime, error) {
+			return &pluginCLIRuntime{Registry: reg, App: app}, nil
+		}, "ghost:seed", nil, stubPluginCLIDeps(t))
+	if !ran || err == nil || !strings.Contains(err.Error(), "empty Plugin owner") {
+		t.Fatalf("ran=%v err=%v, want empty Plugin fail-closed", ran, err)
 	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	return db
-}
-
-func dsnWithSearchPath(t *testing.T, base, schema string) string {
-	t.Helper()
-	if strings.Contains(base, "://") {
-		u, err := url.Parse(base)
-		if err != nil {
-			t.Fatal(err)
-		}
-		q := u.Query()
-		q.Set("search_path", schema)
-		u.RawQuery = q.Encode()
-		return u.String()
-	}
-	return strings.TrimSpace(base) + " search_path=" + schema
-}
-
-func coreMigrationsDir(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate cli_plugins_test.go")
-	}
-	dir := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "migrations"))
-	st, err := os.Stat(dir)
-	if err != nil || !st.IsDir() {
-		t.Fatalf("migrations dir %s: %v", dir, err)
-	}
-	return dir
 }

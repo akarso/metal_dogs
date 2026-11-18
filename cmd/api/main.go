@@ -81,18 +81,16 @@ func run() error {
 
 	// Subcommand dispatch.
 	if len(os.Args) > 1 {
-		var pluginCLIRegistry *plugin.Registry
-		var pluginCLIApp *plugin.App
-		pluginCLIRegistryFn := func() (*plugin.Registry, *plugin.App, error) {
-			if pluginCLIRegistry == nil {
-				reg, app, err := bootstrapPluginCLIRegistry(cfg, log)
+		var cachedPluginCLI *pluginCLIRuntime
+		pluginCLIRegistryFn := func() (*pluginCLIRuntime, error) {
+			if cachedPluginCLI == nil {
+				rt, err := bootstrapPluginCLIRegistry(cfg, log)
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
-				pluginCLIRegistry = reg
-				pluginCLIApp = app
+				cachedPluginCLI = rt
 			}
-			return pluginCLIRegistry, pluginCLIApp, nil
+			return cachedPluginCLI, nil
 		}
 		switch os.Args[1] {
 		case "help":
@@ -791,7 +789,7 @@ func registerDefaultSeeders(reg *seed.Registry) {
 	reg.Register(&seed.GpsrAttributesSeeder{})
 }
 
-func printHelp(cfg *config.Config, log logger.Logger, pluginCLIRegistryFn pluginCLIOpen) {
+func printHelp(cfg *config.Config, log logger.Logger, pluginCLIRegistryFn func() (*pluginCLIRuntime, error)) {
 	fmt.Print(appendPluginCLIHelp(pluginCLIRegistryFn, `Usage: app <command> [arguments]
 
 Commands:

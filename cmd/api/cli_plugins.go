@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -12,11 +13,30 @@ import (
 	"github.com/akarso/shopanda/internal/platform/plugin"
 )
 
-// pluginCLIOpen returns the registry and the App passed to InitAll together.
-// Callers that bind ports (catalog seed) must use that App, not a later one.
-type pluginCLIOpen func() (*plugin.Registry, *plugin.App, error)
+// pluginCLIRuntime keeps the Init App so RequiresDB commands can bind ports
+// (including CapCatalogSeed) on the same App Host closures captured at Init.
+type pluginCLIRuntime struct {
+	Registry *plugin.Registry
+	App      *plugin.App
+}
 
-func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*plugin.Registry, *plugin.App, error) {
+// pluginCLIDeps opens the DB and binds ports for RequiresDB commands.
+// Tests pass a stub deps into runPluginCLICommandWithDeps (no package globals).
+type pluginCLIDeps struct {
+	OpenDB func(*config.Config) (*sql.DB, error)
+	Bind   func(*plugin.App, *sql.DB, cli.Command) error
+}
+
+func defaultPluginCLIDeps() pluginCLIDeps {
+	return pluginCLIDeps{
+		OpenDB: func(cfg *config.Config) (*sql.DB, error) {
+			return db.Open(config.DatabaseDSN(cfg))
+		},
+		Bind: bindPluginCLIPorts,
+	}
+}
+
+func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*pluginCLIRuntime, error) {
 	registry := plugin.NewRegistry(log)
 	registerPlugins(registry, cfg)
 	app := &plugin.App{
@@ -27,17 +47,24 @@ func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*plugin.
 	summary := registry.InitAll(app)
 	freezePermissionRegistry(app) // CLI: freeze only (no BindRuntime; avoid multi-App collisions)
 	if err := plugin.InitSummaryError(summary); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return registry, app, nil
+	return &pluginCLIRuntime{Registry: registry, App: app}, nil
 }
 
-func runPluginCLICommand(cfg *config.Config, log logger.Logger, open pluginCLIOpen, name string, args []string) (bool, error) {
-	registry, app, err := open()
+func runPluginCLICommand(cfg *config.Config, log logger.Logger, registryFn func() (*pluginCLIRuntime, error), name string, args []string) (bool, error) {
+	return runPluginCLICommandWithDeps(cfg, log, registryFn, name, args, defaultPluginCLIDeps())
+}
+
+func runPluginCLICommandWithDeps(cfg *config.Config, log logger.Logger, registryFn func() (*pluginCLIRuntime, error), name string, args []string, deps pluginCLIDeps) (bool, error) {
+	rt, err := registryFn()
 	if err != nil {
 		return false, err
 	}
-	cmdRegistry := registry.CLIRegistry()
+	if rt == nil || rt.Registry == nil {
+		return false, nil
+	}
+	cmdRegistry := rt.Registry.CLIRegistry()
 	if cmdRegistry == nil {
 		return false, nil
 	}
@@ -46,34 +73,93 @@ func runPluginCLICommand(cfg *config.Config, log logger.Logger, open pluginCLIOp
 		return false, nil
 	}
 
+	// Seed plugins that Need CapCatalogSeed must use RequiresDB so the root
+	// can bind CatalogSeedPort before Run.
+	if cmd.Plugin != "" && rt.App != nil &&
+		rt.App.CapabilityDeclaredBy(plugin.CapCatalogSeed, cmd.Plugin) && !cmd.RequiresDB {
+		return true, fmt.Errorf("plugin CLI: command %q (plugin %q) Needs CapCatalogSeed but RequiresDB is false", name, cmd.Plugin)
+	}
+
 	ctx := cli.Context{
 		Ctx:    context.Background(),
 		Config: cfg,
 		Logger: log,
 	}
 	if cmd.RequiresDB {
-		dsn := config.DatabaseDSN(cfg)
-		conn, err := db.Open(dsn)
+		// Any RequiresDB opens DB and binds product read ports. CapCatalogSeed
+		// bind is owner-scoped (see bindPluginCLIPortsFromBoot).
+		if cmd.Plugin == "" && rt.App != nil && rt.App.CapabilityNeeded(plugin.CapCatalogSeed) {
+			return true, fmt.Errorf("plugin CLI: command %q RequiresDB but has empty Plugin owner while CapCatalogSeed is Needed", name)
+		}
+		if deps.OpenDB == nil || deps.Bind == nil {
+			return true, fmt.Errorf("plugin CLI: open/bind deps not configured")
+		}
+		conn, err := deps.OpenDB(cfg)
 		if err != nil {
 			return true, fmt.Errorf("database: %w", err)
 		}
 		defer conn.Close()
-		ctx.DB = conn
-		if err := prepareProductCLI(name, app, func() (*plugin.Bootstrap, error) {
-			return newPluginBootstrap(conn)
-		}); err != nil {
+		if err := deps.Bind(rt.App, conn, cmd); err != nil {
 			return true, err
 		}
 	}
 	return true, cmdRegistry.Run(name, ctx, args)
 }
 
-func pluginCLIHelpLines(open pluginCLIOpen) []string {
-	registry, _, err := open()
-	if err != nil || registry == nil || registry.CLIRegistry() == nil {
+// bindPluginCLIPorts wires product ports on the Init App after DB open.
+// CapCatalogSeed is bound only when the running command's owning plugin
+// declared that Need — not for every RequiresDB command when a peer needs seed.
+func bindPluginCLIPorts(app *plugin.App, conn *sql.DB, cmd cli.Command) error {
+	boot, err := newPluginBootstrap(conn)
+	if err != nil {
+		return err
+	}
+	return bindPluginCLIPortsFromBoot(app, boot, cmd)
+}
+
+func bindPluginCLIPortsFromBoot(app *plugin.App, boot *plugin.Bootstrap, cmd cli.Command) error {
+	if app == nil {
+		return fmt.Errorf("plugin CLI: app is nil")
+	}
+	if boot == nil {
+		return fmt.Errorf("plugin CLI: bootstrap is required")
+	}
+	app.Bootstrap = boot
+	if err := bindProductPorts(app, boot); err != nil {
+		return err
+	}
+
+	bindSeed := cmd.Plugin != "" && app.CapabilityDeclaredBy(plugin.CapCatalogSeed, cmd.Plugin)
+	if bindSeed {
+		if err := bindCatalogSeedPort(app, boot); err != nil {
+			return err
+		}
+	}
+
+	// Plugin CLI does not wire CapCart (serve-only) or CapIntegration*
+	// (jobs/serve wire those before Init). Failed Init of warehousedemo still
+	// leaves CapIntegration* in required — skip them here like CapCart.
+	skip := []plugin.Capability{
+		plugin.CapCart,
+		plugin.CapIntegrationOrder,
+		plugin.CapIntegrationShipment,
+		plugin.CapIntegrationStock,
+	}
+	if !bindSeed {
+		skip = append(skip, plugin.CapCatalogSeed)
+	}
+	if err := app.AssertNeedsMetExcept(skip...); err != nil {
+		return fmt.Errorf("plugin capabilities: %w", err)
+	}
+	return nil
+}
+
+func pluginCLIHelpLines(registryFn func() (*pluginCLIRuntime, error)) []string {
+	rt, err := registryFn()
+	if err != nil || rt == nil || rt.Registry == nil || rt.Registry.CLIRegistry() == nil {
 		return nil
 	}
-	cmds := registry.CLIRegistry().List()
+	cmds := rt.Registry.CLIRegistry().List()
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -85,8 +171,8 @@ func pluginCLIHelpLines(open pluginCLIOpen) []string {
 	return lines
 }
 
-func appendPluginCLIHelp(open pluginCLIOpen, base string) string {
-	lines := pluginCLIHelpLines(open)
+func appendPluginCLIHelp(registryFn func() (*pluginCLIRuntime, error), base string) string {
+	lines := pluginCLIHelpLines(registryFn)
 	if len(lines) == 0 {
 		return base
 	}
