@@ -48,7 +48,7 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 		get = func(string) string { return "" }
 	}
 	if nested := strings.TrimSpace(get(metalDogsKey("generation"))); nested != "" {
-		return Settings{}, fmt.Errorf("metaldogs plugin: plugins.metaldogs.generation %q is not a flat key; Config.Extra cannot store nested maps (use generation_provider or generation.provider)", nested)
+		return Settings{}, fmt.Errorf("metaldogs plugin: plugins.metaldogs.generation must be a map (provider, max_retries, …) or flat generation_* keys, got %q", nested)
 	}
 	enabled, err := ParseEnabled(get(metalDogsKey("enabled")))
 	if err != nil {

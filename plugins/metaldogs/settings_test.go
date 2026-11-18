@@ -66,6 +66,18 @@ func TestSettingsFrom_BadIntAndBool(t *testing.T) {
 	}
 }
 
+func TestSettingsFrom_ScalarGenerationKey(t *testing.T) {
+	_, err := SettingsFrom(func(key string) string {
+		if key == "plugins.metaldogs.generation" {
+			return "fake"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "must be a map") || strings.Contains(err.Error(), "cannot store nested") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSettingsFrom_DottedYAMLAlias(t *testing.T) {
 	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
 	cfg := loadMetalDogsConfig(t, `
