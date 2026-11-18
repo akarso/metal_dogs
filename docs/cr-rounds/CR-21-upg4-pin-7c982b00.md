@@ -232,3 +232,5 @@ The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` de
 
 `metaldogs:catalog-seed` declares `RequiresDB` and `Need(CapCatalogSeed)`. The write test calls `runPluginCLICommandWithDeps` with `bindPluginCLIPorts` and an injected `OpenDB`. The command does not read `cli.Context.DB`: this root never sets it. Writes go through `Host.CatalogSeed()`. Serve and worker still skip the seed port. A `parent_sku` mismatch error names `parent_sku` next to the stored and requested values.
 
+`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` calls `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream has no shared serve/worker function for that sequence. `runWorker`, the scheduler, and search reindex inline the dual skip; serve inlines `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. A later change to those skip lists is not caught by this test.
+
