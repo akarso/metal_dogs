@@ -9,6 +9,7 @@ import (
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
 
 type conflictAdmin struct {
@@ -35,7 +36,7 @@ func (a *conflictAdmin) Retry(_ context.Context, _ string) error {
 		a.retried = true
 		return nil
 	case jobs.StatusProcessing:
-		if time.Since(a.updatedAt) < jobs.DefaultStaleProcessingLease {
+		if time.Since(a.updatedAt) < domain.DefaultClaimLease {
 			return apperror.Conflict("job is currently processing and younger than the stale lease")
 		}
 		a.status = jobs.StatusPending
@@ -46,20 +47,6 @@ func (a *conflictAdmin) Retry(_ context.Context, _ string) error {
 	}
 }
 func (a *conflictAdmin) Cancel(context.Context, string) error { return nil }
-func (a *conflictAdmin) RequeueLease(_ context.Context, _ string, lease time.Duration) (bool, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.status == jobs.StatusPending {
-		return false, nil
-	}
-	if a.status == jobs.StatusProcessing && time.Since(a.updatedAt) < lease {
-		return false, nil
-	}
-	a.status = jobs.StatusPending
-	a.requeued = true
-	a.hookCalls++ // simulates OnRequeued inside Requeue
-	return true, nil
-}
 func (a *conflictAdmin) Get(_ context.Context, id string) (*jobs.Detail, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -90,7 +77,22 @@ func (q *queueWithAdmin) Complete(context.Context, string, int) error { return n
 func (q *queueWithAdmin) Fail(context.Context, string, int, error) error {
 	return nil
 }
-func (q *queueWithAdmin) Requeue(context.Context, string, int, ...jobs.RequeueOption) error {
+func (q *queueWithAdmin) Requeue(_ context.Context, _ string, attempt int, opts ...jobs.RequeueOption) error {
+	a := q.conflictAdmin
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status != jobs.StatusProcessing {
+		return jobs.ErrRequeueNotProcessing
+	}
+	if a.attempts != 0 && attempt != a.attempts {
+		return jobs.ErrRequeueWrongAttempt
+	}
+	if time.Since(a.updatedAt) < jobs.ApplyRequeueOptions(opts) {
+		return jobs.ErrRequeueTooFresh
+	}
+	a.status = jobs.StatusPending
+	a.requeued = true
+	a.hookCalls++ // OnRequeued once inside Queue.Requeue
 	return nil
 }
 
@@ -98,7 +100,7 @@ func TestResolveGenerateEnqueueConflict_LiveClaimNoOp(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
+	if err := resolveGenerateEnqueueConflict(nil, q, context.Background(), "job-1"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.requeued || admin.hookCalls != 0 {
@@ -113,7 +115,7 @@ func TestResolveGenerateEnqueueConflict_ReliesOnRequeueHookOnly(t *testing.T) {
 		updatedAt: time.Now().Add(-10 * time.Minute),
 	}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
+	if err := resolveGenerateEnqueueConflict(nil, q, context.Background(), "job-1"); err != nil {
 		t.Fatal(err)
 	}
 	if !admin.requeued {

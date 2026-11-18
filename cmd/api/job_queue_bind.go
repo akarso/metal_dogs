@@ -7,7 +7,6 @@ import (
 	"github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/plugin"
-	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
 // resolveAndBindJobQueue resolves the active jobs.Queue (plugin-registered when
@@ -18,17 +17,16 @@ func resolveAndBindJobQueue(app *plugin.App, conn *sql.DB, cfg *config.Config) (
 	if err != nil {
 		return nil, fmt.Errorf("job queue: %w", err)
 	}
-	if err := app.BindQueue(jobQueue); err != nil {
+	if app == nil {
+		return nil, fmt.Errorf("job queue: plugin app is nil")
+	}
+	jobQueue, err = app.ApplyQueueBoundHooks(jobQueue)
+	if err != nil {
 		return nil, err
 	}
-	on, err := metaldogs.Enabled(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("metaldogs config: %w", err)
-	}
-	if on {
-		if err := metaldogs.InstallGenerateJobFence(jobQueue); err != nil {
-			return nil, fmt.Errorf("metaldogs generate job fence: %w", err)
-		}
+	jobQueue = app.WrapRequeueNotify(jobQueue)
+	if err := app.BindQueue(jobQueue); err != nil {
+		return nil, err
 	}
 	return jobQueue, nil
 }

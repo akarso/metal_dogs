@@ -3,6 +3,7 @@ package plugin
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 
 	"github.com/akarso/shopanda/internal/domain/cache"
 	"github.com/akarso/shopanda/internal/domain/cart"
@@ -73,9 +74,11 @@ func (a *App) RegisterQueue(queue jobs.Queue) {
 // Integration.Enqueue. Distinct from RegisterQueue (plugin provider slot):
 // Enqueue reads only the bound queue, so calls during Init always fail with
 // ErrSyncJobQueueUnbound until the composition root binds after InitAll.
-// When a plugin already RegisterQueue'd, queue must be that same instance
-// (so a mistaken second NewJobQueue cannot silently split cron/Enqueue from
-// the worker). Idempotent when the same instance is already bound.
+// When a plugin already RegisterQueue'd, queue must be that instance or a
+// wrapper that UnwrapQueue-walks to it (OnQueueBound / OnRequeued notify
+// wrap) — so a mistaken second NewJobQueue cannot silently split
+// cron/Enqueue from the worker. Idempotent when the same instance is
+// already bound.
 func (a *App) BindQueue(queue jobs.Queue) error {
 	if a == nil {
 		return fmt.Errorf("plugin: BindQueue: app is nil")
@@ -83,14 +86,58 @@ func (a *App) BindQueue(queue jobs.Queue) error {
 	if queue == nil {
 		return fmt.Errorf("plugin: BindQueue: queue must not be nil")
 	}
-	if a.queue != nil && a.queue != queue {
+	if a.queue != nil && !queueChainContains(queue, a.queue) {
 		return fmt.Errorf("plugin: BindQueue: enqueue queue must match plugin-registered queue")
 	}
-	if a.boundQueue != nil && a.boundQueue != queue {
+	if a.boundQueue != nil && a.boundQueue != queue && !queueChainContains(queue, a.boundQueue) && !queueChainContains(a.boundQueue, queue) {
 		return fmt.Errorf("plugin: BindQueue: enqueue queue already bound to a different instance")
 	}
 	a.boundQueue = queue
 	return nil
+}
+
+// queueSame compares two Queue values without panicking on incomparable
+// dynamic types (value wrappers holding funcs). Pointer identity is used
+// when either side is not comparable.
+func queueSame(a, b jobs.Queue) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if va.Type() != vb.Type() {
+		return false
+	}
+	if !va.Type().Comparable() {
+		if va.Kind() == reflect.Ptr && vb.Kind() == reflect.Ptr {
+			return va.Pointer() == vb.Pointer()
+		}
+		return false
+	}
+	return a == b
+}
+
+// queueChainContains reports whether want is outer or reachable via
+// UnwrapQueue (notify / fence wrappers). Depth-bounded — do not key a map
+// with jobs.Queue (unhashable value wrappers panic).
+func queueChainContains(outer, want jobs.Queue) bool {
+	if outer == nil || want == nil {
+		return false
+	}
+	for depth := 0; outer != nil && depth < maxQueueUnwrapDepth; depth++ {
+		if queueSame(outer, want) {
+			return true
+		}
+		u, ok := outer.(queueUnwrapper)
+		if !ok {
+			return false
+		}
+		next := u.UnwrapQueue()
+		if next == nil || queueSame(next, outer) {
+			return false
+		}
+		outer = next
+	}
+	return false
 }
 
 // RegisterPaymentProvider registers a payment provider for its Method().
@@ -197,21 +244,15 @@ func (a *App) Queue() (jobs.Queue, bool) {
 	return a.queue, true
 }
 
-// BoundQueue returns the composition-root enqueue queue when BindQueue has
-// run, otherwise the plugin RegisterQueue instance. Prefer this for read
-// paths (health depth) that must see the same queue workers and Enqueue use
-// — postgres fallback wires BindQueue without RegisterQueue.
+// BoundQueue returns the composition-root job queue after BindQueue. It does
+// not fall back to RegisterQueue — same fail-closed shape as
+// BoundMediaStorage and Integration.Enqueue — so health/read paths that need
+// the enqueue instance do not silently use a different queue than the worker.
 func (a *App) BoundQueue() (jobs.Queue, bool) {
-	if a == nil {
+	if a == nil || a.boundQueue == nil {
 		return nil, false
 	}
-	if a.boundQueue != nil {
-		return a.boundQueue, true
-	}
-	if a.queue != nil {
-		return a.queue, true
-	}
-	return nil, false
+	return a.boundQueue, true
 }
 
 // PaymentRegistry returns the registered payment providers, if any.

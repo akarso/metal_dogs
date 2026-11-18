@@ -14,27 +14,9 @@ fi
 
 # Paths under these roots may differ from the pin only if listed below.
 ALLOWLIST=(
-  cmd/api/bind_queue_test.go
-  cmd/api/job_queue_bind.go
-  cmd/api/jobs_cli.go
-  cmd/api/jobs_cli_test.go
-  cmd/api/main.go
   cmd/api/migrate_plugins_test.go
   cmd/api/register_plugins_metaldogs_test.go
   cmd/api/register_products.go
-  internal/application/integration/sync_manual_roundtrip_test.go
-  internal/application/integration/sync_runtime.go
-  internal/application/integration/sync_runtime_test.go
-  internal/domain/jobs/admin.go
-  internal/domain/jobs/job.go
-  internal/domain/jobs/worker.go
-  internal/domain/jobs/worker_test.go
-  internal/platform/plugin/providers.go
-  internal/platform/plugin/providers_test.go
-  internal/platform/plugin/queue_hooks.go
-  internal/platform/plugin/queue_hooks_test.go
-  internal/platform/plugin/sync_job_test.go
-  internal/platform/runtime/scheduler_test.go
 )
 
 mapfile -t dirty < <(

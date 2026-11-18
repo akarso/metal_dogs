@@ -29,7 +29,7 @@ type Logger interface {
 type MetricsRecorder interface {
 	JobFailure(jobType string)
 	// JobResult records handler duration for a finished attempt.
-	// outcome must be "success" or "failed" (bounded).
+	// outcome must be "success", "failed", "skipped", or "not_applied" (bounded).
 	JobResult(jobType, outcome string, duration time.Duration)
 }
 
@@ -154,17 +154,13 @@ func (w *Worker) processNext(ctx context.Context) bool {
 	w.mu.RUnlock()
 
 	if !ok {
-		w.log.Error("worker.handler.not_found", nil, map[string]interface{}{
-			"job_id":   job.ID,
-			"job_type": job.Type,
-		})
-		w.metrics.JobFailure(unknownJobType)
-		w.metrics.JobResult(unknownJobType, "failed", 0)
-		// A real error, not nil: this is exactly the failure an operator
-		// most needs last_error for — a misconfigured or typo'd job type —
-		// and Fail's COALESCE-based persistence (see job_queue.go) only
-		// records something when jobErr is non-nil.
-		w.recordFail(ctx, job.ID, job.Attempts, fmt.Errorf("no handler registered for job type %q", job.Type))
+		// Log + metrics only if Fail applies (CAS miss → not_applied only).
+		w.recordFail(ctx, job.ID, job.Attempts, unknownJobType,
+			fmt.Errorf("no handler registered for job type %q", job.Type), 0,
+			"worker.handler.not_found", map[string]interface{}{
+				"job_id":   job.ID,
+				"job_type": job.Type,
+			})
 		return true
 	}
 
@@ -180,18 +176,20 @@ func (w *Worker) processNext(ctx context.Context) bool {
 	start := time.Now()
 	err = w.safeHandle(ctx, h, *job)
 	duration := time.Since(start)
-	if errors.Is(err, ErrSkipOutcome) {
-		skipFields := map[string]interface{}{
-			"job_id":      job.ID,
-			"job_type":    job.Type,
-			"attempt":     job.Attempts,
-			"duration_ms": duration.Milliseconds(),
-		}
-		mergeJobRequestID(skipFields, job.Payload)
-		w.log.Info("worker.job.outcome_skipped", skipFields)
-		return true
-	}
 	if err != nil {
+		if errIsSkipOnly(err) {
+			skipFields := map[string]interface{}{
+				"job_id":   job.ID,
+				"job_type": job.Type,
+				"attempt":  job.Attempts,
+			}
+			mergeJobRequestID(skipFields, job.Payload)
+			w.log.Info("worker.job.outcome_skipped", skipFields)
+			// Leaves status=processing unless a fence already wrote an
+			// outcome or will Requeue. Distinct metric from success/failed.
+			w.metrics.JobResult(job.Type, "skipped", duration)
+			return true
+		}
 		failFields := map[string]interface{}{
 			"job_id":      job.ID,
 			"job_type":    job.Type,
@@ -200,10 +198,9 @@ func (w *Worker) processNext(ctx context.Context) bool {
 			"duration_ms": duration.Milliseconds(),
 		}
 		mergeJobRequestID(failFields, job.Payload)
-		w.log.Error("worker.job.failed", err, failFields)
-		w.metrics.JobFailure(job.Type)
-		w.metrics.JobResult(job.Type, "failed", duration)
-		w.recordFail(ctx, job.ID, job.Attempts, err)
+		// worker.job.failed + JobFailure only after Fail applies — a stale
+		// claim must not trip error-log alerts or failure metrics.
+		w.recordFail(ctx, job.ID, job.Attempts, job.Type, err, duration, "worker.job.failed", failFields)
 		return true
 	}
 
@@ -231,6 +228,45 @@ func mergeJobRequestID(fields map[string]interface{}, envelope map[string]interf
 	}
 }
 
+// errIsSkipOnly reports whether err contains ErrSkipOutcome and every
+// node in the unwrap tree is skip-only: the sentinel itself, a bare
+// context cancel/deadline, or a multi-error whose children are all
+// skip-only. Walk Unwrap() []error before treating context.Canceled as
+// a leaf — errors.Join(ErrSkipOutcome, context.Canceled, real) must Fail.
+func errIsSkipOnly(err error) bool {
+	if err == nil || !errors.Is(err, ErrSkipOutcome) {
+		return false
+	}
+	var walk func(error) bool
+	walk = func(e error) bool {
+		if e == nil {
+			return true
+		}
+		if e == ErrSkipOutcome {
+			return true
+		}
+		if multi, ok := e.(interface{ Unwrap() []error }); ok {
+			kids := multi.Unwrap()
+			if len(kids) == 0 {
+				return true
+			}
+			for _, x := range kids {
+				if !walk(x) {
+					return false
+				}
+			}
+			return true
+		}
+		if u := errors.Unwrap(e); u != nil {
+			return walk(u)
+		}
+		return e == ErrSkipOutcome ||
+			e == context.Canceled ||
+			e == context.DeadlineExceeded
+	}
+	return walk(err)
+}
+
 // safeHandle runs h.Handle with panic recovery, converting a panic into a
 // normal error on the same path a handler-returned error already takes
 // (logged, counted, and the job marked Fail'd) instead of letting it
@@ -256,30 +292,59 @@ func (w *Worker) safeHandle(ctx context.Context, h Handler, job Job) (err error)
 // signal that's asking the worker to stop, or the job ends up neither
 // completed nor properly failed/requeued, an ambiguous state the queue's
 // own retry/visibility-timeout logic wasn't designed to resolve cleanly.
-func (w *Worker) recordFail(ctx context.Context, jobID string, attempts int, jobErr error) {
+func (w *Worker) recordFail(ctx context.Context, jobID string, attempt int, jobType string, jobErr error, duration time.Duration, appliedLog string, appliedFields map[string]interface{}) {
 	outcomeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outcomeRecordTimeout)
 	defer cancel()
-	if failErr := w.queue.Fail(outcomeCtx, jobID, attempts, jobErr); failErr != nil {
-		w.log.Error("worker.fail.error", failErr, map[string]interface{}{"job_id": jobID})
+	if failErr := w.queue.Fail(outcomeCtx, jobID, attempt, jobErr); failErr != nil {
+		fields := map[string]interface{}{"job_id": jobID, "attempt": attempt, "job_type": jobType}
+		if errors.Is(failErr, ErrOutcomeNotApplied) {
+			// Stale claim after Requeue/newer dequeue — not a handler failure.
+			// Handler error stays at info so reclaim races do not page.
+			if jobErr != nil {
+				fields["handler_error"] = jobErr.Error()
+			}
+			w.log.Info("worker.fail.not_applied", fields)
+			w.metrics.JobResult(jobType, "not_applied", duration)
+			return
+		}
+		w.log.Error("worker.fail.error", failErr, fields)
+		// Handler failed and the outcome write also failed — still surface
+		// the handler failure so operators see the attempt.
+		if appliedLog != "" {
+			w.log.Error(appliedLog, jobErr, appliedFields)
+		}
+		w.metrics.JobFailure(jobType)
+		w.metrics.JobResult(jobType, "failed", duration)
+		return
 	}
+	if appliedLog != "" {
+		w.log.Error(appliedLog, jobErr, appliedFields)
+	}
+	w.metrics.JobFailure(jobType)
+	w.metrics.JobResult(jobType, "failed", duration)
 }
 
-func (w *Worker) recordComplete(ctx context.Context, jobID string, attempts int, jobType string, envelope map[string]interface{}, duration time.Duration) {
+func (w *Worker) recordComplete(ctx context.Context, jobID string, attempt int, jobType string, envelope map[string]interface{}, duration time.Duration) {
 	outcomeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outcomeRecordTimeout)
 	defer cancel()
-	if err := w.queue.Complete(outcomeCtx, jobID, attempts); err != nil {
+	if err := w.queue.Complete(outcomeCtx, jobID, attempt); err != nil {
 		failFields := map[string]interface{}{
 			"job_id":      jobID,
 			"job_type":    jobType,
+			"attempt":     attempt,
 			"duration_ms": duration.Milliseconds(),
 		}
 		mergeJobRequestID(failFields, envelope)
+		// Handler ran but the queue did not accept the outcome (stale
+		// attempt, missing row, already moved). Never emit success —
+		// the job may still be processing or redelivered.
+		if errors.Is(err, ErrOutcomeNotApplied) {
+			// Reclaim/CAS miss — not a job failure alert.
+			w.log.Info("worker.job.complete_not_applied", failFields)
+			w.metrics.JobResult(jobType, "not_applied", duration)
+			return
+		}
 		w.log.Error("worker.job.complete_failed", err, failFields)
-		// The handler itself succeeded, but the job may now be redelivered
-		// (e.g. duplicate webhook sends) since the queue never learned it
-		// finished — record it as a failure so dashboards aren't silent
-		// about a real, actionable problem. JobResult is recorded here
-		// (not before Complete) so success-rate metrics stay honest.
 		w.metrics.JobFailure(jobType)
 		w.metrics.JobResult(jobType, "failed", duration)
 		return

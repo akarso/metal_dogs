@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
@@ -37,28 +35,9 @@ const (
 	jitterRatio = 0.25            // ±25% randomization
 )
 
-// MetalDogsGenerateJobType is the sync job type that must never re-pend without
-// an OnRequeued product claim fence (same DB transaction as the pending update).
-const MetalDogsGenerateJobType = "integration.sync.metaldogs.generate"
-
-// RequeueExec is the open transaction (or db) passed to OnRequeued so product
-// fences can run in the same transaction as the jobs status update.
-type RequeueExec interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
 // JobQueue implements jobs.Queue using PostgreSQL with FOR UPDATE SKIP LOCKED.
 type JobQueue struct {
 	db *sql.DB
-
-	mu sync.RWMutex
-	// OnRequeued runs inside the re-pend transaction after the jobs row is
-	// updated to pending but before commit. Failures abort the transaction so
-	// the row never becomes visible as pending without the product fence.
-	OnRequeued func(ctx context.Context, exec RequeueExec, jobID, jobType string) error
-	// requiredOnRequeued lists job types that must have OnRequeued installed.
-	requiredOnRequeued map[string]struct{}
 }
 
 // NewJobQueue returns a new JobQueue backed by db.
@@ -67,57 +46,6 @@ func NewJobQueue(db *sql.DB) (*JobQueue, error) {
 		return nil, fmt.Errorf("NewJobQueue: nil *sql.DB")
 	}
 	return &JobQueue{db: db}, nil
-}
-
-// SetOnRequeued registers a hook invoked inside the re-pend transaction.
-func (q *JobQueue) SetOnRequeued(fn func(ctx context.Context, exec RequeueExec, jobID, jobType string) error) {
-	if q == nil {
-		return
-	}
-	q.mu.Lock()
-	q.OnRequeued = fn
-	q.mu.Unlock()
-}
-
-// RequireOnRequeued marks job types that must not re-pend when OnRequeued is nil.
-func (q *JobQueue) RequireOnRequeued(jobTypes ...string) {
-	if q == nil {
-		return
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.requiredOnRequeued == nil {
-		q.requiredOnRequeued = make(map[string]struct{}, len(jobTypes))
-	}
-	for _, t := range jobTypes {
-		t = strings.TrimSpace(t)
-		if t != "" {
-			q.requiredOnRequeued[t] = struct{}{}
-		}
-	}
-}
-
-func (q *JobQueue) runOnRequeued(ctx context.Context, exec RequeueExec, jobID, jobType string) error {
-	if q == nil || jobID == "" {
-		return nil
-	}
-	q.mu.RLock()
-	hook := q.OnRequeued
-	_, required := q.requiredOnRequeued[jobType]
-	q.mu.RUnlock()
-	if jobType == MetalDogsGenerateJobType {
-		required = true
-	}
-	if hook == nil {
-		if required {
-			return fmt.Errorf("job_queue: on requeued hook required for job type %q", jobType)
-		}
-		return nil
-	}
-	if err := hook(ctx, exec, jobID, jobType); err != nil {
-		return fmt.Errorf("job_queue: on requeued: %w", err)
-	}
-	return nil
 }
 
 // Enqueue inserts a new job into the queue.
@@ -200,11 +128,11 @@ func (q *JobQueue) Dequeue(ctx context.Context) (*jobs.Job, error) {
 	return &j, nil
 }
 
-// Complete marks a job as done when still processing with the Dequeue attempts fence.
-func (q *JobQueue) Complete(ctx context.Context, id string, attempts int) error {
+// Complete marks a job as done for the given dequeue attempt.
+func (q *JobQueue) Complete(ctx context.Context, id string, attempt int) error {
 	const query = `UPDATE jobs SET status = 'done', updated_at = NOW()
 		WHERE id = $1 AND status = 'processing' AND attempts = $2`
-	result, err := q.db.ExecContext(ctx, query, id, attempts)
+	result, err := q.db.ExecContext(ctx, query, id, attempt)
 	if err != nil {
 		return fmt.Errorf("job_queue: complete: %w", err)
 	}
@@ -213,7 +141,7 @@ func (q *JobQueue) Complete(ctx context.Context, id string, attempts int) error 
 		return fmt.Errorf("job_queue: complete rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("job_queue: job %s not found, not processing, or attempts mismatch", id)
+		return fmt.Errorf("job_queue: complete %s attempt %d: %w", id, attempt, jobs.ErrOutcomeNotApplied)
 	}
 	return nil
 }
@@ -235,7 +163,7 @@ func retryDelay(attempt int) time.Duration {
 // leaves last_error unchanged rather than inventing a message on this
 // method's behalf.
 // Uses atomic conditional UPDATEs to avoid read-then-write races.
-func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
+func (q *JobQueue) Fail(ctx context.Context, id string, attempt int, jobErr error) error {
 	var lastErr interface{}
 	if jobErr != nil {
 		lastErr = jobErr.Error()
@@ -245,7 +173,7 @@ func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr err
 	const failQ = `UPDATE jobs SET status = 'failed', updated_at = NOW(),
 			last_error = COALESCE($2, last_error)
 		WHERE id = $1 AND status = 'processing' AND attempts = $3 AND attempts >= max_retries`
-	result, err := q.db.ExecContext(ctx, failQ, id, lastErr, attempts)
+	result, err := q.db.ExecContext(ctx, failQ, id, lastErr, attempt)
 	if err != nil {
 		return fmt.Errorf("job_queue: fail permanent: %w", err)
 	}
@@ -257,21 +185,12 @@ func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr err
 		return nil
 	}
 
-	// Otherwise, re-queue with exponential backoff delay.
-	var currentAttempts int
-	const attemptsQ = `SELECT attempts FROM jobs WHERE id = $1 AND status = 'processing' AND attempts = $2 AND attempts < max_retries`
-	if err := q.db.QueryRowContext(ctx, attemptsQ, id, attempts).Scan(&currentAttempts); err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("job_queue: job %s not found, not processing, or attempts mismatch", id)
-		}
-		return fmt.Errorf("job_queue: fail lookup: %w", err)
-	}
-
-	delay := retryDelay(currentAttempts - 1)
+	// Retry path: use the caller-supplied attempt for delay (no SELECT race).
+	delay := retryDelay(attempt - 1)
 	const retryQ = `UPDATE jobs SET status = 'pending', run_at = NOW() + $2::interval, updated_at = NOW(),
 			last_error = COALESCE($3, last_error)
 		WHERE id = $1 AND status = 'processing' AND attempts = $4 AND attempts < max_retries`
-	result, err = q.db.ExecContext(ctx, retryQ, id, fmt.Sprintf("%d milliseconds", delay.Milliseconds()), lastErr, attempts)
+	result, err = q.db.ExecContext(ctx, retryQ, id, fmt.Sprintf("%d milliseconds", delay.Milliseconds()), lastErr, attempt)
 	if err != nil {
 		return fmt.Errorf("job_queue: fail retry: %w", err)
 	}
@@ -280,7 +199,7 @@ func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr err
 		return fmt.Errorf("job_queue: fail retry rows: %w", err)
 	}
 	if retryRows == 0 {
-		return fmt.Errorf("job_queue: job %s not found or not processing", id)
+		return fmt.Errorf("job_queue: fail %s attempt %d: %w", id, attempt, jobs.ErrOutcomeNotApplied)
 	}
 	return nil
 }
@@ -403,176 +322,103 @@ func (q *JobQueue) CountsByType(ctx context.Context, jobType string) (map[jobs.S
 	return out, nil
 }
 
-// Retry resets a failed job back to pending (attempts = 0), or reclaims a
-// processing job older than DefaultStaleProcessingLease (attempts preserved).
-// See jobs.Admin for the full contract.
-func (q *JobQueue) Retry(ctx context.Context, id string) error {
-	d, err := q.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if d == nil {
-		return apperror.NotFound("job not found")
-	}
-	switch d.Status {
-	case jobs.StatusFailed:
-		return q.rependInTx(ctx, id, `
-			UPDATE jobs SET status = 'pending', attempts = 0, run_at = NOW(), updated_at = NOW()
-			WHERE id = $1 AND status = 'failed'`,
-			nil,
-			func(current jobs.Status) error {
-				return apperror.Conflict(fmt.Sprintf("job is %s, not failed — only a failed job can be retried", current))
-			})
-	case jobs.StatusProcessing:
-		return q.requeueStaleProcessing(ctx, id, jobs.DefaultStaleProcessingLease)
-	default:
-		return apperror.Conflict(fmt.Sprintf("job is %s, not failed — only a failed or stale-processing job can be retried", d.Status))
-	}
+// Requeue moves a processing job back to pending without resetting attempts.
+func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int, opts ...jobs.RequeueOption) error {
+	return q.RequeueWithBeforeCommit(ctx, id, attempt, nil, opts...)
 }
 
-// Requeue moves a processing job back to pending when attempt matches and the
-// row is older than jobs.DefaultRequeueMinAge. Types that must run OnRequeued
-// are refused: this update is outside the re-pend transaction (UPG4 ticket 03).
-// opts are ignored so WithRequeueMinAge cannot shorten that age before ticket 03.
-func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int, _ ...jobs.RequeueOption) error {
-	var jobType string
-	err := q.db.QueryRowContext(ctx, `SELECT type FROM jobs WHERE id = $1`, id).Scan(&jobType)
+// RequeueWithBeforeCommit locks the row, validates reclaim predicates on the
+// database clock, runs before (fence release) while still processing under
+// FOR UPDATE, then sets pending. A non-nil before error or panic aborts —
+// the row stays processing.
+//
+// Hooks must use jobs.RequeueTx / pluginsdk.RequeueTx for fence writes so
+// they commit with the jobs row (or be independently idempotent). External
+// side effects that commit before this TX are not retried on COMMIT failure —
+// the reclaim returns the commit error and the row stays processing.
+func (q *JobQueue) RequeueWithBeforeCommit(ctx context.Context, id string, attempt int, before jobs.RequeueBeforeCommit, opts ...jobs.RequeueOption) error {
+	minAge := jobs.ApplyRequeueOptions(opts)
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("job_queue: requeue begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	var attempts int
+	var updatedAt time.Time
+	var aged bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, attempts, updated_at,
+		        (updated_at < NOW() - ($2::bigint * INTERVAL '1 millisecond'))
+		 FROM jobs WHERE id = $1 FOR UPDATE`,
+		id, minAge.Milliseconds(),
+	).Scan(&status, &attempts, &updatedAt, &aged)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("job_queue: requeue %s attempt %d: %w", id, attempt, jobs.ErrRequeueConflict)
+		return fmt.Errorf("job_queue: requeue %s: %w", id, jobs.ErrRequeueNotProcessing)
 	}
 	if err != nil {
-		return fmt.Errorf("job_queue: requeue: %w", err)
+		return fmt.Errorf("job_queue: requeue lock: %w", err)
 	}
-	if q.requeueRequiresFence(jobType) {
-		return fmt.Errorf("job_queue: requeue %s: on requeued hook required for job type %q", id, jobType)
+	if status != string(jobs.StatusProcessing) {
+		return fmt.Errorf("job_queue: requeue %s status %s: %w", id, status, jobs.ErrRequeueNotProcessing)
+	}
+	if attempts != attempt {
+		return fmt.Errorf("job_queue: requeue %s attempt %d (have %d): %w", id, attempt, attempts, jobs.ErrRequeueWrongAttempt)
+	}
+	if !aged {
+		return fmt.Errorf("job_queue: requeue %s updated_at %s younger than %s (db clock): %w",
+			id, updatedAt.UTC().Format(time.RFC3339Nano), minAge, jobs.ErrRequeueTooFresh)
 	}
 
-	const query = `UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND status = 'processing' AND attempts = $2
-		  AND updated_at < NOW() - ($3::text || ' milliseconds')::interval`
-	result, err := q.db.ExecContext(ctx, query, id, attempt, strconv.FormatInt(jobs.DefaultRequeueMinAge.Milliseconds(), 10))
+	hookCtx := jobs.WithRequeueTx(ctx, tx)
+	if before != nil {
+		var beforeErr error
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					beforeErr = fmt.Errorf("job_queue: requeue before-commit panic: %v", rec)
+				}
+			}()
+			beforeErr = before(hookCtx, id, attempt)
+		}()
+		if beforeErr != nil {
+			return beforeErr
+		}
+	}
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
+		 WHERE id = $1 AND status = 'processing' AND attempts = $2`,
+		id, attempt,
+	)
 	if err != nil {
-		return fmt.Errorf("job_queue: requeue: %w", err)
+		return fmt.Errorf("job_queue: requeue update: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("job_queue: requeue rows: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("job_queue: requeue %s attempt %d: %w", id, attempt, jobs.ErrRequeueConflict)
+		return fmt.Errorf("job_queue: requeue %s: %w", id, jobs.ErrRequeueConflict)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("job_queue: requeue commit: %w", err)
 	}
 	return nil
 }
 
-func (q *JobQueue) requeueRequiresFence(jobType string) bool {
-	if jobType == MetalDogsGenerateJobType {
-		return true
-	}
-	q.mu.RLock()
-	_, required := q.requiredOnRequeued[jobType]
-	q.mu.RUnlock()
-	return required
-}
+var _ jobs.RequeueHookable = (*JobQueue)(nil)
 
-func (q *JobQueue) RequeueLease(ctx context.Context, id string, lease time.Duration) (bool, error) {
-	if id == "" {
-		return false, apperror.NotFound("job not found")
-	}
-	if lease <= 0 {
-		lease = jobs.DefaultStaleProcessingLease
-	}
-	secs := int64(lease.Seconds())
-	if secs < 1 {
-		secs = 1
-	}
-	requeued, err := q.rependInTxBool(ctx, id, `
-		UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND (
-			status IN ('failed', 'done', 'cancelled')
-			OR (status = 'processing' AND updated_at < NOW() - make_interval(secs => $2))
-		)`,
-		[]any{secs},
-		func(current jobs.Status) (bool, error) {
-			switch current {
-			case jobs.StatusPending, jobs.StatusProcessing:
-				return false, nil
-			default:
-				return false, apperror.Conflict(fmt.Sprintf("job is %s and could not be requeued", current))
-			}
+// Retry resets a failed job back to pending so the worker picks it up
+// again. See jobs.Admin for the full contract.
+func (q *JobQueue) Retry(ctx context.Context, id string) error {
+	return q.transitionStatus(ctx, id, jobs.StatusFailed,
+		`UPDATE jobs SET status = 'pending', attempts = 0, run_at = NOW(), updated_at = NOW()
+			WHERE id = $1 AND status = 'failed'`,
+		func(current jobs.Status) string {
+			return fmt.Sprintf("job is %s, not failed — only a failed job can be retried", current)
 		})
-	return requeued, err
-}
-
-func (q *JobQueue) requeueStaleProcessing(ctx context.Context, id string, lease time.Duration) error {
-	if lease <= 0 {
-		lease = jobs.DefaultStaleProcessingLease
-	}
-	secs := int64(lease.Seconds())
-	if secs < 1 {
-		secs = 1
-	}
-	return q.rependInTx(ctx, id, `
-		UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND status = 'processing'
-		  AND updated_at < NOW() - make_interval(secs => $2)`,
-		[]any{secs},
-		func(current jobs.Status) error {
-			if current == jobs.StatusProcessing {
-				return apperror.Conflict("job is currently processing and younger than the stale lease — wait for it to complete or fail, then retry")
-			}
-			return apperror.Conflict(fmt.Sprintf("job is %s, not failed — only a failed or stale-processing job can be retried", current))
-		})
-}
-
-// rependInTx locks the job row, applies updateQuery when it matches, runs
-// OnRequeued on the open transaction, then commits. The product fence therefore
-// lands before the pending status is visible to Dequeue.
-func (q *JobQueue) rependInTx(ctx context.Context, id, updateQuery string, extraArgs []any, onNoMatch func(jobs.Status) error) error {
-	_, err := q.rependInTxBool(ctx, id, updateQuery, extraArgs, func(current jobs.Status) (bool, error) {
-		return false, onNoMatch(current)
-	})
-	return err
-}
-
-func (q *JobQueue) rependInTxBool(ctx context.Context, id, updateQuery string, extraArgs []any, onNoMatch func(jobs.Status) (bool, error)) (bool, error) {
-	tx, err := q.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("job_queue: repend begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var jobType, status string
-	err = tx.QueryRowContext(ctx, `
-		SELECT type, status FROM jobs WHERE id = $1 FOR UPDATE
-	`, id).Scan(&jobType, &status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, apperror.NotFound("job not found")
-	}
-	if err != nil {
-		return false, fmt.Errorf("job_queue: repend lock: %w", err)
-	}
-
-	args := make([]any, 0, 1+len(extraArgs))
-	args = append(args, id)
-	args = append(args, extraArgs...)
-	res, err := tx.ExecContext(ctx, updateQuery, args...)
-	if err != nil {
-		return false, fmt.Errorf("job_queue: repend update: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("job_queue: repend rows: %w", err)
-	}
-	if n == 0 {
-		return onNoMatch(jobs.Status(status))
-	}
-	if err := q.runOnRequeued(ctx, tx, id, jobType); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("job_queue: repend commit: %w", err)
-	}
-	return true, nil
 }
 
 // Cancel marks a pending job cancelled — it will never be dequeued. See

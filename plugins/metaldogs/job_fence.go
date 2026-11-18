@@ -4,36 +4,26 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/akarso/shopanda/internal/domain/jobs"
-	infraPostgres "github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 )
 
-// generateJobFenceQueue is the Postgres job queue surface needed to install the
-// generate claim fence for Retry/Requeue (including jobs:retry and admin retry).
-type generateJobFenceQueue interface {
-	SetOnRequeued(fn func(ctx context.Context, exec infraPostgres.RequeueExec, jobID, jobType string) error)
-	RequireOnRequeued(jobTypes ...string)
-}
-
-// InstallGenerateJobFence registers OnRequeued + RequireOnRequeued so every
-// re-pend of integration.sync.metaldogs.generate invalidates the product claim
-// inside the same transaction. Safe to call more than once.
-func InstallGenerateJobFence(queue jobs.Queue) error {
-	if queue == nil {
-		return fmt.Errorf("metaldogs: install generate job fence: queue required")
+// InstallGenerateJobFence registers the generate claim fence. The wrap keeps
+// jobs.Reader and jobs.Admin (including CountsByStatus) and UnwrapQueue so
+// BindQueue accepts it. OnRequeued is Host.OnRequeued(ctx, jobID, attempt):
+// the platform runs it from RequeueWithBeforeCommit before the pending
+// update, and pluginsdk.RequeueTx is that same *sql.Tx.
+func InstallGenerateJobFence(h pluginsdk.Host) error {
+	if h == nil {
+		return fmt.Errorf("metaldogs: install generate job fence: host required")
 	}
-	q, ok := queue.(generateJobFenceQueue)
-	if !ok {
-		return fmt.Errorf("metaldogs: install generate job fence: queue does not support OnRequeued (require queue.driver=postgres)")
-	}
-	jobType := infraPostgres.MetalDogsGenerateJobType
-	q.RequireOnRequeued(jobType)
-	q.SetOnRequeued(func(ctx context.Context, exec infraPostgres.RequeueExec, jobID, jt string) error {
-		if jt != jobType {
-			return nil
+	h.OnQueueBound(wrapGenerateJobFence)
+	h.OnRequeued(func(ctx context.Context, jobID string, _ int) error {
+		tx, ok := pluginsdk.RequeueTx(ctx)
+		if !ok || tx == nil {
+			return fmt.Errorf("metaldogs generate fence: requeue transaction missing")
 		}
-		return postgres.InvalidateClaimExec(ctx, exec, jobID)
+		return postgres.InvalidateClaimExec(ctx, tx, jobID)
 	})
 	return nil
 }

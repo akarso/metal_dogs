@@ -96,6 +96,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	h.Require(pluginsdk.CapCatalog)
 	h.Require(pluginsdk.CapCatalogSeed)
 	p.host = h
+	if err := InstallGenerateJobFence(h); err != nil {
+		return fmt.Errorf("metaldogs plugin: generate job fence: %w", err)
+	}
 
 	providerName := settings.Provider
 	maxRetries := settings.MaxRetries

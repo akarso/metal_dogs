@@ -234,3 +234,24 @@ The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` de
 
 `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` calls `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream has no shared serve/worker function for that sequence. `runWorker`, the scheduler, and search reindex inline the dual skip; serve inlines `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. A later change to those skip lists is not caught by this test.
 
+## Ticket 03 — job delivery fence on SDK hooks
+
+- Date: 2026-11-18
+- Pin: unchanged `565dde5a284ea3983b431e915acb4a37ae166a3c`
+
+Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, `internal/infrastructure/postgres/job_queue.go` (+ test), `internal/platform/plugin/providers.go`, `queue_hooks.go`, `internal/application/integration/sync_runtime.go`, `cmd/api/job_queue_bind.go`, `jobs_cli.go`, `main.go`, and the queue test doubles listed with them. `BoundQueue` does not fall back to `RegisterQueue`. Sync handlers re-inject `payload.request_id` only.
+
+### Old fence → pin hooks
+
+| Before | After |
+| --- | --- |
+| `postgres.JobQueue.SetOnRequeued(ctx, exec, jobID, jobType)` inside `rependInTx`, after the pending UPDATE, before COMMIT | `Host.OnRequeued(ctx, jobID, attempt)`. `WrapRequeueNotify` calls `RequeueWithBeforeCommit`. Postgres runs that callback before the pending UPDATE, with `jobs.WithRequeueTx`. `pluginsdk.RequeueTx(ctx)` is that `*sql.Tx`. The claim bump commits with the jobs row or rolls back with it |
+| `RequireOnRequeued` + `Requeue` refusing `MetalDogsGenerateJobType` | Dropped. `Queue.Requeue` is the pin implementation. The hook returns an error when `RequeueTx` is missing, which aborts `Requeue` |
+| `Admin.RequeueLease` (failed/done/cancelled/stale processing, attempts kept, fence in the same tx) | Stale processing: `Queue.Requeue(ctx, id, attempt, WithRequeueMinAge(DefaultClaimLease))`, fence via `OnRequeued`. Failed/done/cancelled: `Queue.Requeue` returns `ErrRequeueNotProcessing`. The plugin then updates those rows to pending in its own transaction and calls `InvalidateClaimExec` on that tx. `Admin.Retry` is failed-only and resets attempts; it does not run `OnRequeued` |
+| `cmd/api` `InstallGenerateJobFence` on the raw queue | `Plugin.Init` calls `Host.OnQueueBound`. The wrap forwards `Reader` (including `CountsByStatus`) and `Admin`, exposes `UnwrapQueue`, and implements `RequeueHookable` so the notify wrapper does not run the hook after commit |
+| `ErrSkipOutcome` text `job: skip outcome` | Pin text `jobs: skip outcome`. Same sentinel. Handlers still return it when the product claim is lost. Stale `Complete`/`Fail` return `ErrOutcomeNotApplied` (`not applied`) and leave the newer attempt |
+
+`jobs:list` / `jobs:show` / `jobs:cancel` and `GET /admin/jobs` use the pin service. `jobs:retry` retries a failed job only. `jobs:requeue` is the stale-processing reclaim (attempts kept) and runs `OnRequeued`.
+
+`plugins/metaldogs/job_fence.go` no longer imports `internal/*`. The queue wrap lives in `generate_fence_queue.go` (`internal/domain/jobs` only, so the method set matches `jobs.Queue`). `TestImportBoundary` has no `job_fence.go` line. The gate's `imports forbidden` check does not list it.
+

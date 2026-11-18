@@ -6,11 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/internal/platform/apperror"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
+	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/observability"
@@ -34,8 +37,9 @@ func registerGenerate(app *plugin.App, worker *application.GenerateWorker, maxRe
 // product generation_job_id as the platform job primary key. On Conflict it loads
 // the existing row (Postgres Reader/Admin) and re-pends failed/done/cancelled or
 // processing older than the stage lease; pending / young processing are left alone.
-// Product claim fencing runs inside JobQueue.Requeue's transaction via OnRequeued
-// (not a second post-commit InvalidateClaim).
+// Product claim fencing for a stale processing row runs in Host.OnRequeued
+// (pluginsdk.RequeueTx, same transaction as the re-pend). Failed, done, and
+// cancelled rows are not Queue.Requeue; those re-pend in rependTerminalGenerateJob.
 func enqueueGenerateIdempotent(app *plugin.App, ctx context.Context, generationJobID, designID string) error {
 	if app == nil {
 		return fmt.Errorf("metaldogs generate enqueue: app required")
@@ -79,23 +83,80 @@ func enqueueGenerateIdempotent(app *plugin.App, ctx context.Context, generationJ
 	job.ID = generationJobID
 	if err := queue.Enqueue(ctx, job); err != nil {
 		if apperror.Is(err, apperror.CodeConflict) {
-			return resolveGenerateEnqueueConflict(queue, ctx, generationJobID)
+			return resolveGenerateEnqueueConflict(app, queue, ctx, generationJobID)
 		}
 		return fmt.Errorf("metaldogs generate enqueue: %w", err)
 	}
 	return nil
 }
 
-func resolveGenerateEnqueueConflict(queue jobs.Queue, ctx context.Context, generationJobID string) error {
-	admin, ok := queue.(jobs.Admin)
+func resolveGenerateEnqueueConflict(app *plugin.App, queue jobs.Queue, ctx context.Context, generationJobID string) error {
+	reader, ok := queue.(jobs.Reader)
 	if !ok {
 		return fmt.Errorf("metaldogs generate enqueue: job %s already exists but queue does not support Requeue (require queue.driver=postgres)", generationJobID)
 	}
-	_, err := admin.RequeueLease(ctx, generationJobID, domain.DefaultClaimLease)
+	detail, err := reader.Get(ctx, generationJobID)
 	if err != nil {
 		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
 	}
-	// Claim fencing is owned by JobQueue.OnRequeued inside the re-pend transaction.
+	if detail == nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", generationJobID)
+	}
+	err = queue.Requeue(ctx, generationJobID, detail.Attempts, jobs.WithRequeueMinAge(domain.DefaultClaimLease))
+	if err == nil || errors.Is(err, jobs.ErrRequeueTooFresh) {
+		return nil
+	}
+	if errors.Is(err, jobs.ErrRequeueNotProcessing) {
+		return rependTerminalGenerateJob(app, ctx, generationJobID)
+	}
+	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+}
+
+// rependTerminalGenerateJob moves failed/done/cancelled back to pending without
+// resetting attempts. Queue.Requeue refuses those statuses, and Admin.Retry
+// resets attempts and does not call OnRequeued, so the claim bump shares this
+// transaction instead.
+func rependTerminalGenerateJob(app *plugin.App, ctx context.Context, id string) error {
+	if app == nil || app.Bootstrap == nil || app.Bootstrap.DB == nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal job %s: database required", id)
+	}
+	tx, err := app.Bootstrap.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status)
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal lock: %w", err)
+	}
+	switch status {
+	case string(jobs.StatusPending), string(jobs.StatusProcessing):
+		return nil
+	case string(jobs.StatusFailed), string(jobs.StatusDone), string(jobs.StatusCancelled):
+	default:
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal job %s is %s", id, status)
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status = $2`, id, status)
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal job %s status changed", id)
+	}
+	if err := postgres.InvalidateClaimExec(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal commit: %w", err)
+	}
 	return nil
 }
 

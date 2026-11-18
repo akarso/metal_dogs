@@ -24,6 +24,7 @@ type mockQueue struct {
 	failed          []string
 	failErrs        []error // jobErr as observed by each Fail call, in order
 	completeFn      func(id string) error
+	failFn          func(id string) error
 	failCtxErrs     []error // ctx.Err() as observed by each Fail call, in order
 	completeCtxErrs []error
 }
@@ -48,7 +49,7 @@ func (m *mockQueue) Dequeue(_ context.Context) (*jobs.Job, error) {
 	return j, nil
 }
 
-func (m *mockQueue) Complete(ctx context.Context, id string, attempts int) error {
+func (m *mockQueue) Complete(ctx context.Context, id string, attempt int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completeCtxErrs = append(m.completeCtxErrs, ctx.Err())
@@ -63,11 +64,16 @@ func (m *mockQueue) Complete(ctx context.Context, id string, attempts int) error
 
 func (m *mockQueue) Requeue(context.Context, string, int, ...jobs.RequeueOption) error { return nil }
 
-func (m *mockQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
+func (m *mockQueue) Fail(ctx context.Context, id string, attempt int, jobErr error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.failCtxErrs = append(m.failCtxErrs, ctx.Err())
 	m.failErrs = append(m.failErrs, jobErr)
+	if m.failFn != nil {
+		if err := m.failFn(id); err != nil {
+			return err
+		}
+	}
 	m.failed = append(m.failed, id)
 	return nil
 }
@@ -298,6 +304,125 @@ func TestWorker_FailsUnknownType(t *testing.T) {
 	}
 }
 
+func TestWorker_ErrSkipOutcome_SkipsCompleteAndFail(t *testing.T) {
+	q := &mockQueue{}
+	log := &mockLogger{}
+	metrics := &mockMetrics{}
+	handler := &mockHandler{
+		jobType: "skip_job",
+		handleFn: func(context.Context, jobs.Job) error {
+			return jobs.ErrSkipOutcome
+		},
+	}
+	w := jobs.NewWorker(q, log, time.Second).WithMetrics(metrics)
+	w.Register(handler)
+	job, _ := jobs.NewJob("j-skip", "skip_job", nil)
+	_ = q.Enqueue(context.Background(), job)
+	if !w.ProcessOne(context.Background()) {
+		t.Fatal("expected job processed")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.completed) != 0 || len(q.failed) != 0 {
+		t.Fatalf("completed=%v failed=%v, want neither", q.completed, q.failed)
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if len(metrics.results) != 1 || metrics.results[0].outcome != "skipped" {
+		t.Fatalf("metrics = %+v, want skipped", metrics.results)
+	}
+}
+
+func TestWorker_ErrSkipOutcome_WrappedRealErrorStillFails(t *testing.T) {
+	q := &mockQueue{}
+	log := &mockLogger{}
+	metrics := &mockMetrics{}
+	realErr := errors.New("handler boom")
+	handler := &mockHandler{
+		jobType: "skip_wrap",
+		handleFn: func(context.Context, jobs.Job) error {
+			return errors.Join(jobs.ErrSkipOutcome, realErr)
+		},
+	}
+	w := jobs.NewWorker(q, log, time.Second).WithMetrics(metrics)
+	w.Register(handler)
+	job, _ := jobs.NewJob("j-skip-wrap", "skip_wrap", nil)
+	_ = q.Enqueue(context.Background(), job)
+	if !w.ProcessOne(context.Background()) {
+		t.Fatal("expected job processed")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.failed) != 1 {
+		t.Fatalf("failed=%v, want Fail when sentinel wraps a real error", q.failed)
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if len(metrics.results) != 1 || metrics.results[0].outcome != "failed" {
+		t.Fatalf("metrics = %+v, want failed", metrics.results)
+	}
+}
+
+func TestWorker_ErrSkipOutcome_JoinCancelAndRealStillFails(t *testing.T) {
+	q := &mockQueue{}
+	log := &mockLogger{}
+	metrics := &mockMetrics{}
+	handler := &mockHandler{
+		jobType: "skip_join",
+		handleFn: func(context.Context, jobs.Job) error {
+			return errors.Join(jobs.ErrSkipOutcome, context.Canceled, errors.New("boom"))
+		},
+	}
+	w := jobs.NewWorker(q, log, time.Second).WithMetrics(metrics)
+	w.Register(handler)
+	job, _ := jobs.NewJob("j-skip-join", "skip_join", nil)
+	_ = q.Enqueue(context.Background(), job)
+	if !w.ProcessOne(context.Background()) {
+		t.Fatal("expected job processed")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.failed) != 1 {
+		t.Fatalf("failed=%v, want Fail when Join includes a real error beside cancel", q.failed)
+	}
+}
+
+func TestWorker_CompleteNotApplied_DoesNotRecordSuccess(t *testing.T) {
+	q := &mockQueue{}
+	q.completeFn = func(string) error { return jobs.ErrOutcomeNotApplied }
+	log := &mockLogger{}
+	metrics := &mockMetrics{}
+	handler := &mockHandler{
+		jobType:  "done_job",
+		handleFn: func(context.Context, jobs.Job) error { return nil },
+	}
+	w := jobs.NewWorker(q, log, time.Second).WithMetrics(metrics)
+	w.Register(handler)
+	job, _ := jobs.NewJob("j-stale", "done_job", nil)
+	_ = q.Enqueue(context.Background(), job)
+	if !w.ProcessOne(context.Background()) {
+		t.Fatal("expected job processed")
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if len(metrics.results) != 1 || metrics.results[0].outcome != "not_applied" {
+		t.Fatalf("metrics = %+v, want not_applied (not success/failed)", metrics.results)
+	}
+	if len(metrics.failures) != 0 {
+		t.Fatalf("failures = %v, want none for CAS miss", metrics.failures)
+	}
+	found := false
+	for _, e := range log.entries {
+		if e.msg == "worker.job.complete_not_applied" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected worker.job.complete_not_applied log")
+	}
+}
+
 func TestWorker_HandlerError(t *testing.T) {
 	q := &mockQueue{}
 	log := &mockLogger{}
@@ -374,6 +499,37 @@ func TestWorker_HandlerError_RecordsMetric(t *testing.T) {
 	}
 	if len(m.results) != 1 || m.results[0].jobType != "fail_job" || m.results[0].outcome != "failed" {
 		t.Errorf("results = %+v, want one failed fail_job", m.results)
+	}
+}
+
+func TestWorker_FailNotApplied_DoesNotRecordJobFailure(t *testing.T) {
+	q := &mockQueue{}
+	q.failFn = func(string) error { return jobs.ErrOutcomeNotApplied }
+	log := &mockLogger{}
+	m := &mockMetrics{}
+	handler := &mockHandler{
+		jobType:  "fail_job",
+		handleFn: func(context.Context, jobs.Job) error { return errors.New("boom") },
+	}
+	w := jobs.NewWorker(q, log, time.Second).WithMetrics(m)
+	w.Register(handler)
+	job, _ := jobs.NewJob("j-stale-fail", "fail_job", nil)
+	_ = q.Enqueue(context.Background(), job)
+	if !w.ProcessOne(context.Background()) {
+		t.Fatal("expected job processed")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.failures) != 0 {
+		t.Fatalf("failures = %v, want none on Fail CAS miss", m.failures)
+	}
+	if len(m.results) != 1 || m.results[0].outcome != "not_applied" {
+		t.Fatalf("results = %+v, want not_applied", m.results)
+	}
+	for _, e := range log.entries {
+		if e.msg == "worker.job.failed" {
+			t.Fatal("worker.job.failed must not log on Fail CAS miss")
+		}
 	}
 }
 

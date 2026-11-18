@@ -42,8 +42,8 @@ func (q *memQueue) Dequeue(context.Context) (*jobs.Job, error) {
 	job.Attempts++
 	return &job, nil
 }
-func (q *memQueue) Complete(context.Context, string, int) error                       { return nil }
-func (q *memQueue) Fail(context.Context, string, int, error) error                    { return nil }
+func (q *memQueue) Complete(context.Context, string, int) error    { return nil }
+func (q *memQueue) Fail(context.Context, string, int, error) error { return nil }
 func (q *memQueue) Requeue(context.Context, string, int, ...jobs.RequeueOption) error { return nil }
 
 func (q *memQueue) len() int {
@@ -176,6 +176,91 @@ func TestRegisterSyncJobEventTriggers_PropagatesRequestIDFromPublish(t *testing.
 	}
 }
 
+func TestRegisterSyncJobHandlers_ReinjectsRequestIDOntoCtx(t *testing.T) {
+	log := logger.NewWithWriter(io.Discard, "error")
+	var gotCtxID string
+	app := &plugin.App{
+		Logger:    log,
+		Bootstrap: &plugin.Bootstrap{DB: &sql.DB{}},
+	}
+	job := extapi.SyncJob{
+		Name:    "pull.stock",
+		Trigger: extapi.Cron("@every 5m"),
+		Handler: func(ctx context.Context, _ extapi.SyncJobContext) error {
+			gotCtxID = requestctx.RequestID(ctx)
+			return nil
+		},
+	}
+	if err := app.Integration("acme").RegisterSyncJob(job); err != nil {
+		t.Fatalf("RegisterSyncJob: %v", err)
+	}
+
+	queue := &memQueue{}
+	worker := jobs.NewWorker(queue, log, time.Second)
+	if err := integrationApp.RegisterSyncJobHandlers(app, worker); err != nil {
+		t.Fatalf("RegisterSyncJobHandlers: %v", err)
+	}
+
+	envelope, err := plugin.NewSyncJobEnvelope(app.SyncJobs()[0], extapi.SyncTriggerCron, map[string]interface{}{
+		"request_id": "req-from-payload",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Enqueue(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !worker.ProcessOne(context.Background()) {
+		t.Fatal("expected job processed")
+	}
+	if gotCtxID != "req-from-payload" {
+		t.Fatalf("ctx request_id = %q, want req-from-payload", gotCtxID)
+	}
+}
+
+func TestRegisterSyncJobHandlers_KeepsExistingCtxRequestID(t *testing.T) {
+	log := logger.NewWithWriter(io.Discard, "error")
+	var gotCtxID string
+	app := &plugin.App{
+		Logger:    log,
+		Bootstrap: &plugin.Bootstrap{DB: &sql.DB{}},
+	}
+	job := extapi.SyncJob{
+		Name:    "pull.stock",
+		Trigger: extapi.Cron("@every 5m"),
+		Handler: func(ctx context.Context, _ extapi.SyncJobContext) error {
+			gotCtxID = requestctx.RequestID(ctx)
+			return nil
+		},
+	}
+	if err := app.Integration("acme").RegisterSyncJob(job); err != nil {
+		t.Fatalf("RegisterSyncJob: %v", err)
+	}
+
+	queue := &memQueue{}
+	worker := jobs.NewWorker(queue, log, time.Second)
+	if err := integrationApp.RegisterSyncJobHandlers(app, worker); err != nil {
+		t.Fatalf("RegisterSyncJobHandlers: %v", err)
+	}
+
+	envelope, err := plugin.NewSyncJobEnvelope(app.SyncJobs()[0], extapi.SyncTriggerCron, map[string]interface{}{
+		"request_id": "req-from-payload",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Enqueue(context.Background(), envelope); err != nil {
+		t.Fatal(err)
+	}
+	ctx := requestctx.WithRequestID(context.Background(), "req-already-on-ctx")
+	if !worker.ProcessOne(ctx) {
+		t.Fatal("expected job processed")
+	}
+	if gotCtxID != "req-already-on-ctx" {
+		t.Fatalf("ctx request_id = %q, want existing ctx value", gotCtxID)
+	}
+}
+
 func TestRegisterSyncJobHandlers_AttemptsFromDequeuedJob(t *testing.T) {
 	log := logger.NewWithWriter(io.Discard, "error")
 	var gotAttempts int
@@ -252,47 +337,6 @@ func TestRegisterSyncJobHandlers_RegistersWorkerHandler(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("calls = %d", calls.Load())
-	}
-}
-
-func TestRegisterSyncJobHandlers_InjectsPayloadRequestIDIntoCtx(t *testing.T) {
-	log := logger.NewWithWriter(io.Discard, "error")
-	var sawID string
-	app := &plugin.App{
-		Logger:    log,
-		Bootstrap: &plugin.Bootstrap{DB: &sql.DB{}},
-	}
-	if err := app.Integration("acme").RegisterSyncJob(extapi.SyncJob{
-		Name:    "pull.stock",
-		Trigger: extapi.Manual(),
-		Handler: func(ctx context.Context, _ extapi.SyncJobContext) error {
-			sawID = requestctx.RequestID(ctx)
-			return nil
-		},
-	}); err != nil {
-		t.Fatalf("RegisterSyncJob: %v", err)
-	}
-
-	queue := &memQueue{}
-	worker := jobs.NewWorker(queue, log, time.Second)
-	if err := integrationApp.RegisterSyncJobHandlers(app, worker); err != nil {
-		t.Fatalf("RegisterSyncJobHandlers: %v", err)
-	}
-
-	envelope, err := plugin.NewSyncJobEnvelope(app.SyncJobs()[0], extapi.SyncTriggerManual, map[string]interface{}{
-		"request_id": "corr-from-payload",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := queue.Enqueue(context.Background(), envelope); err != nil {
-		t.Fatal(err)
-	}
-	if !worker.ProcessOne(context.Background()) {
-		t.Fatal("ProcessOne expected a job")
-	}
-	if sawID != "corr-from-payload" {
-		t.Fatalf("RequestID(ctx) = %q, want payload reinjected", sawID)
 	}
 }
 
