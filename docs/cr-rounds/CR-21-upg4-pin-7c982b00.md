@@ -248,19 +248,18 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 | `postgres.JobQueue.SetOnRequeued(ctx, exec, jobID, jobType)` inside `rependInTx`, after the pending UPDATE, before COMMIT | `Host.OnRequeued(ctx, jobID, attempt)`. `WrapRequeueNotify` calls `RequeueWithBeforeCommit`. Postgres runs that callback before the pending UPDATE, with `jobs.WithRequeueTx`. `pluginsdk.RequeueTx(ctx)` is that `*sql.Tx`. The claim bump commits with the jobs row or rolls back with it |
 | `RequireOnRequeued` + `Requeue` refusing `MetalDogsGenerateJobType` | Dropped. `Queue.Requeue` is the pin implementation. `OnRequeued` has no job type. A missing `RequeueTx` returns an error only when `jobID` is a `metaldogs_generation_jobs` row (non-UUID ids are not that row). Other jobs requeue |
 | `Admin.RequeueLease` (failed/done/cancelled/stale processing, attempts kept, fence in the same tx) | Stale processing: `Queue.Requeue(ctx, id, attempt, WithRequeueMinAge(DefaultClaimLease))`, fence via `OnRequeued`. Failed/done/cancelled: `Queue.Requeue` returns `ErrRequeueNotProcessing`. The plugin then updates those rows to pending in its own transaction and calls `InvalidateClaimExec` on that tx. `Admin.Retry` is failed-only and resets attempts; it does not run `OnRequeued` |
-| `cmd/api` `InstallGenerateJobFence` on the raw queue | `Plugin.Init` calls `Host.OnQueueBound`. The wrap forwards `Reader` (including `CountsByStatus`) and `Admin`, exposes `UnwrapQueue`, and implements `RequeueHookable` so the notify wrapper does not run the hook after commit |
+| `cmd/api` `InstallGenerateJobFence` on the raw queue | `Plugin.Init` calls `Host.OnRequeued` only. Postgres `WrapRequeueNotify` already runs that hook inside `RequeueWithBeforeCommit`. A queue wrap is not installed. `queue.driver` other than postgres (empty means the platform default) fails Init |
 | `ErrSkipOutcome` text `job: skip outcome` | Pin text `jobs: skip outcome`. Same sentinel. Handlers still return it when the product claim is lost. Stale `Complete`/`Fail` return `ErrOutcomeNotApplied` (`not applied`) and leave the newer attempt |
 
 `jobs:list` / `jobs:show` / `jobs:cancel` and `GET /admin/jobs` use the pin service. `jobs:retry` retries a failed job only. `jobs:requeue` is the stale-processing reclaim (attempts kept) and runs `OnRequeued`.
 
-`plugins/metaldogs/job_fence.go` no longer imports `internal/*`. The queue wrap lives in `generate_fence_queue.go`. `TestImportBoundary` has no `job_fence.go` line. It does report `generate_fence_queue.go` (`imports disallowed` `internal/domain/jobs`).
+`plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line.
 
-`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that.
+`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that. The write is listed in `docs/architecture/overview.md`. `sync_generate_repend_test.go` is the schema contract.
 
 ### Shopanda gaps (ticket 03)
 
-- `pluginsdk` does not alias `jobs.Queue`, `jobs.Reader`, `jobs.Admin`, or `jobs.RequeueHookable`. `Host.OnQueueBound` is `func(any) any`, and the method set uses those types, so the wrap imports `internal/domain/jobs`. `TestImportBoundary` flags `generate_fence_queue.go`.
-- No queue API re-pends `failed` / `done` / `cancelled`, keeps `attempts`, and runs `OnRequeued` in the same transaction. `Queue.Requeue` is processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` is failed-only, resets `attempts`, and does not run the hook. The plugin updates `jobs` itself for that case.
+- No queue API re-pends `failed` / `done` / `cancelled`, keeps `attempts`, and runs `OnRequeued` in the same transaction. `Queue.Requeue` is processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` is failed-only, resets `attempts`, and does not run the hook. The plugin updates `jobs` itself for that case. Follow-up: a terminal requeue that keeps attempts and runs `OnRequeued` in the same transaction. `Host.ConfigValue` on a scoped host cannot read `queue.driver`, so Init reads `App.Config.Queue.Driver`.
 
 ### Known red on the pin (not Metal Dogs wiring)
 

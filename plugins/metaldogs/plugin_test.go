@@ -129,6 +129,16 @@ func TestPlugin_Migration_ImplementsMigrator(t *testing.T) {
 	}
 }
 
+func TestPlugin_Init_NonPostgresQueue(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	app.Config.Queue.Driver = "rabbitmq"
+	err := metaldogs.New().Init(app)
+	if err == nil || !strings.Contains(err.Error(), "queue.driver=rabbitmq") {
+		t.Fatalf("Init: %v", err)
+	}
+}
+
 func TestPlugin_Init_Disabled(t *testing.T) {
 	t.Parallel()
 	if err := metaldogs.New().Init(testApp(t, false)); err == nil {

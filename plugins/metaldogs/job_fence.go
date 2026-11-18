@@ -12,13 +12,8 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 )
 
-// InstallGenerateJobFence registers the generate claim fence. The wrap keeps
-// jobs.Reader and jobs.Admin (including CountsByStatus) and UnwrapQueue so
-// BindQueue accepts it. OnRequeued is Host.OnRequeued(ctx, jobID, attempt):
-// the platform runs it from RequeueWithBeforeCommit before the pending
-// update, and pluginsdk.RequeueTx is that same *sql.Tx.
-// The SDK hook has no job type. A missing reclaim transaction fails the
-// requeue only when jobID is a metaldogs_generation_jobs row.
+// InstallGenerateJobFence registers Host.OnRequeued so the claim bump commits with the re-pend (pluginsdk.RequeueTx).
+// A missing transaction fails the requeue for a generation-job row; no database handle fails closed.
 func InstallGenerateJobFence(h pluginsdk.Host) error {
 	if h == nil {
 		return fmt.Errorf("metaldogs: install generate job fence: host required")
@@ -27,7 +22,6 @@ func InstallGenerateJobFence(h pluginsdk.Host) error {
 	if opened, ok := h.BootstrapDB(); ok {
 		db = opened
 	}
-	h.OnQueueBound(wrapGenerateJobFence)
 	h.OnRequeued(func(ctx context.Context, jobID string, _ int) error {
 		tx, ok := pluginsdk.RequeueTx(ctx)
 		if ok && tx != nil {
@@ -46,8 +40,11 @@ func InstallGenerateJobFence(h pluginsdk.Host) error {
 }
 
 func generationJobRow(ctx context.Context, db *sql.DB, id string) (bool, error) {
-	if db == nil || id == "" {
+	if id == "" {
 		return false, nil
+	}
+	if db == nil {
+		return false, fmt.Errorf("metaldogs generate fence: database required")
 	}
 	var one int
 	err := db.QueryRowContext(ctx, `SELECT 1 FROM metaldogs_generation_jobs WHERE id = $1`, id).Scan(&one)
