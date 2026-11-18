@@ -58,7 +58,7 @@ Moved:
 
 - `registerMetalDogs` from `cmd/api/register_plugins.go` to `registerProductPlugins` in `cmd/api/register_products.go`. `register_plugins.go` and `wire_routes.go` match the pin. Deleted `cmd/api/cache_control_prefixes.go` (+ test).
 - Typed `MetalDogsPluginConfig` / `Plugins.MetalDogs` removed from `internal/platform/config/config.go`. `plugins_extra.go` no longer lists `metaldogs` in `typedPluginYAMLKeys`, so the slug is `Config.Extra`. Both files still differ from the pin (the pin keeps the typed `enabled` field). `config_test.go` matches the pin again.
-- Public `/api/customizer/*` routes use `pluginsdk.NoCache()`. `pathPrefixFromPattern` does not cut at `{`, so `GET /api/customizer/designs/{id}` is not a prefix. `GET /api/customizer` → `http.NotFoundHandler()` supplies `/api/customizer`. Exact `GET /api/customizer` is a plain 404. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`.
+- Public `/api/customizer/*` routes use `pluginsdk.NoCache()`. `pathPrefixFromPattern` does not cut at `{`, so `GET /api/customizer/designs/{id}` is not a prefix. `GET /api/customizer` → `http.NotFoundHandler()` supplied `/api/customizer` (removed in ticket 01c). Exact `GET /api/customizer` is a plain 404. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`.
 - `job_queue_bind.go` and `jobs_cli.go` call `metaldogs.Enabled` (Extra) so the generate fence still installs when the plugin is on.
 
 Tests:
@@ -76,7 +76,7 @@ Env names (working):
 
 Closed on pin `ab35e965` (ticket 00b). Record of what ticket 01 was waiting on:
 
-- `pathPrefixFromPattern` now cuts at the first `{`. `GET /api/customizer` stays: param routes denylist `/api/customizer/designs`, not `/api/customizer`, and `/api` alone is refused.
+- `pathPrefixFromPattern` now cuts at the first `{`. `GET /api/customizer` stayed: param routes denylist `/api/customizer/designs`, not `/api/customizer`, and `/api` alone is refused (removed in ticket 01c).
 - `yamlMapToStringMap` flattens nested maps to dotted keys and stores `.` / `_` aliases. `expandMetalDogsGeneration` is removed. Lists fail Load.
 
 Open after ticket 01b (Shopanda roadmap; not done in this tree):
