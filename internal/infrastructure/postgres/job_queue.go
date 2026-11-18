@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -429,15 +430,26 @@ func (q *JobQueue) Retry(ctx context.Context, id string) error {
 	}
 }
 
-// Requeue returns a job to pending without resetting attempts. Pending and
-// young processing are no-ops (requeued=false). See jobs.Admin.
-// Requeue implements jobs.Queue. The lease reclaim used by the generate claim
-// fence is RequeueLease (jobs.Admin).
+// Requeue moves a processing job back to pending when attempt matches and the
+// row is older than jobs.DefaultRequeueMinAge. Types that must run OnRequeued
+// are refused: this update is outside the re-pend transaction (UPG4 ticket 03).
 func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int) error {
+	var jobType string
+	err := q.db.QueryRowContext(ctx, `SELECT type FROM jobs WHERE id = $1`, id).Scan(&jobType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("job_queue: requeue %s attempt %d: %w", id, attempt, jobs.ErrRequeueConflict)
+	}
+	if err != nil {
+		return fmt.Errorf("job_queue: requeue: %w", err)
+	}
+	if q.requeueRequiresFence(jobType) {
+		return fmt.Errorf("job_queue: requeue %s: on requeued hook required for job type %q", id, jobType)
+	}
+
 	const query = `UPDATE jobs SET status = 'pending', run_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND status = 'processing' AND attempts = $2
 		  AND updated_at < NOW() - ($3::text || ' milliseconds')::interval`
-	result, err := q.db.ExecContext(ctx, query, id, attempt, jobs.DefaultRequeueMinAge.Milliseconds())
+	result, err := q.db.ExecContext(ctx, query, id, attempt, strconv.FormatInt(jobs.DefaultRequeueMinAge.Milliseconds(), 10))
 	if err != nil {
 		return fmt.Errorf("job_queue: requeue: %w", err)
 	}
@@ -449,6 +461,16 @@ func (q *JobQueue) Requeue(ctx context.Context, id string, attempt int) error {
 		return fmt.Errorf("job_queue: requeue %s attempt %d: %w", id, attempt, jobs.ErrRequeueConflict)
 	}
 	return nil
+}
+
+func (q *JobQueue) requeueRequiresFence(jobType string) bool {
+	if jobType == MetalDogsGenerateJobType {
+		return true
+	}
+	q.mu.RLock()
+	_, required := q.requiredOnRequeued[jobType]
+	q.mu.RUnlock()
+	return required
 }
 
 func (q *JobQueue) RequeueLease(ctx context.Context, id string, lease time.Duration) (bool, error) {

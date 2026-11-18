@@ -23,9 +23,9 @@ Kept Metal Dogs where the file is a listed deviation. `pkg/pluginsdk/*_test.go` 
 | `internal/domain/jobs/admin.go` | Ours lease reclaim, renamed `Requeue` → `RequeueLease`. `Queue.Requeue(ctx, id, attempt) error` and `Admin.Requeue(ctx, id, lease) (bool, error)` cannot both exist on `*postgres.JobQueue` |
 | `internal/platform/plugin/providers.go` (+ test), `sync_job_test.go` | Ours, plus upstream `Bootstrap.Prices` / `PriceHistory` / `Stock` (required by merged `plugin_ports.go`) |
 | `internal/platform/runtime/scheduler_test.go` | Ours, plus `Requeue` stub |
-| `cmd/api/job_queue_bind.go` | Ours (no `WrapRequeueNotify` before `BindQueue`). Auto-merge had inserted the wrap; `BindQueue` still requires the registered instance, and the generate fence type-asserts the Postgres queue |
+| `cmd/api/job_queue_bind.go` | Ours (no `WrapRequeueNotify` before `BindQueue`). Auto-merge had inserted the wrap; `BindQueue` still requires the registered instance, and the generate fence type-asserts the Postgres queue. In this tree `Host.OnQueueBound` and `Host.OnRequeued` register hooks that never run, and `jobs:requeue` is absent, until ticket 03 restores upstream `job_queue_bind.go` and `jobs_cli.go` |
 | `internal/platform/plugin/queue_hooks.go` (+ test) | Upstream, plus `RequeueLease` forwarder. Test fake implements `RequeueLease` so it still counts as `jobs.Admin` |
-| `internal/infrastructure/postgres/job_queue.go` (+ test) | Ours (`SetOnRequeued`, `RequireOnRequeued`, `RequeueLease`). Added upstream `Requeue(ctx, id, attempt)` |
+| `internal/infrastructure/postgres/job_queue.go` (+ test) | Ours (`SetOnRequeued`, `RequireOnRequeued`, `RequeueLease`). Added upstream `Requeue(ctx, id, attempt)`. It refuses `MetalDogsGenerateJobType` and `RequireOnRequeued` types: the bare UPDATE skipped `runOnRequeued`. Ticket 03 must replace that refusal with the in-transaction requeue. The pin query casts min-age as `$3::text`; the milliseconds argument is passed as a string so pgx can encode it |
 | `internal/infrastructure/{kafka,rabbitmq,redis,sqs}/job_queue.go`, `redis/job_queue_test.go` | Upstream |
 | `pkg/pluginsdk/sdk_test.go`, `pkg/pluginsdk/harness/harness_test.go` | Upstream (identical to the pin) |
 | `plugins/example/plugin_test.go` | Upstream |
@@ -39,6 +39,8 @@ Kept Metal Dogs where the file is a listed deviation. `pkg/pluginsdk/*_test.go` 
 - `plugins/metaldogs/job_fence.go` still uses `SetOnRequeued` / `RequireOnRequeued` on the Postgres queue. That API is not on the pin; the file was kept so the fence still installs.
 - Cart test doubles (`qtyCart`, `gateCart`) implement `DiscardEmptyGuestCart` as a no-op. Production add-to-cart does not call it yet.
 - Queue test doubles that we kept gained `Requeue(ctx, id, attempt) error`.
+- `Host.OnQueueBound` and `Host.OnRequeued` do nothing here: `cmd/api` never calls `ApplyQueueBoundHooks` or `WrapRequeueNotify`. `jobs:requeue` is missing because `jobs_cli.go` stayed ours. Ticket 03 restores upstream `job_queue_bind.go` and `jobs_cli.go`.
+- Until that lands, `postgres.JobQueue.Requeue` returns an error (not `ErrRequeueConflict`) for `MetalDogsGenerateJobType` and every `RequireOnRequeued` type and leaves the row processing. `RequeueLease` is unchanged and still runs the fence.
 
 ## Upstream range `a411c970..7c982b00` touching files we use
 

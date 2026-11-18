@@ -705,6 +705,83 @@ func TestJobQueue_Requeue_StaleProcessingDoneAndYoungNoop(t *testing.T) {
 	}
 }
 
+func TestJobQueue_Requeue_RefusesFencedTypes(t *testing.T) {
+	db := testDB(t)
+	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { db.Exec("DELETE FROM jobs") })
+
+	q, err := postgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatalf("NewJobQueue: %v", err)
+	}
+	ctx := context.Background()
+
+	age := func(jobID string) {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE jobs SET updated_at = NOW() - interval '10 minutes' WHERE id = $1`, jobID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statusOf := func(jobID string) string {
+		t.Helper()
+		var status string
+		if err := db.QueryRow(`SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+	claim := func(jobType string) *jobs.Job {
+		t.Helper()
+		job, err := jobs.NewJob(id.New(), jobType, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := q.Enqueue(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		got, err := q.Dequeue(ctx)
+		if err != nil || got == nil || got.ID != job.ID {
+			t.Fatalf("dequeue %s: %+v err=%v", jobType, got, err)
+		}
+		age(got.ID)
+		return got
+	}
+
+	q.SetOnRequeued(func(context.Context, postgres.RequeueExec, string, string) error { return nil })
+	generate := claim(postgres.MetalDogsGenerateJobType)
+	err = q.Requeue(ctx, generate.ID, generate.Attempts)
+	if err == nil || errors.Is(err, jobs.ErrRequeueConflict) {
+		t.Fatalf("generate Requeue err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "on requeued hook required") {
+		t.Fatalf("err=%v", err)
+	}
+	if statusOf(generate.ID) != "processing" {
+		t.Fatalf("generate status=%q", statusOf(generate.ID))
+	}
+
+	const listed = "custom.fenced"
+	q.RequireOnRequeued(listed)
+	listedJob := claim(listed)
+	err = q.Requeue(ctx, listedJob.ID, listedJob.Attempts)
+	if err == nil || !strings.Contains(err.Error(), "on requeued hook required") {
+		t.Fatalf("listed Requeue err=%v", err)
+	}
+	if statusOf(listedJob.ID) != "processing" {
+		t.Fatalf("listed status=%q", statusOf(listedJob.ID))
+	}
+
+	plain := claim("test")
+	if err := q.Requeue(ctx, plain.ID, plain.Attempts); err != nil {
+		t.Fatalf("plain Requeue: %v", err)
+	}
+	if statusOf(plain.ID) != "pending" {
+		t.Fatalf("plain status=%q", statusOf(plain.ID))
+	}
+}
+
 func TestJobQueue_Requeue_GenerateTypeRequiresHook(t *testing.T) {
 	db := testDB(t)
 	if _, err := migrate.Run(db, "../../../migrations"); err != nil {
