@@ -68,6 +68,8 @@ Enable the plugin (optional for local customizer work):
 ```bash
 set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # or YAML: plugins.metaldogs.enabled: true
+# SHOPANDA_PLUGINS_METALDOGS_ENABLED= (empty) disables the plugin even when that YAML is true.
+# Leave the variable unset to keep the YAML value.
 ./app dev
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
 # GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)

@@ -79,6 +79,12 @@ Closed on pin `ab35e965` (ticket 00b). Record of what ticket 01 was waiting on:
 - `pathPrefixFromPattern` now cuts at the first `{`. `GET /api/customizer` stays: param routes denylist `/api/customizer/designs`, not `/api/customizer`, and `/api` alone is refused.
 - `yamlMapToStringMap` flattens nested maps to dotted keys and stores `.` / `_` aliases. `expandMetalDogsGeneration` is removed. Lists fail Load.
 
+Open after ticket 01b:
+
+- Drop typed `MetalDogsPluginConfig` and remove `metaldogs` from `typedPluginYAMLKeys`. The pin still has both. This tree already deleted the struct, so putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. `config.go` and `plugins_extra.go` stay on the allowlist until upstream drops the key.
+- `setPluginExtraKey` aliases only all-`_` ↔ all-`.`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` writes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation.max_retries` is a third key and is not overwritten. Same for `cooldown_seconds` and `max_attempts_per_design`. `generation_provider` ↔ `generation.provider` is a full swap, so `provider` is fine. The plugin reads the underscore key first so env still wins. Upstream should overwrite the mixed key or reject it as the same alias.
+- `applyPluginsExtraEnv` stores empty values. Typed plugin env skips `""`. Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` overwrites YAML `enabled: true` and the plugin turns off. Skip empty env, or document that as intended.
+
 ## Ticket 01 config criterion
 
 Nested YAML `generation:` loads the same explicit fields as the old typed `MetalDogsGenerationConfig`. No PO decision rejects that map. Omitted keys inside the map use the documented defaults (fake / 3 / 3 / 30). The old struct zeroed an omitted `cooldown_seconds` to 0 when `plugins:` was present, because `UnmarshalYAML` replaced defaults; that wipe is not restored. A non-integer scalar fails Init. A list under `generation:` fails Load. A further nested map flattens (the old expander rejected any non-scalar).
@@ -128,10 +134,10 @@ Nested YAML `generation:` loads the same explicit fields as the old typed `Metal
 
 Alias rule in effect (`setPluginExtraKey`, YAML flatten and env overlay):
 
-- `.` and `_` are aliases. Both forms are stored. Different values fail Load (`conflicting keys`).
-- `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes Extra key `generation_provider` and is mirrored to `generation.provider` (same for the other generation keys).
-- Env overwrites YAML, including the dotted alias.
-- The plugin reads the dotted key first (`generation.provider`, `generation.max_retries`, `generation.max_attempts_per_design`, `generation.cooldown_seconds`), then the underscore alias, through `Host.ConfigValue`.
+- Aliases are all-`_` ↔ all-`.` only. Both of those forms are stored. Different values on those two forms fail Load (`conflicting keys`).
+- `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes `generation_provider` and `generation.provider`. Env overwrites both, so it replaces YAML.
+- A multi-word key has no mixed alias. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` becomes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation: {max_retries: 2}` also stores `generation.max_retries`. Env does not write that mixed key. Same for `generation.cooldown_seconds` and `generation.max_attempts_per_design`.
+- The plugin reads the underscore key first (`generation_provider`, `generation_max_retries`, `generation_max_attempts_per_design`, `generation_cooldown_seconds`), then the dotted key, through `Host.ConfigValue`. Env therefore wins over the stale mixed YAML key. Test: `TestSettingsFrom_EnvOverridesNestedYAMLMultiWordKeys`.
 
 Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""`:
 
@@ -146,6 +152,7 @@ NoCache:
 
 - Dummy `GET /api/customizer` → `http.NotFoundHandler()` is removed. No replacement route.
 - `GET /api/customizer/enabled` denylists `/api/customizer/enabled`. `GET /api/customizer/designs/{id}` denylists `/api/customizer/designs` (cut at `{`). Neither is `/api/customizer`. `/api` is refused.
-- Guest GET and HEAD on `/api/customizer/enabled` and `/api/customizer/designs/design-1` are `no-store` through `CacheControlMiddleware`. Guest GET and HEAD on exact `/api/customizer` are `public, max-age=300`.
-- No pattern was rejected. `GET /api/customizer` would be accepted (static, two segments) and is the route this ticket removes. A `{` immediately after `/api/customizer/` would also be accepted and would be another dummy.
+- Guest GET and HEAD on `/api/customizer/enabled` and `/api/customizer/designs/design-1` are `no-store` through `CacheControlMiddleware`.
+- Exact `GET`/`HEAD /api/customizer` is `public, max-age=300`. That fails the ticket criterion (those methods on `/api/customizer` are `no-store`). The registration test does not assert that header.
+- No pattern was rejected, so the ticket's "report the exact error" exception does not apply. `GET /api/customizer` would be accepted (static, two segments). A `{` immediately after `/api/customizer/` would also be accepted. Either registration is another dummy denylist route; child prefixes do not cover the parent. Open decision: accept public caching of the unregistered exact path and change the criterion, or register a real route whose NoCache prefix is `/api/customizer`.
 

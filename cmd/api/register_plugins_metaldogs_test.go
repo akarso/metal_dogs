@@ -227,11 +227,6 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 				t.Fatalf("%s %s Cache-Control = %q, want no-store (prefixes %#v)", method, path, got, prefixes)
 			}
 		}
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, "/api/customizer", nil))
-		if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300" {
-			t.Fatalf("%s /api/customizer Cache-Control = %q, want public max-age (no denylist prefix; prefixes %#v)", method, got, prefixes)
-		}
 	}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products", nil))

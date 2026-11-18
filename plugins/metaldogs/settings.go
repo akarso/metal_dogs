@@ -54,7 +54,7 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	provider := strings.TrimSpace(prefer(get, "generation.provider", "generation_provider"))
+	provider := strings.TrimSpace(preferUnderscore(get, "generation.provider", "generation_provider"))
 	if provider == "" {
 		provider = "fake"
 	}
@@ -86,15 +86,17 @@ func metalDogsKey(key string) string {
 	return "plugins." + metalDogsSlug + "." + key
 }
 
-func prefer(get func(string) string, dotted, underscore string) string {
-	if v := get(metalDogsKey(dotted)); strings.TrimSpace(v) != "" {
+// Env writes the all-underscore key. Nested YAML also leaves a mixed key
+// (generation.max_retries) that setPluginExtraKey does not overwrite.
+func preferUnderscore(get func(string) string, dotted, underscore string) string {
+	if v := get(metalDogsKey(underscore)); strings.TrimSpace(v) != "" {
 		return v
 	}
-	return get(metalDogsKey(underscore))
+	return get(metalDogsKey(dotted))
 }
 
 func parseCount(get func(string) string, dotted, underscore string, def int) (int, error) {
-	n, present, err := parseOptionalInt(prefer(get, dotted, underscore), dotted)
+	n, present, err := parseOptionalInt(preferUnderscore(get, dotted, underscore), dotted)
 	if err != nil {
 		return 0, err
 	}
@@ -106,7 +108,7 @@ func parseCount(get func(string) string, dotted, underscore string, def int) (in
 
 func parseCooldown(get func(string) string) (int, error) {
 	const def = 30
-	n, present, err := parseOptionalInt(prefer(get, "generation.cooldown_seconds", "generation_cooldown_seconds"), "generation.cooldown_seconds")
+	n, present, err := parseOptionalInt(preferUnderscore(get, "generation.cooldown_seconds", "generation_cooldown_seconds"), "generation.cooldown_seconds")
 	if err != nil {
 		return 0, err
 	}

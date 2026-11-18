@@ -142,6 +142,38 @@ plugins:
 	}
 }
 
+func TestSettingsFrom_EnvOverridesNestedYAMLMultiWordKeys(t *testing.T) {
+	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
+	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES", "4")
+	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_ATTEMPTS_PER_DESIGN", "7")
+	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS", "12")
+	cfg := loadMetalDogsConfig(t, `
+server:
+  host: 127.0.0.1
+plugins:
+  metaldogs:
+    enabled: true
+    generation:
+      provider: fake
+      max_retries: 2
+      max_attempts_per_design: 6
+      cooldown_seconds: 9
+`)
+	extra := cfg.Plugins.Extra["metaldogs"]
+	if extra["generation.max_retries"] != "2" || extra["generation_max_retries"] != "4" || extra["generation.max.retries"] != "4" {
+		t.Fatalf("max_retries aliases = max_retries:%q max.retries:%q underscore:%q",
+			extra["generation.max_retries"], extra["generation.max.retries"], extra["generation_max_retries"])
+	}
+	if extra["generation.cooldown_seconds"] != "9" || extra["generation_cooldown_seconds"] != "12" || extra["generation.cooldown.seconds"] != "12" {
+		t.Fatalf("cooldown aliases = cooldown_seconds:%q cooldown.seconds:%q underscore:%q",
+			extra["generation.cooldown_seconds"], extra["generation.cooldown.seconds"], extra["generation_cooldown_seconds"])
+	}
+	got := settingsViaHost(t, cfg)
+	if !got.Enabled || got.Provider != "fake" || got.MaxRetries != 4 || got.MaxAttemptsPerDesign != 7 || got.CooldownSeconds != 12 {
+		t.Fatalf("settings = %+v, want env over nested YAML", got)
+	}
+}
+
 func TestSettingsFrom_EmptyEnabledEnvOverwritesYAML(t *testing.T) {
 	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
 	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "")
