@@ -199,7 +199,7 @@ CSV checks are unchanged: draft + configurable in the file, price parsing, valid
 | `cmd/api/main.go` | Auto-merge. `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` on scheduler, worker, and search reindex. `jobs:retry` help stays ours |
 | `cmd/api/cache_cli.go`, `extension_field_cli.go`, `providers.go`, `schedule_cli.go`, `plugin_ports.go`, `wire_services.go` | Upstream (PR-1572) |
 | `configs/config.example.yaml` | Upstream Extra comment (empty env is unset) plus the Metal Dogs `plugins.metaldogs` example |
-| `docs/guides/DEVELOPER.md`, `EXTENSION_POINTS.md`, `PRODUCT_SITES.md`, `docs/phase-17-product-packaging/**` | Deleted (modify/delete and new PR notes). Stub indexes stay |
+| Shopanda guides (DEVELOPER, EXTENSION_POINTS, PRODUCT_SITES) and phase-17 PR notes | Deleted (modify/delete and new PR notes). Stub indexes stay |
 | `cmd/api/cli_plugins.go` | Ours, added after the merge: `metaldogs:catalog-seed` calls `wireCatalogSeedCLI` (`bindProductPorts` + `bindCatalogSeedPort` + `AssertNeedsMetExcept(CapCart)` only) |
 
 ### Upstream range `ab35e965..7bd34bef` touching files we use
