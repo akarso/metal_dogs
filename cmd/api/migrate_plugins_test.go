@@ -46,8 +46,10 @@ func TestCollectMigrations_PromoIntegrationAndB2B_NoInit(t *testing.T) {
 func TestCollectMigrations_MetalDogs_NoInit(t *testing.T) {
 	cfg := &config.Config{
 		Plugins: config.PluginsConfig{
-			MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
-			B2B:       config.B2BPluginConfig{Enabled: false},
+			Extra: map[string]map[string]string{
+				"metaldogs": {"enabled": "true"},
+			},
+			B2B: config.B2BPluginConfig{Enabled: false},
 		},
 	}
 	log := logger.NewWithWriter(io.Discard, "error")

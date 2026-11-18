@@ -581,7 +581,6 @@ type PluginsConfig struct {
 	PimDemo         PimDemoPluginConfig         `yaml:"pimdemo"`
 	B2B             B2BPluginConfig             `yaml:"b2b"`
 	ExtRef          ExtRefPluginConfig          `yaml:"extref"`
-	MetalDogs       MetalDogsPluginConfig       `yaml:"metaldogs"`
 	// Extra holds unknown plugins.<slug> maps for product plugins (see
 	// UnmarshalYAML). Flattened as plugins.<slug>.<key>; env overlay
 	// SHOPANDA_PLUGINS_<SLUG>_<KEY>. Typed fields above win when both exist.
@@ -675,30 +674,6 @@ type PimDemoPluginConfig struct {
 type B2BPluginConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	LicenseKey string `yaml:"license_key"`
-}
-
-// MetalDogsPluginConfig toggles the Metal Dogs product plugin in plugins/metaldogs.
-// Default enabled=false (dark); set plugins.metaldogs.enabled or
-// SHOPANDA_PLUGINS_METALDOGS_ENABLED to expose /api/customizer/* (not a
-// process probe — use /healthz and /readyz for orchestrators).
-//
-// migrate-next: product forks should prefer Extra / Host.Config* for new
-// product slugs instead of adding typed fields here; MetalDogs remains typed
-// until a dedicated migration removes this field.
-type MetalDogsPluginConfig struct {
-	Enabled    bool                      `yaml:"enabled"`
-	Generation MetalDogsGenerationConfig `yaml:"generation"`
-}
-
-// MetalDogsGenerationConfig controls the async generate pipeline (C4/C7).
-// Provider must be empty or "fake" in C4 (live providers land with ADR-0008 wiring).
-type MetalDogsGenerationConfig struct {
-	Provider             string `yaml:"provider"`
-	MaxRetries           int    `yaml:"max_retries"`
-	MaxAttemptsPerDesign int    `yaml:"max_attempts_per_design"`
-	// CooldownSeconds is the minimum gap between customer generation attempts (C7; default 30).
-	// 0 disables the wait; negatives / values above 24h are rejected at plugin Init.
-	CooldownSeconds int `yaml:"cooldown_seconds"`
 }
 
 // CorePluginsConfig allows explicit enable/disable of core infrastructure plugins.
@@ -963,17 +938,6 @@ func defaults() Config {
 			Downloadable: CatalogDownloadableConfig{
 				DefaultExpiry:        DefaultCatalogDownloadableExpiry,
 				DefaultDownloadLimit: DefaultCatalogDownloadableLimit,
-			},
-		},
-		Plugins: PluginsConfig{
-			MetalDogs: MetalDogsPluginConfig{
-				Enabled: false,
-				Generation: MetalDogsGenerationConfig{
-					Provider:             "fake",
-					MaxRetries:           3,
-					MaxAttemptsPerDesign: 3,
-					CooldownSeconds:      30,
-				},
 			},
 		},
 	}
@@ -1359,27 +1323,6 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("SHOPANDA_PLUGINS_B2B_LICENSE_KEY"); v != "" {
 		cfg.Plugins.B2B.LicenseKey = v
 	}
-	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED"); v != "" {
-		cfg.Plugins.MetalDogs.Enabled = parseEnvBool(v)
-	}
-	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER"); v != "" {
-		cfg.Plugins.MetalDogs.Generation.Provider = v
-	}
-	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Plugins.MetalDogs.Generation.MaxRetries = n
-		}
-	}
-	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_ATTEMPTS_PER_DESIGN"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign = n
-		}
-	}
-	if v := os.Getenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Plugins.MetalDogs.Generation.CooldownSeconds = n
-		}
-	}
 	applyPluginsExtraEnv(cfg)
 	if v := os.Getenv("SHOPANDA_FRONTEND_ENABLED"); v != "" {
 		cfg.Frontend.Enabled = parseEnvBool(v)
@@ -1650,11 +1593,6 @@ func flattenWith(cfg *Config, redact func(string) string) map[string]string {
 	m["plugins.pimdemo.cache_ttl"] = cfg.Plugins.PimDemo.CacheTTL
 	m["plugins.b2b.enabled"] = strconv.FormatBool(cfg.Plugins.B2B.Enabled)
 	m["plugins.b2b.license_key"] = redact(cfg.Plugins.B2B.LicenseKey)
-	m["plugins.metaldogs.enabled"] = strconv.FormatBool(cfg.Plugins.MetalDogs.Enabled)
-	m["plugins.metaldogs.generation.provider"] = cfg.Plugins.MetalDogs.Generation.Provider
-	m["plugins.metaldogs.generation.max_retries"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxRetries)
-	m["plugins.metaldogs.generation.max_attempts_per_design"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.MaxAttemptsPerDesign)
-	m["plugins.metaldogs.generation.cooldown_seconds"] = strconv.Itoa(cfg.Plugins.MetalDogs.Generation.CooldownSeconds)
 	flattenPluginsExtra(m, cfg, redact)
 	m["frontend.enabled"] = strconv.FormatBool(cfg.Frontend.Enabled)
 	m["frontend.mode"] = cfg.Frontend.Mode

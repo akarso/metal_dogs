@@ -78,7 +78,12 @@ func newJobsService(cfg *config.Config) (svc *jobsApp.Service, conn *sql.DB, err
 		conn.Close()
 		return nil, nil, fmt.Errorf("job queue: %w", err)
 	}
-	if cfg.Plugins.MetalDogs.Enabled {
+	on, err := metaldogs.Enabled(cfg)
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("metaldogs config: %w", err)
+	}
+	if on {
 		if err := metaldogs.InstallGenerateJobFence(jobQueue); err != nil {
 			conn.Close()
 			return nil, nil, fmt.Errorf("metaldogs generate job fence: %w", err)

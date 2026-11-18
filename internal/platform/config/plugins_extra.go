@@ -12,24 +12,23 @@ import (
 // YAML sibling keys under plugins: land in Extra (product plugins). Typed
 // wins when both exist — Extra never shadows these keys.
 var typedPluginYAMLKeys = map[string]struct{}{
-	"depends_on":       {},
-	"core":             {},
-	"graphql":          {},
-	"example":          {},
-	"slotsdemo":        {},
-	"cartdemo":         {},
-	"taxdemo":          {},
-	"maildemo":         {},
-	"promodemo":        {},
-	"importdemo":       {},
-	"exportdemo":       {},
-	"checkoutdemo":     {},
-	"integrationdemo":  {},
-	"warehousedemo":    {},
-	"pimdemo":          {},
-	"b2b":              {},
-	"extref":           {},
-	"metaldogs":        {}, // migrate-next: prefer Extra + Host.Config* for product forks
+	"depends_on":      {},
+	"core":            {},
+	"graphql":         {},
+	"example":         {},
+	"slotsdemo":       {},
+	"cartdemo":        {},
+	"taxdemo":         {},
+	"maildemo":        {},
+	"promodemo":       {},
+	"importdemo":      {},
+	"exportdemo":      {},
+	"checkoutdemo":    {},
+	"integrationdemo": {},
+	"warehousedemo":   {},
+	"pimdemo":         {},
+	"b2b":             {},
+	"extref":          {},
 }
 
 // UnmarshalYAML decodes typed plugin fields and captures unknown plugin slugs

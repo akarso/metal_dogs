@@ -51,3 +51,23 @@ Kept Metal Dogs where the file is a listed deviation. `pkg/pluginsdk/*_test.go` 
 - `Config.Extra` / `SHOPANDA_PLUGINS_<SLUG>_*` (`internal/platform/config`).
 - `CatalogSeedPort` (`pkg/pluginsdk`, `cmd/api/plugin_ports.go`). Not used by Metal Dogs seed (ticket 02 deferred).
 - `jobs.Queue.Complete`/`Fail(ctx, id, attempt)`, `ErrSkipOutcome`, `Queue.Requeue`, `Host.OnQueueBound`, `Host.OnRequeued`.
+
+## Ticket 01 — registration, Extra config, NoCache
+
+Moved:
+
+- `registerMetalDogs` from `cmd/api/register_plugins.go` to `registerProductPlugins` in `cmd/api/register_products.go`. `register_plugins.go` and `wire_routes.go` match the pin. Deleted `cmd/api/cache_control_prefixes.go` (+ test).
+- Typed `MetalDogsPluginConfig` / `Plugins.MetalDogs` removed from `internal/platform/config/config.go`. `plugins_extra.go` no longer lists `metaldogs` in `typedPluginYAMLKeys`, so the slug is `Config.Extra`. Both files still differ from the pin (the pin keeps the typed `enabled` field). `config_test.go` matches the pin again.
+- Public `/api/customizer/*` routes use `pluginsdk.NoCache()`. `NoCachePathPrefixes` keeps `{id}` in the pattern, so `GET /api/customizer` is also registered (404) and supplies the `/api/customizer` prefix. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`.
+- `job_queue_bind.go` and `jobs_cli.go` call `metaldogs.Enabled` (Extra) so the generate fence still installs when the plugin is on.
+
+Tests:
+
+- `plugins/metaldogs/settings_test.go` loads production env names `SHOPANDA_PLUGINS_METALDOGS_ENABLED` and `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` through `Host.ConfigValue`.
+- Bad ints/bools fail. Defaults stay fake / 3 / 3 / 30. Cooldown `0` stays 0. Counts `<=0` stay 3.
+- `cmd/api/register_plugins_metaldogs_test.go` checks registration and GET/HEAD `no-store` for `/api/customizer/enabled` and `/api/customizer/designs/design-1`.
+
+Extra limitation (no env rename):
+
+- `Config.Extra` is `map[string]map[string]string`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes key `generation_provider`, not `generation.provider`. The plugin accepts that key and the dotted alias `generation.provider`.
+- A nested YAML map `generation: { provider: ... }` is stringified by `yamlMapToStringMap` (`map[...]`) and Init rejects it. Flat keys or the env names are the supported form.

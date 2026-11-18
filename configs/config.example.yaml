@@ -296,8 +296,10 @@ queue:
 #   b2b:                         # commercial; see docs/COMMERCIAL.md
 #     enabled: false
 #     license_key: "DEV-local"
-#   metaldogs:                   # Metal Dogs product plugin (dark by default)
+#   metaldogs:                   # Metal Dogs product plugin (dark by default; Extra slug)
 #     enabled: false             # or SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
+#     generation_provider: fake  # SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER
+#     # Nested `generation:` maps are rejected. Dotted keys (generation.provider) also work.
 #   graphql:
 #     enabled: false
 

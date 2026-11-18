@@ -730,28 +730,8 @@ func TestLoad_PluginsExampleDisabledByDefault(t *testing.T) {
 	if cfg.Plugins.GraphQL.Enabled {
 		t.Fatal("Plugins.GraphQL.Enabled = true, want false by default")
 	}
-	if cfg.Plugins.MetalDogs.Enabled {
-		t.Fatal("Plugins.MetalDogs.Enabled = true, want false by default")
-	}
 	if cfg.Plugins.Example.FeeMinorUnits != 0 {
 		t.Fatalf("Plugins.Example.FeeMinorUnits = %d, want 0 by default", cfg.Plugins.Example.FeeMinorUnits)
-	}
-}
-
-func TestLoad_MetalDogsEnabled_EnvOverride(t *testing.T) {
-	withTestBaseURL(t)
-	path := writeYAML(t, `
-plugins:
-  metaldogs:
-    enabled: false
-`)
-	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "true")
-	cfg, err := loadCfg(t, path)
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-	if !cfg.Plugins.MetalDogs.Enabled {
-		t.Fatal("Plugins.MetalDogs.Enabled = false, want true from SHOPANDA_PLUGINS_METALDOGS_ENABLED")
 	}
 }
 

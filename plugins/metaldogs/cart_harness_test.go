@@ -66,11 +66,7 @@ func newDesignCartServerWithoutMedia(t *testing.T) (*httptest.Server, *sql.DB, *
 	app := &plugin.App{
 		Logger: log,
 		Bus:    event.NewBus(log),
-		Config: &config.Config{
-			Plugins: config.PluginsConfig{
-				MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
-			},
-		},
+		Config: &config.Config{Plugins: metalDogsPlugins(true, nil)},
 	}
 	extReg := extensionapp.NewRegistry()
 	app.SetExtensionRegistry(extReg)

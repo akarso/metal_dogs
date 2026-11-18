@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+	"net/http"
 	"sync"
 	"time"
 
@@ -15,7 +15,6 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/catalog"
-	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -91,38 +90,22 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if app.Config == nil {
 		return fmt.Errorf("metaldogs plugin: config not configured")
 	}
-	if !app.Config.Plugins.MetalDogs.Enabled {
+	h := pluginsdk.AsHostFor(app, PluginName)
+	settings, err := SettingsFrom(h.ConfigValue)
+	if err != nil {
+		return err
+	}
+	if !settings.Enabled {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
 	}
-	h := pluginsdk.AsHostFor(app, PluginName)
 	h.Require(pluginsdk.CapCart)
 	h.Require(pluginsdk.CapCatalog)
 	p.host = h
 
-	genCfg := app.Config.Plugins.MetalDogs.Generation
-	providerName := strings.TrimSpace(genCfg.Provider)
-	if providerName == "" {
-		providerName = "fake"
-	}
-	if providerName != "fake" {
-		return fmt.Errorf("metaldogs plugin: generation.provider %q not supported in C4 (use fake)", providerName)
-	}
-	maxRetries := genCfg.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 3
-	}
-	maxAttempts := genCfg.MaxAttemptsPerDesign
-	if maxAttempts <= 0 {
-		maxAttempts = 3
-	}
-	cooldownSecs := genCfg.CooldownSeconds
-	if cooldownSecs < 0 {
-		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be >= 0")
-	}
-	maxCooldownSecs := int(domain.MaxGenerationCooldown / time.Second)
-	if cooldownSecs > maxCooldownSecs {
-		return fmt.Errorf("metaldogs plugin: generation.cooldown_seconds must be <= %d", maxCooldownSecs)
-	}
+	providerName := settings.Provider
+	maxRetries := settings.MaxRetries
+	maxAttempts := settings.MaxAttemptsPerDesign
+	cooldownSecs := settings.CooldownSeconds
 
 	if err := registerDesignIDField(app); err != nil {
 		return fmt.Errorf("metaldogs plugin: design field: %w", err)
@@ -162,47 +145,51 @@ func (p *Plugin) Init(app *plugin.App) error {
 		}
 	}
 
-	if err := app.RegisterPublicRoute("GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
+	// NoCachePathPrefixes keeps "{id}" in the pattern, so the tree prefix is its own route.
+	if err := mountCustomizerRoute(h, "GET /api/customizer", http.NotFoundHandler()); err != nil {
+		return fmt.Errorf("metaldogs plugin: customizer prefix route: %w", err)
+	}
+	if err := mountCustomizerRoute(h, "GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/health", httpapi.Health(app)); err != nil {
+	if err := mountCustomizerRoute(h, "GET /api/customizer/health", httpapi.Health(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: health route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/templates", httpapi.ListTemplates(templates)); err != nil {
+	if err := mountCustomizerRoute(h, "GET /api/customizer/templates", httpapi.ListTemplates(templates)); err != nil {
 		return fmt.Errorf("metaldogs plugin: templates list route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/templates/{id}", httpapi.GetTemplate(templates)); err != nil {
+	if err := mountCustomizerRoute(h, "GET /api/customizer/templates/{id}", httpapi.GetTemplate(templates)); err != nil {
 		return fmt.Errorf("metaldogs plugin: templates get route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("POST /api/customizer/uploads", httpapi.CreateUpload(p.uploads)); err != nil {
+	if err := mountCustomizerRoute(h, "POST /api/customizer/uploads", httpapi.CreateUpload(p.uploads)); err != nil {
 		return fmt.Errorf("metaldogs plugin: uploads route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("POST /api/customizer/designs", httpapi.CreateDesign(p.designs)); err != nil {
+	if err := mountCustomizerRoute(h, "POST /api/customizer/designs", httpapi.CreateDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs create route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/designs/{id}", httpapi.GetDesign(p.designs)); err != nil {
+	if err := mountCustomizerRoute(h, "GET /api/customizer/designs/{id}", httpapi.GetDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs get route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("PATCH /api/customizer/designs/{id}", httpapi.PatchDesign(p.designs)); err != nil {
+	if err := mountCustomizerRoute(h, "PATCH /api/customizer/designs/{id}", httpapi.PatchDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs patch route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(p.generate)); err != nil {
+	if err := mountCustomizerRoute(h, "POST /api/customizer/designs/{id}/generate", httpapi.GenerateDesign(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs generate route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/approve", httpapi.ApproveDesign(p.designs)); err != nil {
+	if err := mountCustomizerRoute(h, "POST /api/customizer/designs/{id}/approve", httpapi.ApproveDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs approve route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/clone", httpapi.CloneDesign(p.designs)); err != nil {
+	if err := mountCustomizerRoute(h, "POST /api/customizer/designs/{id}/clone", httpapi.CloneDesign(p.designs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs clone route: %w", err)
 	}
 	addToCart := &application.AddToCart{
 		Designs: p.designs,
 		Cart:    p,
 	}
-	if err := app.RegisterPublicRoute("POST /api/customizer/designs/{id}/add-to-cart", httpapi.AddDesignToCart(addToCart)); err != nil {
+	if err := mountCustomizerRoute(h, "POST /api/customizer/designs/{id}/add-to-cart", httpapi.AddDesignToCart(addToCart)); err != nil {
 		return fmt.Errorf("metaldogs plugin: designs add-to-cart route: %w", err)
 	}
-	if err := app.RegisterPublicRoute("GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
+	if err := mountCustomizerRoute(h, "GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
 	}
 	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
@@ -227,6 +214,10 @@ func (p *Plugin) Init(app *plugin.App) error {
 		}
 	}
 	return nil
+}
+
+func mountCustomizerRoute(h pluginsdk.Host, pattern string, handler http.Handler) error {
+	return h.RegisterPublicRoute(pattern, handler, pluginsdk.NoCache())
 }
 
 func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *application.UploadService {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
+	"github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -76,7 +77,9 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
 		Plugins: config.PluginsConfig{
-			MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
+			Extra: map[string]map[string]string{
+				"metaldogs": {"enabled": "true"},
+			},
 		},
 	}
 	log := logger.NewWithWriter(io.Discard, "error")
@@ -160,5 +163,34 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	}
 	if !foundPing {
 		t.Fatalf("SyncJobs = %+v, want obs.ping", app.SyncJobs())
+	}
+
+	prefixes := plugin.NoCachePathPrefixes(app.PublicRoutes())
+	foundTree := false
+	for _, prefix := range prefixes {
+		if prefix == "/api/customizer" {
+			foundTree = true
+		}
+	}
+	if !foundTree {
+		t.Fatalf("NoCachePathPrefixes = %#v, want /api/customizer", prefixes)
+	}
+	mw := shared.CacheControlMiddleware(prefixes)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, path := range []string{"/api/customizer/enabled", "/api/customizer/designs/design-1"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("%s %s Cache-Control = %q, want no-store", method, path, got)
+			}
+		}
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products", nil))
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300" {
+		t.Fatalf("GET /api/v1/products Cache-Control = %q, want public max-age", got)
 	}
 }

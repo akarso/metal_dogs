@@ -159,7 +159,7 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 
 ```text
 /                         Shopanda fork, pinned by commit (ADR-0001, UPSTREAM_PIN.md)
-├── cmd/api/register_plugins.go   registerMetalDogs when the plugin is enabled  # F1 / E1
+├── cmd/api/register_products.go  registerMetalDogs when plugins.metaldogs.enabled  # UPG4-01
 ├── cmd/api/metaldogs_catalog.go  core catalog repos for metaldogs:catalog-seed  # E1
 ├── plugins/metaldogs/            Go plugin, hexagonal per module (see above)
 │   ├── customizer/
@@ -196,12 +196,12 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
-| `cmd/api/register_plugins.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` | F1 / E1 |
+| `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin) | UPG4-01 |
 | `cmd/api/metaldogs_catalog.go` | Builds core product, variant, price, price-history and stock repos for `metaldogs:catalog-seed`. The plugin package does not import infrastructure adapters | E1 |
-| `internal/platform/config/config.go` (+ test) | `Plugins.MetalDogs` / `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false) | F1 |
+| `internal/platform/config/config.go`, `plugins_extra.go` | Typed `Plugins.MetalDogs` removed (pin still has it) so `plugins.metaldogs` is `Config.Extra`. Env names unchanged; nested `generation:` YAML is rejected | UPG4-01 |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
-| `cmd/api/cache_control_prefixes.go` (+ test), `cmd/api/wire_routes.go` | Shared `cacheControlNoCachePrefixes()` includes `/api/customizer`; `wire_routes` calls the helper instead of an inline list | F1-fix |
+| `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Product registration / migrate coverage. `/api/customizer/*` no-store comes from `pluginsdk.NoCache()` plus upstream `NoCachePathPrefixes` (`wire_routes.go` matches the pin) | UPG4-01 |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts; docs-policy uses MD hardened checker (no promote step) | F2 / CR-06 |
@@ -217,7 +217,6 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | `internal/platform/plugin/queue_hooks.go` (+ test) | Notify wrapper forwards `Admin.RequeueLease`. Upstream `Queue.Requeue(attempt)` stays on the embedded queue. The hook test's introspectable fake implements `RequeueLease` so it still satisfies `jobs.Admin` | UPG4 |
 | `cmd/api/jobs_cli_test.go` | Metal Dogs jobs CLI tests. Upstream `jobs:requeue` helpers are not on our `jobs_cli.go` | UPG4 |
 | `internal/application/integration/sync_manual_roundtrip_test.go`, `internal/platform/plugin/sync_job_test.go`, `internal/platform/runtime/scheduler_test.go` | Call sites follow the attempts fence | C4 |
-| `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go`, `config_test.go` MetalDogs cases | Product registration / migrate / config coverage | F1+ |
 | `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Depends on residual `BoundQueue` + sync reinjection above | F3 |
 | `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; C2 `UploadService` Put + `metaldogs_assets` | F4 / C2 |
 | `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |

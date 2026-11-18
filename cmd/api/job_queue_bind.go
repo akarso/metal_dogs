@@ -21,7 +21,11 @@ func resolveAndBindJobQueue(app *plugin.App, conn *sql.DB, cfg *config.Config) (
 	if err := app.BindQueue(jobQueue); err != nil {
 		return nil, err
 	}
-	if cfg != nil && cfg.Plugins.MetalDogs.Enabled {
+	on, err := metaldogs.Enabled(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs config: %w", err)
+	}
+	if on {
 		if err := metaldogs.InstallGenerateJobFence(jobQueue); err != nil {
 			return nil, fmt.Errorf("metaldogs generate job fence: %w", err)
 		}
