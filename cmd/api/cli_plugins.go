@@ -10,7 +10,12 @@ import (
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/plugins/metaldogs"
 )
+
+// pluginCLIApp is the App passed to InitAll. Catalog seed binds CapCatalogSeed
+// on that same App: Host.CatalogSeed reads it, and help/eval must not open a DB.
+var pluginCLIApp *plugin.App
 
 func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*plugin.Registry, error) {
 	registry := plugin.NewRegistry(log)
@@ -19,6 +24,7 @@ func bootstrapPluginCLIRegistry(cfg *config.Config, log logger.Logger) (*plugin.
 		Logger: log,
 		Config: cfg,
 	}
+	pluginCLIApp = app
 	preparePermissionRegistry(app)
 	summary := registry.InitAll(app)
 	freezePermissionRegistry(app) // CLI: freeze only (no BindRuntime; avoid multi-App collisions)
@@ -55,8 +61,34 @@ func runPluginCLICommand(cfg *config.Config, log logger.Logger, registryFn func(
 		}
 		defer conn.Close()
 		ctx.DB = conn
+		if name == metaldogs.CommandCatalogSeed {
+			boot, err := newPluginBootstrap(conn)
+			if err != nil {
+				return true, err
+			}
+			if err := wireCatalogSeedCLI(pluginCLIApp, boot); err != nil {
+				return true, err
+			}
+		}
 	}
 	return true, cmdRegistry.Run(name, ctx, args)
+}
+
+// wireCatalogSeedCLI binds the write port and skips CapCart only, so a missing CapCatalogSeed fails the command.
+func wireCatalogSeedCLI(app *plugin.App, boot *plugin.Bootstrap) error {
+	if app == nil {
+		return fmt.Errorf("catalog seed CLI: plugin app is not initialized")
+	}
+	if err := bindProductPorts(app, boot); err != nil {
+		return err
+	}
+	if err := bindCatalogSeedPort(app, boot); err != nil {
+		return err
+	}
+	if err := app.AssertNeedsMetExcept(plugin.CapCart); err != nil {
+		return fmt.Errorf("plugin capabilities: %w", err)
+	}
+	return nil
 }
 
 func pluginCLIHelpLines(registryFn func() (*plugin.Registry, error)) []string {

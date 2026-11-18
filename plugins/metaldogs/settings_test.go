@@ -174,7 +174,7 @@ plugins:
 	}
 }
 
-func TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML(t *testing.T) {
+func TestSettingsFrom_EmptyEnabledEnvKeepsYAML(t *testing.T) {
 	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
 	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "")
 	cfg := loadMetalDogsConfig(t, `
@@ -184,12 +184,12 @@ plugins:
   metaldogs:
     enabled: true
 `)
-	if got := cfg.Plugins.Extra["metaldogs"]["enabled"]; got != "" {
-		t.Fatalf("Extra enabled = %q, want empty env overwrite", got)
+	if got := cfg.Plugins.Extra["metaldogs"]["enabled"]; got != "true" {
+		t.Fatalf("Extra enabled = %q, want YAML true when env is empty", got)
 	}
 	got := settingsViaHost(t, cfg)
-	if got.Enabled {
-		t.Fatalf("settings = %+v, empty env is stored and ParseEnabled treats it as off", got)
+	if !got.Enabled {
+		t.Fatalf("settings = %+v, empty env must keep the plugin enabled", got)
 	}
 }
 

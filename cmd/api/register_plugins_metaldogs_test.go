@@ -16,6 +16,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
@@ -279,5 +280,59 @@ func concreteCustomizerPath(pattern string) string {
 			return path
 		}
 		path = path[:start] + "x" + path[start+end+1:]
+	}
+}
+
+type needsCatalogSDKPlugin struct{}
+
+func (needsCatalogSDKPlugin) Name() string { return "test/needscatalog" }
+
+func (needsCatalogSDKPlugin) Needs() []pluginsdk.Capability {
+	return []pluginsdk.Capability{pluginsdk.CapCatalog}
+}
+
+func (needsCatalogSDKPlugin) Init(h pluginsdk.Host) error {
+	h.Require(pluginsdk.CapCatalog)
+	return nil
+}
+
+func TestWireCatalogSeedCLI_BindsSeedAndSkipsOnlyCart(t *testing.T) {
+	log := logger.NewWithWriter(io.Discard, "error")
+	reg := plugin.NewRegistry(log)
+	reg.Register(pluginsdk.Adapt(needsCartSDKPlugin{}))
+	reg.Register(pluginsdk.Adapt(needsCatalogSDKPlugin{}))
+	reg.Register(pluginsdk.Adapt(needsCatalogSeedSDKPlugin{}))
+	app := &plugin.App{Logger: log}
+	summary := reg.InitAll(app)
+	if summary.Failed != 0 {
+		t.Fatalf("InitAll = %+v", summary)
+	}
+	if err := app.AssertNeedsMetExcept(plugin.CapCart); err == nil {
+		t.Fatal("unbound CapCatalogSeed must fail the seed CLI check")
+	}
+	boot := &plugin.Bootstrap{
+		Products:     seedBootProducts{},
+		Variants:     seedBootVariants{},
+		Prices:       seedBootPrices{},
+		PriceHistory: seedBootHistory{},
+		Stock:        seedBootStock{},
+	}
+	if err := wireCatalogSeedCLI(app, boot); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := app.CatalogSeedPort(); !ok {
+		t.Fatal("CatalogSeedPort unbound")
+	}
+	if err := app.AssertNeedsMetExcept(plugin.CapCart); err != nil {
+		t.Fatalf("seed CLI check: %v", err)
+	}
+	if err := app.AssertNeedsMet(); err == nil {
+		t.Fatal("CapCart must stay unbound on the seed CLI")
+	}
+}
+
+func TestWireCatalogSeedCLI_NilApp(t *testing.T) {
+	if err := wireCatalogSeedCLI(nil, &plugin.Bootstrap{}); err == nil {
+		t.Fatal("expected error for nil app")
 	}
 }

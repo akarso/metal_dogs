@@ -149,7 +149,7 @@ Data files in [`catalog/`](catalog/):
 
 The loader checks all three files before it writes. A bad file exits non-zero and names the file, row and column. The command then calls `Host.CatalogSeed().Import` once, in one transaction. Existing variant SKUs are not inserted again. Product `Status` is not sent, so a product that already exists keeps its status, including `active` after a later publish. A price is sent with `Update`: a different amount is written and a price-history row is added; the same amount is a no-op. Stock is set to the file quantity on every successful run. A second run with unchanged files does not insert products, variants, or prices and does not change status. The stock quantity stays the same when it already matches; the stock row's `updated_at` moves because `SetStock` upserts.
 
-`parent_sku` is stored on the product in that same insert. Attributes are create-only. A later run does not add a missing `parent_sku` and does not change a different stored value. Either case fails the run and rolls the batch back.
+`parent_sku` is stored on the product in that same insert. Attributes are create-only. A later run does not add a missing `parent_sku` and does not change a different stored value. Either case fails the run and rolls the batch back. The error includes the stored value and the requested value (`stored=<missing>` when the attribute is absent).
 
 Shopanda assigns the tax class from the product type. `configurable` maps to the standard class (`catalog.TaxClassCode`). This command writes no tax setting. The shop seed's standard rate for PL is 2300 basis points (23%).
 

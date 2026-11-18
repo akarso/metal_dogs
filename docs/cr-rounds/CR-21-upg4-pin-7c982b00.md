@@ -81,9 +81,12 @@ Closed on pin `ab35e965` (ticket 00b). Record of what ticket 01 was waiting on:
 
 Open after ticket 01b (Shopanda roadmap; not done in this tree):
 
-- Drop typed `MetalDogsPluginConfig` and remove `metaldogs` from `typedPluginYAMLKeys`. The pin still has both. This tree already deleted the struct, so putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. Accepted in ticket 01c: `config.go` and `plugins_extra.go` stay on the allowlist. Reason: upstream still types metaldogs; remove when Shopanda drops it.
 - `setPluginExtraKey` aliases only all-`_` ↔ all-`.`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` writes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation.max_retries` is a third key and is not overwritten. Same for `cooldown_seconds` and `max_attempts_per_design`. `generation_provider` ↔ `generation.provider` is a full swap, so `provider` is fine. The plugin reads the underscore key first so env still wins. Upstream should overwrite the mixed key or reject it as the same alias.
-- `applyPluginsExtraEnv` stores empty values. Typed plugin env skips `""`. Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` overwrites YAML `enabled: true` and the plugin turns off. Ticket 01c documents this as a known difference (old code ignored an empty value), pending a Shopanda change to skip empty env.
+
+Fixed upstream (PR-1570/1571), pin `7bd34bef` (ticket 00c):
+
+- Typed `MetalDogsPluginConfig` is gone and `metaldogs` is not in `typedPluginYAMLKeys`. `config.go` and `plugins_extra.go` match the pin and left the allowlist.
+- Empty `SHOPANDA_PLUGINS_*` values are skipped. YAML `enabled: true` plus empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` keeps the plugin enabled. Test: `TestSettingsFrom_EmptyEnabledEnvKeepsYAML`.
 
 ## Ticket 01 config criterion
 
@@ -92,7 +95,7 @@ Nested YAML `generation:` loads the same explicit fields as the old typed `Metal
 ## Ticket 00b — pin `ab35e965`
 
 - Date: 2026-11-18
-- Pin: `ab35e965e23463126e5ad9dc85e306e13e485550` (`upstream/main`, PR #611)
+- Pin: `ab35e965…` (`upstream/main`, PR #611)
 - Previous pin on this branch: `7c982b00…`
 
 ### Conflict resolution
@@ -149,6 +152,7 @@ NoCache: the JSON `GET /api/customizer` workaround from this ticket is removed i
 
 Decisions (do not re-litigate):
 
+- Typed config and empty env below are the ticket 01c record. Both are fixed upstream in ticket 00c (PR-1570/1571).
 - Upstream `ab35e965` still has typed `MetalDogsPluginConfig` and `"metaldogs"` in `typedPluginYAMLKeys` (comment "migrate-next"). This tree does not restore the typed field and does not add Metal Dogs code to core. Putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. `internal/platform/config/config.go` and `plugins_extra.go` stay on the deviations allowlist. Reason on each row: upstream still types metaldogs; remove when Shopanda drops it.
 - Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""` is a known difference pending a Shopanda change. Old code ignored an empty value. Upstream `applyPluginsExtraEnv` stores it, overwrites YAML `enabled: true`, and `ParseEnabled("")` turns the plugin off. The plugin cannot recover the YAML bool because `Host.Config*` only sees the overwritten string. Test: `TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML`.
 - Cooldown 0 → 30 is an intentional behaviour change. YAML `generation:` with `provider` / `max_retries` and no `cooldown_seconds` yields cooldown 30 (omitted counts stay 3). The old typed struct zeroed an omitted `cooldown_seconds` to 0 when the map was present, because `UnmarshalYAML` replaced defaults. That wipe is not restored. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
@@ -168,13 +172,43 @@ Attributes stay create-only. A missing `parent_sku` on an existing product is no
 
 `metaldogs:catalog-seed` declares `CapCatalogSeed` and calls `Import` once per run. `cmd/api/metaldogs_catalog.go` is deleted. The plugin does not import `internal/infrastructure/postgres`.
 
+Ticket 00c moved the write port off serve and worker. The paragraph below is the ticket 02 finding, before that split.
+
 `CapCatalogSeed` stays on `Needs` and `Init` for serve and the worker as well as the CLI. There is no command-scoped capability. `Host.Require` after `FreezePluginNeeds` is a no-op, and `CatalogSeed()` returns the port only when this plugin declared the capability during Init. `bindProductPorts` still builds the port whenever the catalog repositories exist.
 
 Behaviour that changed because the port does not offer the old writes:
 
-- A missing or different `parent_sku` fails the batch and rolls it back. The error names the slug and `parent_sku`; it does not repeat both SKU strings.
+- A missing or different `parent_sku` fails the batch and rolls it back. The error names the slug and `parent_sku`. At this pin it does not repeat both SKU strings (restored in ticket 00c, PR-1573).
 - `SetStock` runs for every stock row. An equal quantity stays equal; `stock.updated_at` moves.
 - Product, variant, price, and stock share one transaction.
 
 CSV checks are unchanged: draft + configurable in the file, price parsing, validate-before-write, a bad file writes nothing. A changed price updates with history. A second run on an `active` product does not change status.
+
+## Ticket 00c — pin `7bd34bef`
+
+- Date: 2026-11-18
+- Pin: `7bd34befc176a2baa3b81e82117c3b1b15e933d6` (`upstream/main`, PR #615)
+- Previous pin on this branch: `ab35e965…`
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `internal/platform/config/config.go`, `plugins_extra.go` | Upstream. Typed `MetalDogsPluginConfig` is gone on both sides (PR-1570). Empty Extra env is skipped (PR-1571). Both files left the allowlist |
+| `cmd/api/jobs_cli.go` | Ours (ticket 03). Upstream `newJobsRuntime` was not taken; this CLI still installs the generate fence on the postgres queue and has no `jobs:requeue` |
+| `cmd/api/main.go` | Auto-merge. `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` on scheduler, worker, and search reindex. `jobs:retry` help stays ours |
+| `cmd/api/cache_cli.go`, `extension_field_cli.go`, `providers.go`, `schedule_cli.go`, `plugin_ports.go`, `wire_services.go` | Upstream (PR-1572) |
+| `configs/config.example.yaml` | Upstream Extra comment (empty env is unset) plus the Metal Dogs `plugins.metaldogs` example |
+| `docs/guides/DEVELOPER.md`, `EXTENSION_POINTS.md`, `PRODUCT_SITES.md`, `docs/phase-17-product-packaging/**` | Deleted (modify/delete and new PR notes). Stub indexes stay |
+| `cmd/api/cli_plugins.go` | Ours, added after the merge: `metaldogs:catalog-seed` calls `wireCatalogSeedCLI` (`bindProductPorts` + `bindCatalogSeedPort` + `AssertNeedsMetExcept(CapCart)` only) |
+
+### Upstream range `ab35e965..7bd34bef` touching files we use
+
+- `internal/platform/config/config.go`, `plugins_extra.go` (+ test): drop typed MetalDogs; skip empty `SHOPANDA_PLUGINS_*` (PR-1570/1571, `852e15a1`).
+- `cmd/api/plugin_ports.go` (+ test), `wire_services.go`, `main.go` (scheduler, worker, search reindex), `cache_cli.go`, `extension_field_cli.go`, `schedule_cli.go`, `providers.go`, `jobs_cli.go`: `CapCatalogSeed` is not bound by `bindProductPorts`. Serve skips it after `BindCartPort`. Other processes skip `CapCart` and `CapCatalogSeed`. Seed CLIs call `bindCatalogSeedPort` (PR-1572, `1b39989f`, harden `73348d5e`). Our `jobs_cli.go` did not take `newJobsRuntime`.
+- `pkg/pluginsdk/port_adapt.go` (+ `ports_test.go`): attribute mismatch errors include key, stored, and requested (`stored=<missing>` when absent). Empty-map assert lists stored keys. Typed-nil `*sql.DB` is not a transaction starter (PR-1573).
+- `internal/platform/plugin/service_ports.go` (+ test): `AssertNeedsMetExcept` comment covers the CLI-seed skip. No behaviour change beyond the callers above.
+- Shopanda guides `EXTENSION_POINTS.md`, `DEVELOPER.md`, `PRODUCT_SITES.md` and phase-17 PR notes were not vendored.
+
+`config.go` and `plugins_extra.go` equal the pin. Serve and worker do not require `CapCatalogSeed`. `metaldogs:catalog-seed` binds it and checks every other declared capability, including `CapCatalog`. A `parent_sku` mismatch error contains the stored value (`OTHER` or `<missing>`) and the requested value (`MDOGS-TEE`).
 

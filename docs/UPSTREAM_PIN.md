@@ -6,8 +6,8 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `ab35e965e23463126e5ad9dc85e306e13e485550` |
-| Pinned subject | Merge pull request #611 from akarso/dev |
+| Pinned commit | `7bd34befc176a2baa3b81e82117c3b1b15e933d6` |
+| Pinned subject | Merge pull request #615 from akarso/dev |
 | Verified locally | 2026-11-18 (explicit SHA from `upstream/main`) |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
@@ -49,5 +49,8 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 - [shopanda#608](https://github.com/akarso/shopanda/pull/608) — `CatalogPriceSeed.Update`, PR-1567 (`850e3a3f`)
 - [shopanda#610](https://github.com/akarso/shopanda/pull/610) — NoCache path-param prefixes and `Config.Extra` nested flatten, PR-1568/1569 (`c17f407a`, follow-ups through `9d3ef379`)
 - [shopanda#611](https://github.com/akarso/shopanda/pull/611) — promote that `dev` tip onto `main` (`ab35e965`)
+- [shopanda#612](https://github.com/akarso/shopanda/pull/612) — MetalDogs config via Extra and skip empty Extra env, PR-1570/1571 (`852e15a1`)
+- [shopanda#614](https://github.com/akarso/shopanda/pull/614) — `CapCatalogSeed` CLI-only and attribute mismatch values, PR-1572/1573 (`1b39989f`, harden `73348d5e`)
+- [shopanda#615](https://github.com/akarso/shopanda/pull/615) — promote that `dev` tip onto `main` (`7bd34bef`)
 
-**Still Metal Dogs–only** (do not claim the deviations are gone): our copies of `BoundQueue`, sync `request_id` reinjection, the C4 attempt fence, and `Admin.RequeueLease` were kept on this pin. Upstream now ships the same extension points; later UPG4 tickets delete the copies. `plugins.metaldogs` stays out of `typedPluginYAMLKeys` (the typed field is already gone); nested `generation:` loads through upstream Extra flatten. Listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `pkg/pluginsdk` matches this pin. `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` and `cmd/api/metaldogs_catalog.go` are removed. `metaldogs:catalog-seed` calls `Host.CatalogSeed().Import` once, with `CatalogPriceSeed.Update`.
+**Still Metal Dogs–only** (do not claim the deviations are gone): our copies of `BoundQueue`, sync `request_id` reinjection, the C4 attempt fence, and `Admin.RequeueLease` were kept on this pin. Upstream now ships the same extension points; later UPG4 tickets delete the copies. Typed MetalDogs config and empty `SHOPANDA_PLUGINS_*` overlays are fixed upstream (PR-1570/1571). `CapCatalogSeed` is CLI-only (PR-1572). Listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `pkg/pluginsdk` matches this pin. `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` and `cmd/api/metaldogs_catalog.go` are removed. `metaldogs:catalog-seed` calls `bindCatalogSeedPort`, then `Host.CatalogSeed().Import` once, with `CatalogPriceSeed.Update`. Attribute mismatch errors include the stored and requested values (PR-1573).

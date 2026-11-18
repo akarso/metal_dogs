@@ -15,6 +15,7 @@ fi
 # Paths under these roots may differ from the pin only if listed below.
 ALLOWLIST=(
   cmd/api/bind_queue_test.go
+  cmd/api/cli_plugins.go
   cmd/api/job_queue_bind.go
   cmd/api/jobs_cli.go
   cmd/api/jobs_cli_test.go
@@ -29,10 +30,6 @@ ALLOWLIST=(
   internal/domain/jobs/job.go
   internal/domain/jobs/worker.go
   internal/domain/jobs/worker_test.go
-  # upstream still types metaldogs; remove when Shopanda drops it
-  internal/platform/config/config.go
-  # upstream still types metaldogs; remove when Shopanda drops it
-  internal/platform/config/plugins_extra.go
   internal/platform/plugin/providers.go
   internal/platform/plugin/providers_test.go
   internal/platform/plugin/queue_hooks.go

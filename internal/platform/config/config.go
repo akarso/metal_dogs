@@ -580,7 +580,7 @@ type PluginsConfig struct {
 	WarehouseDemo   WarehouseDemoPluginConfig   `yaml:"warehousedemo"`
 	PimDemo         PimDemoPluginConfig         `yaml:"pimdemo"`
 	B2B             B2BPluginConfig             `yaml:"b2b"`
-	ExtRef          ExtRefPluginConfig          `yaml:"extref"`
+	ExtRef ExtRefPluginConfig `yaml:"extref"`
 	// Extra holds unknown plugins.<slug> maps for product plugins (see
 	// UnmarshalYAML). Flattened as plugins.<slug>.<key>; env overlay
 	// SHOPANDA_PLUGINS_<SLUG>_<KEY>. Typed fields above win when both exist.

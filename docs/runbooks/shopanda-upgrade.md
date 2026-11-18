@@ -1,7 +1,7 @@
 # Runbook: upgrading the pinned Shopanda version
 
 - **Introduced by slice:** `F0`
-- **Last exercised:** 2026-11-18 (pin → `ab35e965`; PR-1567–1569). Explicit SHA from `upstream/main`.
+- **Last exercised:** 2026-11-18 (pin → `7bd34bef`; PR-1570–1573). Explicit SHA from `upstream/main`.
 - **Severity when triggered:** medium (planned change with regression risk)
 - **Owner:** backend maintainer
 

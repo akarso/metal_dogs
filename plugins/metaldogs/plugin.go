@@ -48,7 +48,7 @@ type cartSurface interface {
 }
 
 // Needs declares CapCart, CapCatalog, and CapCatalogSeed.
-// CapCatalogSeed is not command-scoped: Host.Require after FreezePluginNeeds is a no-op, so serve and the worker declare it too (CR-21).
+// CapCatalogSeed stays declared so the seed CLI can read Host.CatalogSeed; serve and worker leave that port unbound.
 func (p *Plugin) Needs() []plugin.Capability {
 	return []plugin.Capability{plugin.CapCart, plugin.CapCatalog, plugin.CapCatalogSeed}
 }
