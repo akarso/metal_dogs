@@ -164,6 +164,9 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	for _, r := range routes {
 		patterns[r.Pattern] = true
 	}
+	if patterns["GET /api/customizer"] {
+		t.Fatal("dummy GET /api/customizer route still registered")
+	}
 	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
 		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
 		!patterns["POST /api/customizer/uploads"] ||
@@ -207,14 +210,10 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	}
 
 	prefixes := plugin.NoCachePathPrefixes(app.PublicRoutes())
-	foundTree := false
 	for _, prefix := range prefixes {
-		if prefix == "/api/customizer" {
-			foundTree = true
+		if prefix == "/api" || prefix == "/api/customizer" {
+			t.Fatalf("NoCachePathPrefixes = %#v, want child prefixes only", prefixes)
 		}
-	}
-	if !foundTree {
-		t.Fatalf("NoCachePathPrefixes = %#v, want /api/customizer", prefixes)
 	}
 	mw := shared.CacheControlMiddleware(prefixes)
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -225,8 +224,13 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-				t.Fatalf("%s %s Cache-Control = %q, want no-store", method, path, got)
+				t.Fatalf("%s %s Cache-Control = %q, want no-store (prefixes %#v)", method, path, got, prefixes)
 			}
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/api/customizer", nil))
+		if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300" {
+			t.Fatalf("%s /api/customizer Cache-Control = %q, want public max-age (no denylist prefix; prefixes %#v)", method, got, prefixes)
 		}
 	}
 	rec = httptest.NewRecorder()

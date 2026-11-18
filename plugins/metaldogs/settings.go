@@ -54,18 +54,18 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	provider := strings.TrimSpace(prefer(get, "generation_provider", "generation.provider"))
+	provider := strings.TrimSpace(prefer(get, "generation.provider", "generation_provider"))
 	if provider == "" {
 		provider = "fake"
 	}
 	if provider != "fake" {
 		return Settings{}, fmt.Errorf("metaldogs plugin: generation.provider %q not supported in C4 (use fake)", provider)
 	}
-	maxRetries, err := parseCount(get, "generation_max_retries", "generation.max_retries", 3)
+	maxRetries, err := parseCount(get, "generation.max_retries", "generation_max_retries", 3)
 	if err != nil {
 		return Settings{}, err
 	}
-	maxAttempts, err := parseCount(get, "generation_max_attempts_per_design", "generation.max_attempts_per_design", 3)
+	maxAttempts, err := parseCount(get, "generation.max_attempts_per_design", "generation_max_attempts_per_design", 3)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -86,15 +86,15 @@ func metalDogsKey(key string) string {
 	return "plugins." + metalDogsSlug + "." + key
 }
 
-func prefer(get func(string) string, primary, alias string) string {
-	if v := get(metalDogsKey(primary)); strings.TrimSpace(v) != "" {
+func prefer(get func(string) string, dotted, underscore string) string {
+	if v := get(metalDogsKey(dotted)); strings.TrimSpace(v) != "" {
 		return v
 	}
-	return get(metalDogsKey(alias))
+	return get(metalDogsKey(underscore))
 }
 
-func parseCount(get func(string) string, primary, alias string, def int) (int, error) {
-	n, present, err := parseOptionalInt(prefer(get, primary, alias), alias)
+func parseCount(get func(string) string, dotted, underscore string, def int) (int, error) {
+	n, present, err := parseOptionalInt(prefer(get, dotted, underscore), dotted)
 	if err != nil {
 		return 0, err
 	}
@@ -106,7 +106,7 @@ func parseCount(get func(string) string, primary, alias string, def int) (int, e
 
 func parseCooldown(get func(string) string) (int, error) {
 	const def = 30
-	n, present, err := parseOptionalInt(prefer(get, "generation_cooldown_seconds", "generation.cooldown_seconds"), "generation.cooldown_seconds")
+	n, present, err := parseOptionalInt(prefer(get, "generation.cooldown_seconds", "generation_cooldown_seconds"), "generation.cooldown_seconds")
 	if err != nil {
 		return 0, err
 	}

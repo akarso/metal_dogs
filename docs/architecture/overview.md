@@ -198,10 +198,10 @@ Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics
 | --- | --- | --- |
 | `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin) | UPG4-01 |
 | `cmd/api/metaldogs_catalog.go` | Builds core product, variant, price, price-history and stock repos for `metaldogs:catalog-seed`. The plugin package does not import infrastructure adapters | E1 |
-| `internal/platform/config/config.go`, `plugins_extra.go` | Typed `Plugins.MetalDogs` removed (pin still lists `metaldogs` in `typedPluginYAMLKeys`) so `plugins.metaldogs` is `Config.Extra`. Env names unchanged. Nested `generation:` uses the pin's dotted flatten; `expandMetalDogsGeneration` is gone | UPG4-01 / 00b |
+| `internal/platform/config/config.go`, `plugins_extra.go` | Typed `Plugins.MetalDogs` removed. Pin still lists `metaldogs` in `typedPluginYAMLKeys`; we omit that key so `plugins.metaldogs` stays `Config.Extra` (putting it back drops YAML and env). No Metal Dogs helpers remain in `plugins_extra.go`. Nested `generation:` uses the pin's dotted flatten | UPG4-01 / 00b / 01b |
 | `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
 | `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
-| `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Product registration / migrate coverage. `/api/customizer/*` no-store comes from `pluginsdk.NoCache()` plus upstream `NoCachePathPrefixes` (`wire_routes.go` matches the pin) | UPG4-01 |
+| `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Product registration / migrate coverage. Guest GET/HEAD `no-store` comes from `pluginsdk.NoCache()` on each route. Param routes denylist `/api/customizer/designs`, not `/api/customizer`. The dummy `GET /api/customizer` route is gone, so that exact path is not on the denylist | UPG4-01 / 01b |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
 | `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts; docs-policy uses MD hardened checker (no promote step) | F2 / CR-06 |

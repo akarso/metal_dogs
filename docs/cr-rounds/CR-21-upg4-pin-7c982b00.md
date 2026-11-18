@@ -121,3 +121,31 @@ Nested YAML `generation:` loads the same explicit fields as the old typed `Metal
 
 - Every `jobs.Queue` stub we kept gained the variadic `Requeue` parameter.
 - Postgres `Requeue` ignores `WithRequeueMinAge`. Pin default min-age is 5m; this queue still uses 1m.
+
+## Ticket 01b — drop config and NoCache workarounds
+
+- `expandMetalDogsGeneration` and `metalDogsExtraSlug` are already gone. The only diff versus the pin in `plugins_extra.go` is the omitted `metaldogs` entry in `typedPluginYAMLKeys`. The pin still has typed `MetalDogsPluginConfig` (`enabled` only) and lists the slug so YAML/env for it do not enter `Extra`. Ticket 01 removed that struct. Putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. The file stays on the allowlist.
+
+Alias rule in effect (`setPluginExtraKey`, YAML flatten and env overlay):
+
+- `.` and `_` are aliases. Both forms are stored. Different values fail Load (`conflicting keys`).
+- `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes Extra key `generation_provider` and is mirrored to `generation.provider` (same for the other generation keys).
+- Env overwrites YAML, including the dotted alias.
+- The plugin reads the dotted key first (`generation.provider`, `generation.max_retries`, `generation.max_attempts_per_design`, `generation.cooldown_seconds`), then the underscore alias, through `Host.ConfigValue`.
+
+Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""`:
+
+- Typed plugin env skips `""` (`v != ""`). `applyPluginsExtraEnv` does not. The empty value overwrites YAML `enabled: true`. `ParseEnabled("")` is off.
+- The plugin cannot recover the YAML bool: `Host.Config*` only sees the overwritten string. Old "empty env ignored" behavior is impossible without a core change. Test: `TestSettingsFrom_EmptyEnabledEnvOverwritesYAML`.
+
+Cooldown:
+
+- YAML `generation:` with `provider` / `max_retries` and no `cooldown_seconds` yields cooldown 30 (and omitted counts stay 3). The old typed struct zeroed an omitted `cooldown_seconds` to 0 when the map was present. That wipe stays unrestored. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
+
+NoCache:
+
+- Dummy `GET /api/customizer` → `http.NotFoundHandler()` is removed. No replacement route.
+- `GET /api/customizer/enabled` denylists `/api/customizer/enabled`. `GET /api/customizer/designs/{id}` denylists `/api/customizer/designs` (cut at `{`). Neither is `/api/customizer`. `/api` is refused.
+- Guest GET and HEAD on `/api/customizer/enabled` and `/api/customizer/designs/design-1` are `no-store` through `CacheControlMiddleware`. Guest GET and HEAD on exact `/api/customizer` are `public, max-age=300`.
+- No pattern was rejected. `GET /api/customizer` would be accepted (static, two segments) and is the route this ticket removes. A `{` immediately after `/api/customizer/` would also be accepted and would be another dummy.
+

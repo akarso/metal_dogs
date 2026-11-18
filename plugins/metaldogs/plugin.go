@@ -145,10 +145,6 @@ func (p *Plugin) Init(app *plugin.App) error {
 		}
 	}
 
-	// NoCache cuts at '{', so designs/{id} denylists /api/customizer/designs, not /api/customizer. This static route is that prefix (CR-21).
-	if err := mountCustomizerRoute(h, "GET /api/customizer", http.NotFoundHandler()); err != nil {
-		return fmt.Errorf("metaldogs plugin: customizer prefix route: %w", err)
-	}
 	if err := mountCustomizerRoute(h, "GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}

@@ -20,6 +20,10 @@ func TestSettingsFrom_ProductionEnvNames(t *testing.T) {
 	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS", "12")
 
 	cfg := loadMetalDogsConfig(t, "server:\n  host: 127.0.0.1\n")
+	extra := cfg.Plugins.Extra["metaldogs"]
+	if extra["generation.provider"] != "fake" || extra["generation_provider"] != "fake" {
+		t.Fatalf("alias keys = %#v, want both generation.provider and generation_provider", extra)
+	}
 	got := settingsViaHost(t, cfg)
 	if !got.Enabled || got.Provider != "fake" || got.MaxRetries != 4 || got.MaxAttemptsPerDesign != 5 || got.CooldownSeconds != 12 {
 		t.Fatalf("settings = %+v", got)
@@ -117,6 +121,43 @@ plugins:
 	}
 	if raw := cfg.Plugins.Extra["metaldogs"]["generation"]; raw != "" {
 		t.Fatalf("generation Extra key = %q, want dotted keys only", raw)
+	}
+}
+
+func TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30(t *testing.T) {
+	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
+	cfg := loadMetalDogsConfig(t, `
+server:
+  host: 127.0.0.1
+plugins:
+  metaldogs:
+    enabled: true
+    generation:
+      provider: fake
+      max_retries: 4
+`)
+	got := settingsViaHost(t, cfg)
+	if !got.Enabled || got.Provider != "fake" || got.MaxRetries != 4 || got.MaxAttemptsPerDesign != 3 || got.CooldownSeconds != 30 {
+		t.Fatalf("settings = %+v, want cooldown 30 when generation map omits cooldown_seconds", got)
+	}
+}
+
+func TestSettingsFrom_EmptyEnabledEnvOverwritesYAML(t *testing.T) {
+	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
+	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "")
+	cfg := loadMetalDogsConfig(t, `
+server:
+  host: 127.0.0.1
+plugins:
+  metaldogs:
+    enabled: true
+`)
+	if got := cfg.Plugins.Extra["metaldogs"]["enabled"]; got != "" {
+		t.Fatalf("Extra enabled = %q, want empty env overwrite", got)
+	}
+	got := settingsViaHost(t, cfg)
+	if got.Enabled {
+		t.Fatalf("settings = %+v, empty env is stored and ParseEnabled treats it as off", got)
 	}
 }
 
