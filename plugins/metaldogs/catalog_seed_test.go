@@ -213,6 +213,59 @@ func TestCatalogSeed_MissingParentSKUDoesNotBackfill(t *testing.T) {
 	}
 }
 
+func TestCatalogSeed_LateVariantConflictRollsBack(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_rollback")
+	products, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := catalog.WithOperatorProductReadScope(context.Background())
+	other, err := catalog.NewProduct(id.New(), "Other tee", "other-tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := products.Create(ctx, &other); err != nil {
+		t.Fatal(err)
+	}
+	// XXL is the last products.csv row, so earlier sizes are inserted in this Import before the SKU conflict.
+	held, err := catalog.NewVariant(id.New(), other.ID, "MDOGS-TEE-XXL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := variants.Create(ctx, &held); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runCatalogSeedErr(t, db, repoCatalogDir(t))
+	if err == nil || !strings.Contains(err.Error(), "MDOGS-TEE-XXL") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM products WHERE slug = 'mdogs-tee'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("mdogs-tee products = %d, want 0", n)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM variants WHERE sku IN ('MDOGS-TEE-S', 'MDOGS-TEE-M', 'MDOGS-TEE-L', 'MDOGS-TEE-XL')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("variants written before the XXL conflict = %d, want 0", n)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM variants WHERE sku = 'MDOGS-TEE-XXL' AND product_id = $1`, other.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pre-existing XXL variants = %d, want 1", n)
+	}
+}
+
 func TestCatalogSeed_ParentSKUWrittenWithProduct(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent_insert")
 	runCatalogSeed(t, db, repoCatalogDir(t))

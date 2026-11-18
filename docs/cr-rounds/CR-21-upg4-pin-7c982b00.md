@@ -168,6 +168,8 @@ Attributes stay create-only. A missing `parent_sku` on an existing product is no
 
 `metaldogs:catalog-seed` declares `CapCatalogSeed` and calls `Import` once per run. `cmd/api/metaldogs_catalog.go` is deleted. The plugin does not import `internal/infrastructure/postgres`.
 
+`CapCatalogSeed` stays on `Needs` and `Init` for serve and the worker as well as the CLI. There is no command-scoped capability. `Host.Require` after `FreezePluginNeeds` is a no-op, and `CatalogSeed()` returns the port only when this plugin declared the capability during Init. `bindProductPorts` still builds the port whenever the catalog repositories exist.
+
 Behaviour that changed because the port does not offer the old writes:
 
 - A missing or different `parent_sku` fails the batch and rolls it back. The error names the slug and `parent_sku`; it does not repeat both SKU strings.
