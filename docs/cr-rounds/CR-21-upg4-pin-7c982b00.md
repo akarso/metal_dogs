@@ -246,12 +246,27 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 | Before | After |
 | --- | --- |
 | `postgres.JobQueue.SetOnRequeued(ctx, exec, jobID, jobType)` inside `rependInTx`, after the pending UPDATE, before COMMIT | `Host.OnRequeued(ctx, jobID, attempt)`. `WrapRequeueNotify` calls `RequeueWithBeforeCommit`. Postgres runs that callback before the pending UPDATE, with `jobs.WithRequeueTx`. `pluginsdk.RequeueTx(ctx)` is that `*sql.Tx`. The claim bump commits with the jobs row or rolls back with it |
-| `RequireOnRequeued` + `Requeue` refusing `MetalDogsGenerateJobType` | Dropped. `Queue.Requeue` is the pin implementation. The hook returns an error when `RequeueTx` is missing, which aborts `Requeue` |
+| `RequireOnRequeued` + `Requeue` refusing `MetalDogsGenerateJobType` | Dropped. `Queue.Requeue` is the pin implementation. `OnRequeued` has no job type. A missing `RequeueTx` returns an error only when `jobID` is a `metaldogs_generation_jobs` row (non-UUID ids are not that row). Other jobs requeue |
 | `Admin.RequeueLease` (failed/done/cancelled/stale processing, attempts kept, fence in the same tx) | Stale processing: `Queue.Requeue(ctx, id, attempt, WithRequeueMinAge(DefaultClaimLease))`, fence via `OnRequeued`. Failed/done/cancelled: `Queue.Requeue` returns `ErrRequeueNotProcessing`. The plugin then updates those rows to pending in its own transaction and calls `InvalidateClaimExec` on that tx. `Admin.Retry` is failed-only and resets attempts; it does not run `OnRequeued` |
 | `cmd/api` `InstallGenerateJobFence` on the raw queue | `Plugin.Init` calls `Host.OnQueueBound`. The wrap forwards `Reader` (including `CountsByStatus`) and `Admin`, exposes `UnwrapQueue`, and implements `RequeueHookable` so the notify wrapper does not run the hook after commit |
 | `ErrSkipOutcome` text `job: skip outcome` | Pin text `jobs: skip outcome`. Same sentinel. Handlers still return it when the product claim is lost. Stale `Complete`/`Fail` return `ErrOutcomeNotApplied` (`not applied`) and leave the newer attempt |
 
 `jobs:list` / `jobs:show` / `jobs:cancel` and `GET /admin/jobs` use the pin service. `jobs:retry` retries a failed job only. `jobs:requeue` is the stale-processing reclaim (attempts kept) and runs `OnRequeued`.
 
-`plugins/metaldogs/job_fence.go` no longer imports `internal/*`. The queue wrap lives in `generate_fence_queue.go` (`internal/domain/jobs` only, so the method set matches `jobs.Queue`). `TestImportBoundary` has no `job_fence.go` line. The gate's `imports forbidden` check does not list it.
+`plugins/metaldogs/job_fence.go` no longer imports `internal/*`. The queue wrap lives in `generate_fence_queue.go`. `TestImportBoundary` has no `job_fence.go` line. It does report `generate_fence_queue.go` (`imports disallowed` `internal/domain/jobs`).
+
+`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that.
+
+### Shopanda gaps (ticket 03)
+
+- `pluginsdk` does not alias `jobs.Queue`, `jobs.Reader`, `jobs.Admin`, or `jobs.RequeueHookable`. `Host.OnQueueBound` is `func(any) any`, and the method set uses those types, so the wrap imports `internal/domain/jobs`. `TestImportBoundary` flags `generate_fence_queue.go`.
+- No queue API re-pends `failed` / `done` / `cancelled`, keeps `attempts`, and runs `OnRequeued` in the same transaction. `Queue.Requeue` is processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` is failed-only, resets `attempts`, and does not run the hook. The plugin updates `jobs` itself for that case.
+
+### Known red on the pin (not Metal Dogs wiring)
+
+`TestNewJobsRuntime_WarehousedemoReachesBind` fails on pin `565dde5a284ea3983b431e915acb4a37ae166a3c` and on this tree. `cmd/api/jobs_cli.go` and `cmd/api/jobs_cli_test.go` match the pin (`git diff 565dde5a` empty). The test logger is `io.Discard`; a one-off stdout logger on a detached worktree of that commit printed:
+
+`plugin.init.failed` `core/storage-local`: `local storage: empty base_path`
+
+The fixture sets `queue.driver=postgres` and warehousedemo, and leaves `media.storage` empty, so `CoreLocalStorageEnabled()` is true and `Media.Local.BasePath` is empty. `registerProductPlugins` does not register metaldogs when `plugins.metaldogs.enabled` is unset. Same failure on the pin. Left as an upstream red; the test file stays the pin copy.
 

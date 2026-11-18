@@ -90,7 +90,7 @@ func (f *fenceHookStub) RequeueWithBeforeCommit(ctx context.Context, id string, 
 	return before(ctx, id, attempt)
 }
 
-func TestInstallGenerateJobFence_OnRequeuedRequiresTx(t *testing.T) {
+func TestInstallGenerateJobFence_RequeueOutsideTx_OtherJobNotBlocked(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
 	h := pluginsdk.AsHostFor(app, metaldogs.PluginName)
@@ -103,8 +103,7 @@ func TestInstallGenerateJobFence_OnRequeuedRequiresTx(t *testing.T) {
 		t.Fatal(err)
 	}
 	bound := app.WrapRequeueNotify(wrapped)
-	err = bound.Requeue(context.Background(), "job-1", 1)
-	if err == nil || !strings.Contains(err.Error(), "requeue transaction missing") {
-		t.Fatalf("hook outside reclaim tx: %v", err)
+	if err := bound.Requeue(context.Background(), "job-1", 1); err != nil {
+		t.Fatalf("non-generation requeue without tx: %v", err)
 	}
 }

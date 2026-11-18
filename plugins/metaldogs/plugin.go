@@ -96,6 +96,10 @@ func (p *Plugin) Init(app *plugin.App) error {
 	h.Require(pluginsdk.CapCatalog)
 	h.Require(pluginsdk.CapCatalogSeed)
 	p.host = h
+	// BootstrapDB is denied until CapDB is declared. bindProductPorts marks it when a DB is open.
+	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
+		h.Require(pluginsdk.CapDB)
+	}
 	if err := InstallGenerateJobFence(h); err != nil {
 		return fmt.Errorf("metaldogs plugin: generate job fence: %w", err)
 	}
