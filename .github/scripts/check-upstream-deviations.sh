@@ -30,7 +30,9 @@ ALLOWLIST=(
   internal/domain/jobs/job.go
   internal/domain/jobs/worker.go
   internal/domain/jobs/worker_test.go
+  # upstream still types metaldogs; remove when Shopanda drops it
   internal/platform/config/config.go
+  # upstream still types metaldogs; remove when Shopanda drops it
   internal/platform/config/plugins_extra.go
   internal/platform/plugin/providers.go
   internal/platform/plugin/providers_test.go

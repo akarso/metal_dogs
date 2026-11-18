@@ -174,7 +174,7 @@ plugins:
 	}
 }
 
-func TestSettingsFrom_EmptyEnabledEnvOverwritesYAML(t *testing.T) {
+func TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML(t *testing.T) {
 	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
 	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "")
 	cfg := loadMetalDogsConfig(t, `

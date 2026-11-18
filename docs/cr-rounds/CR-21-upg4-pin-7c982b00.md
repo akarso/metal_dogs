@@ -81,9 +81,9 @@ Closed on pin `ab35e965` (ticket 00b). Record of what ticket 01 was waiting on:
 
 Open after ticket 01b (Shopanda roadmap; not done in this tree):
 
-- Drop typed `MetalDogsPluginConfig` and remove `metaldogs` from `typedPluginYAMLKeys`. The pin still has both. This tree already deleted the struct, so putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. `config.go` and `plugins_extra.go` stay on the allowlist until upstream drops the key. Ticket 01b's "file matches upstream; allowlist/overview drop it" criterion is blocked on this gap.
+- Drop typed `MetalDogsPluginConfig` and remove `metaldogs` from `typedPluginYAMLKeys`. The pin still has both. This tree already deleted the struct, so putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. Accepted in ticket 01c: `config.go` and `plugins_extra.go` stay on the allowlist. Reason: upstream still types metaldogs; remove when Shopanda drops it.
 - `setPluginExtraKey` aliases only all-`_` ↔ all-`.`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` writes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation.max_retries` is a third key and is not overwritten. Same for `cooldown_seconds` and `max_attempts_per_design`. `generation_provider` ↔ `generation.provider` is a full swap, so `provider` is fine. The plugin reads the underscore key first so env still wins. Upstream should overwrite the mixed key or reject it as the same alias.
-- `applyPluginsExtraEnv` stores empty values. Typed plugin env skips `""`. Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` overwrites YAML `enabled: true` and the plugin turns off. Skip empty env, or document that as intended.
+- `applyPluginsExtraEnv` stores empty values. Typed plugin env skips `""`. Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` overwrites YAML `enabled: true` and the plugin turns off. Ticket 01c documents this as a known difference (old code ignored an empty value), pending a Shopanda change to skip empty env.
 
 ## Ticket 01 config criterion
 
@@ -117,7 +117,7 @@ Nested YAML `generation:` loads the same explicit fields as the old typed `Metal
 
 - `CatalogPriceSeed.Update` and `EnsurePrice` → `(written bool, err)` (`pkg/pluginsdk/ports.go`, `port_adapt.go`, `cmd/api/plugin_ports.go`). Create-only remains the default. Attributes stay create-only. Seed CLI is still `cmd/api/metaldogs_catalog.go` (ticket 02).
 - Price tx: bridged seed `WithTx` without `*sql.Tx` fails closed (`port_adapt.go`).
-- NoCache: static path before `{`; refuse empty, single-segment-after-cut, and roots `/` and `/api`. Static one-segment mounts are allowed. `GET /api/customizer` still registers.
+- NoCache: static path before `{`; refuse empty, single-segment-after-cut, and roots `/` and `/api`. Static one-segment mounts are allowed. `GET /api/customizer` still registered at this pin bump (removed in ticket 01c).
 - `Config.Extra`: nested YAML → dotted keys; `.` and `_` are aliases; conflict fails closed; lists error. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` still arrives as `generation_*` and is mirrored to `generation.*`.
 - `Host.OnRequeued` is `(ctx, jobID, attempt) error`. `pluginsdk.RequeueTx` reads the reclaim `*sql.Tx`. Our notify wrapper does not use it yet.
 - Redis job-queue reclaim (`25158fbd`) landed in `internal/infrastructure/redis`. Metal Dogs generate fence stays on Postgres.
@@ -139,19 +139,19 @@ Alias rule in effect (`setPluginExtraKey`, YAML flatten and env overlay):
 - A multi-word key has no mixed alias. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` becomes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation: {max_retries: 2}` also stores `generation.max_retries`. Env does not write that mixed key. Same for `generation.cooldown_seconds` and `generation.max_attempts_per_design`.
 - The plugin reads the underscore key first (`generation_provider`, `generation_max_retries`, `generation_max_attempts_per_design`, `generation_cooldown_seconds`), then the dotted key, through `Host.ConfigValue`. Env therefore wins over the stale mixed YAML key. Test: `TestSettingsFrom_EnvOverridesNestedYAMLMultiWordKeys`.
 
-Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""`:
+Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""`: known difference, recorded in ticket 01c. Test: `TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML`.
 
-- Typed plugin env skips `""` (`v != ""`). `applyPluginsExtraEnv` does not. The empty value overwrites YAML `enabled: true`. `ParseEnabled("")` is off.
-- The plugin cannot recover the YAML bool: `Host.Config*` only sees the overwritten string. Old "empty env ignored" behavior is impossible without a core change. Test: `TestSettingsFrom_EmptyEnabledEnvOverwritesYAML`.
+Cooldown: intentional behaviour change, recorded in ticket 01c. Omitted `cooldown_seconds` inside `generation:` is 30, not 0. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
 
-Cooldown:
+NoCache: the JSON `GET /api/customizer` workaround from this ticket is removed in ticket 01c. `httpapi.NotFound` is gone.
 
-- YAML `generation:` with `provider` / `max_retries` and no `cooldown_seconds` yields cooldown 30 (and omitted counts stay 3). The old typed struct zeroed an omitted `cooldown_seconds` to 0 when the map was present. That wipe stays unrestored. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
+## Ticket 01c — close the 01b leftovers
 
-NoCache:
+Decisions (do not re-litigate):
 
-- Dummy `GET /api/customizer` → `http.NotFoundHandler()` is removed.
-- Exact `GET /api/customizer` is `httpapi.NotFound`: JSON `404` `{"error":"not_found"}` with `pluginsdk.NoCache()`. Upstream accepts the pattern (static, two segments). The denylist prefix is `/api/customizer`, which also covers children. `/api` stays refused.
-- `GET /api/customizer/enabled` still denylists `/api/customizer/enabled`. `GET /api/customizer/designs/{id}` still denylists `/api/customizer/designs` (cut at `{`).
-- Guest GET and HEAD on `/api/customizer`, `/api/customizer/enabled`, and `/api/customizer/designs/design-1` are `no-store` through `CacheControlMiddleware`. Test: `TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator`.
+- Upstream `ab35e965` still has typed `MetalDogsPluginConfig` and `"metaldogs"` in `typedPluginYAMLKeys` (comment "migrate-next"). This tree does not restore the typed field and does not add Metal Dogs code to core. Putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. `internal/platform/config/config.go` and `plugins_extra.go` stay on the deviations allowlist. Reason on each row: upstream still types metaldogs; remove when Shopanda drops it.
+- Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""` is a known difference pending a Shopanda change. Old code ignored an empty value. Upstream `applyPluginsExtraEnv` stores it, overwrites YAML `enabled: true`, and `ParseEnabled("")` turns the plugin off. The plugin cannot recover the YAML bool because `Host.Config*` only sees the overwritten string. Test: `TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML`.
+- Cooldown 0 → 30 is an intentional behaviour change. YAML `generation:` with `provider` / `max_retries` and no `cooldown_seconds` yields cooldown 30 (omitted counts stay 3). The old typed struct zeroed an omitted `cooldown_seconds` to 0 when the map was present, because `UnmarshalYAML` replaced defaults. That wipe is not restored. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
+- Bare `/api/customizer` is not an endpoint. The route is removed entirely (`plugins/metaldogs/httpapi/notfound.go` deleted). No NoCache workaround route remains. The exact path is a plain 404 and may be cached. `/api` stays refused.
+- Every registered `/api/customizer/*` route uses `pluginsdk.NoCache()`. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`. `GET /api/customizer/enabled` denylists `/api/customizer/enabled`. `GET /api/customizer/designs/{id}` denylists `/api/customizer/designs` (cut at `{`). Test `TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator` lists every registered customizer route and fails if one lacks NoCache.
 

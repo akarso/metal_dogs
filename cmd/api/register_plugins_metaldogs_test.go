@@ -164,7 +164,10 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	for _, r := range routes {
 		patterns[r.Pattern] = true
 	}
-	if !patterns["GET /api/customizer"] || !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
+	if patterns["GET /api/customizer"] || patterns["HEAD /api/customizer"] || patterns["/api/customizer"] {
+		t.Fatalf("PublicRoutes = %+v, exact /api/customizer must not be registered", routes)
+	}
+	if !patterns["GET /api/customizer/enabled"] || !patterns["GET /api/customizer/health"] ||
 		!patterns["GET /api/customizer/templates"] || !patterns["GET /api/customizer/templates/{id}"] ||
 		!patterns["POST /api/customizer/uploads"] ||
 		!patterns["POST /api/customizer/designs"] || !patterns["GET /api/customizer/designs/{id}"] ||
@@ -206,60 +209,75 @@ func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 		t.Fatalf("SyncJobs = %+v, want obs.ping", app.SyncJobs())
 	}
 
-	prefixes := plugin.NoCachePathPrefixes(app.PublicRoutes())
-	hasCustomizer := false
-	for _, prefix := range prefixes {
-		if prefix == "/api" {
-			t.Fatalf("NoCachePathPrefixes = %#v, refuse /api", prefixes)
+	var customizer []plugin.PublicRoute
+	for _, r := range routes {
+		if !strings.Contains(r.Pattern, "/api/customizer/") {
+			continue
 		}
-		if prefix == "/api/customizer" {
-			hasCustomizer = true
+		if !r.NoCache {
+			t.Fatalf("customizer route %q registered without NoCache", r.Pattern)
 		}
+		customizer = append(customizer, r)
 	}
-	if !hasCustomizer {
-		t.Fatalf("NoCachePathPrefixes = %#v, want /api/customizer", prefixes)
+	if len(customizer) == 0 {
+		t.Fatal("no /api/customizer/* routes registered")
+	}
+	prefixes := plugin.NoCachePathPrefixes(app.PublicRoutes())
+	for _, prefix := range prefixes {
+		if prefix == "/api" || prefix == "/api/customizer" {
+			t.Fatalf("NoCachePathPrefixes = %#v, refuse %s", prefixes, prefix)
+		}
 	}
 	mw := shared.CacheControlMiddleware(prefixes)
-	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		for _, path := range []string{"/api/customizer", "/api/customizer/enabled", "/api/customizer/designs/design-1"} {
+	mux := http.NewServeMux()
+	for _, r := range customizer {
+		mux.Handle(r.Pattern, r.Handler)
+	}
+	h := mw(mux)
+	for _, r := range customizer {
+		path := concreteCustomizerPath(r.Pattern)
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-				t.Fatalf("%s %s Cache-Control = %q, want no-store (prefixes %#v)", method, path, got, prefixes)
+				t.Fatalf("%s %s (from %s) Cache-Control = %q, want no-store (prefixes %#v)", method, path, r.Pattern, got, prefixes)
 			}
 		}
 	}
-	var root plugin.PublicRoute
-	for _, r := range routes {
-		if r.Pattern == "GET /api/customizer" {
-			root = r
-		}
-	}
-	rootMux := http.NewServeMux()
-	rootMux.Handle(root.Pattern, root.Handler)
-	rootH := mw(rootMux)
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		rec := httptest.NewRecorder()
-		rootH.ServeHTTP(rec, httptest.NewRequest(method, "/api/customizer", nil))
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/api/customizer", nil))
 		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s /api/customizer status = %d, want 404", method, rec.Code)
+			t.Fatalf("%s /api/customizer status = %d, want plain 404", method, rec.Code)
 		}
-		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-			t.Fatalf("%s /api/customizer Cache-Control = %q, want no-store", method, got)
+		if got := rec.Header().Get("Cache-Control"); got == "no-store" {
+			t.Fatalf("%s /api/customizer Cache-Control = %q, bare path may be cached", method, got)
 		}
-		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-			t.Fatalf("%s /api/customizer Content-Type = %q, want application/json", method, ct)
-		}
-		if method == http.MethodGet && !strings.Contains(rec.Body.String(), `"error":"not_found"`) {
-			t.Fatalf("GET /api/customizer body = %q, want JSON not_found", rec.Body.String())
+		if method == http.MethodGet && strings.Contains(rec.Body.String(), `"error"`) {
+			t.Fatalf("GET /api/customizer body = %q, want plain 404", rec.Body.String())
 		}
 	}
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/products", nil))
 	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300" {
 		t.Fatalf("GET /api/v1/products Cache-Control = %q, want public max-age", got)
+	}
+}
+
+func concreteCustomizerPath(pattern string) string {
+	path := pattern
+	if _, rest, ok := strings.Cut(pattern, " "); ok {
+		path = rest
+	}
+	for {
+		start := strings.Index(path, "{")
+		if start < 0 {
+			return path
+		}
+		end := strings.Index(path[start:], "}")
+		if end < 0 {
+			return path
+		}
+		path = path[:start] + "x" + path[start+end+1:]
 	}
 }

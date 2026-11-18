@@ -4,9 +4,10 @@ Public surface under `/api/customizer/*` (plugin flag `plugins.metaldogs.enabled
 
 ## Enablement & health
 
+Exact `/api/customizer` is not a route. The platform answers with a plain 404, which may be cached. Every registered `/api/customizer/*` route is `Cache-Control: no-store` on guest GET and HEAD.
+
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/api/customizer` | public | `404` `{"error":"not_found"}`. No document at this path. NoCache prefix `/api/customizer` |
 | `GET` | `/api/customizer/enabled` | public | `{"status":"ok","plugin":"metaldogs"}` |
 | `GET` | `/api/customizer/health` | public | BoundQueue/Reader only; `503` + generic `degraded` when not ready |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type job depths |
@@ -65,7 +66,7 @@ Published catalog only. Drafts and retired versions never appear. Responses omit
 
 ### Cache
 
-Handlers do not set public `max-age`. Platform middleware forces `Cache-Control: no-store` on `/api/customizer` and `/api/customizer/*`.
+Handlers do not set public `max-age`. Platform middleware forces `Cache-Control: no-store` on each registered `/api/customizer/*` route. Exact `/api/customizer` is not on that denylist.
 
 ## Uploads (C2)
 
