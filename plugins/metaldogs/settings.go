@@ -42,10 +42,7 @@ func ParseEnabled(raw string) (bool, error) {
 	}
 }
 
-// SettingsFrom reads plugins.metaldogs.* from Host.ConfigValue.
-// Missing numbers keep the previous defaults; a non-integer is an error.
-// Counts <= 0 become 3. Cooldown 0 stays 0. A nested generation map is rejected
-// because Config.Extra is one level of strings (env keys are generation_*).
+// SettingsFrom reads plugins.metaldogs.* via Host.ConfigValue; bad ints/bools are errors.
 func SettingsFrom(get func(string) string) (Settings, error) {
 	if get == nil {
 		get = func(string) string { return "" }

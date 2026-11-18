@@ -58,7 +58,7 @@ Moved:
 
 - `registerMetalDogs` from `cmd/api/register_plugins.go` to `registerProductPlugins` in `cmd/api/register_products.go`. `register_plugins.go` and `wire_routes.go` match the pin. Deleted `cmd/api/cache_control_prefixes.go` (+ test).
 - Typed `MetalDogsPluginConfig` / `Plugins.MetalDogs` removed from `internal/platform/config/config.go`. `plugins_extra.go` no longer lists `metaldogs` in `typedPluginYAMLKeys`, so the slug is `Config.Extra`. Both files still differ from the pin (the pin keeps the typed `enabled` field). `config_test.go` matches the pin again.
-- Public `/api/customizer/*` routes use `pluginsdk.NoCache()`. `NoCachePathPrefixes` keeps `{id}` in the pattern, so `GET /api/customizer` is also registered (404) and supplies the `/api/customizer` prefix. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`.
+- Public `/api/customizer/*` routes use `pluginsdk.NoCache()`. `pathPrefixFromPattern` does not cut at `{`, so `GET /api/customizer/designs/{id}` is not a prefix. `GET /api/customizer` → `http.NotFoundHandler()` supplies `/api/customizer`. Exact `GET /api/customizer` is a plain 404. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`.
 - `job_queue_bind.go` and `jobs_cli.go` call `metaldogs.Enabled` (Extra) so the generate fence still installs when the plugin is on.
 
 Tests:
@@ -67,7 +67,15 @@ Tests:
 - Bad ints/bools fail. Defaults stay fake / 3 / 3 / 30. Cooldown `0` stays 0. Counts `<=0` stay 3.
 - `cmd/api/register_plugins_metaldogs_test.go` checks registration and GET/HEAD `no-store` for `/api/customizer/enabled` and `/api/customizer/designs/design-1`.
 
-Extra limitation (no env rename):
+Env names (working):
 
 - `Config.Extra` is `map[string]map[string]string`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes key `generation_provider`, not `generation.provider`. The plugin accepts that key and the dotted alias `generation.provider`.
-- A nested YAML map `generation: { provider: ... }` is stringified by `yamlMapToStringMap` (`map[...]`) and Init rejects it. Flat keys or the env names are the supported form.
+
+## Shopanda gaps
+
+- `pathPrefixFromPattern` (`internal/platform/plugin/public_routes.go`) should cut the path at the first `{`. Until that ships, the dummy `GET /api/customizer` route stays. Remove it once the prefix is `/api/customizer` without that route.
+- `yamlMapToStringMap` (`internal/platform/config/plugins_extra.go`) stringifies a nested map (`map[...]`) instead of flattening it. `plugins.metaldogs.generation: {provider, max_retries, ...}` must become Extra keys `generation.provider`, `generation.max_retries`, and the same for the other generation fields. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` already arrives as `generation_*`.
+
+## Ticket 01 config criterion — open
+
+No PO decision accepts rejecting nested YAML `generation:`. Init currently errors on that map, so operator YAML that loaded before this ticket fails at startup. That line of the ticket stays open until Extra flattens nested maps, or a PO records acceptance of the rejection. Do not treat UPG4-01 config as done.
