@@ -257,7 +257,7 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 
 `jobs:list` / `jobs:show` / `jobs:cancel` and `GET /admin/jobs` use the pin service. `jobs:retry` retries a failed job only. `jobs:requeue` is the stale-processing reclaim (attempts kept) and runs `OnRequeued`.
 
-`plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line.
+`plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line. Removing that import did not make the test pass. The remaining failures are under ticket 05 (Known red).
 
 At this pin `rependTerminalGenerateJob` still set `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It did not reset `attempts` (`Admin.Retry` did, and did not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also left `last_error` in place (`Fail` writes it). The terminal UPDATE matched that. The write was listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` was the schema contract. Superseded by ticket 03b: that UPDATE is `Queue.Requeue` with `WithRequeueTerminal`, and the test asserts the same row outcome through that upstream API.
 
@@ -462,4 +462,10 @@ The checker walks the whole tree except `plugins/metaldogs/**`, `docs/**`, `*.md
 ### Seed
 
 Recorded under ticket 02 and the `7c982b00` range note: ticket 02 was deferred while `EnsurePrice` was create-only because the M3 step updates a placeholder price. PR-1567 made the update possible. The command uses `CatalogPriceSeed.Update`. Attributes stay create-only; a missing `parent_sku` on an existing product is not backfilled.
+
+### Known red
+
+`go test ./plugins/ -run ImportBoundary -count=1` fails on this pin (2026-11-19, this tree). Ticket 03 expected it to go green once `job_fence.go` stopped importing `internal/*`. The output has no `job_fence.go` or `generate_fence_queue.go` line, and the test is still red: 30 violations, all class `imports disallowed … (not on allowlist)`, 0 class `imports forbidden`. The allowlist is pkg-only (PR-1552). `sync_generate.go`, `plugin.go`, `cart_validate.go`, and `settings.go` are among the files; they import `internal/platform/plugin`, `internal/domain/jobs`, and `internal/platform/config`.
+
+Follow-up: move those imports onto `pkg/*`, or treat the missing surface as a Shopanda gap where the SDK still has no replacement for the types the plugin uses.
 
