@@ -24,7 +24,6 @@ ALLOWLIST=(
   .github/scripts/run-metaldogs-integration-tests.sh
   .gitignore
   Makefile
-  cmd/api/metaldogs_catalog_seed_test.go
   cmd/api/migrate_plugins_test.go
   cmd/api/register_plugins_metaldogs_test.go
   cmd/api/register_products.go

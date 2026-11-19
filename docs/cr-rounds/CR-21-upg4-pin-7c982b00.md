@@ -433,7 +433,9 @@ No other conflicts. `internal/infrastructure/localfs/storage.go` was already ide
 
 ### Catalog seed binder
 
-`cmd/api/metaldogs_catalog_seed_test.go` (moved from `plugins/metaldogs/catalog_seed_test.go`) keeps `bindTestCatalogSeed`. That helper calls `newPluginBootstrap`, `bindProductPorts`, and `bindCatalogSeedPort`. The port from `bindCatalogSeedPort` is wrapped only to count `Import` calls; the repos are not built again in the test. `TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` dispatches `metaldogs:catalog-seed` through `newPluginBootstrap` + `bindProductPorts` + `bindCatalogSeedPort` and checks the product and variant rows.
+`TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` dispatches `metaldogs:catalog-seed` through `newPluginBootstrap`, `bindProductPorts`, and `bindCatalogSeedPort` (`assertPluginCLINeedsMet` after the port is bound) and checks the product and variant rows. It does not use `bindTestCatalogSeed`.
+
+`bindTestCatalogSeed` stays in `plugins/metaldogs/catalog_seed_test.go`. `cart_harness_test.go` and the catalog seed cases are `package metaldogs_test` and call it. `newPluginBootstrap` and `bindCatalogSeedPort` are unexported in `package main`, so this helper cannot call them. It still builds `pluginsdk.NewCatalogSeedPort` from the same repos the production binder uses, and wraps that port to count `Import`. Moving the file into `cmd/api` broke those helpers (`catalogPLNHost`, `runCatalogSeed`, `listCatalogProducts`). The production path is the `cmd/api` test above.
 
 ### C4 assertions vs `3593795d`
 
