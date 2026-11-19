@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	jobsApp "github.com/akarso/shopanda/internal/application/jobs"
 	domainjobs "github.com/akarso/shopanda/internal/domain/jobs"
@@ -52,10 +51,6 @@ type fakeAdmin struct {
 func (f *fakeAdmin) Retry(_ context.Context, id string) error {
 	f.retryID = id
 	return f.retryErr
-}
-
-func (f *fakeAdmin) RequeueLease(context.Context, string, time.Duration) (bool, error) {
-	return false, nil
 }
 
 func (f *fakeAdmin) Cancel(_ context.Context, id string) error {

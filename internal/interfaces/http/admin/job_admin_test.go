@@ -56,10 +56,6 @@ func (f *fakeJobAdmin) Retry(context.Context, string) error {
 	return f.retryErr
 }
 
-func (f *fakeJobAdmin) RequeueLease(context.Context, string, time.Duration) (bool, error) {
-	return false, nil
-}
-
 func (f *fakeJobAdmin) Cancel(context.Context, string) error {
 	return f.cancelErr
 }
