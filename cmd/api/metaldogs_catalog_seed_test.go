@@ -1,4 +1,4 @@
-package metaldogs_test
+package main
 
 import (
 	"bytes"
@@ -24,6 +24,8 @@ import (
 	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
 	"github.com/akarso/shopanda/internal/platform/cli"
+	"github.com/akarso/shopanda/internal/platform/config"
+	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/id"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
@@ -475,7 +477,7 @@ func runCatalogSeedErr(t *testing.T, db *sql.DB, dir string) error {
 
 func runCatalogSeedBound(t *testing.T, db *sql.DB, dir string, bind bool) error {
 	t.Helper()
-	app := testApp(t, true)
+	app := catalogSeedApp(t)
 	imports := 0
 	if bind {
 		bindTestCatalogSeed(t, app, db, &imports)
@@ -518,31 +520,42 @@ func (c countingSeed) Import(ctx context.Context, batch pluginsdk.CatalogSeedBat
 	return c.CatalogSeedPort.Import(ctx, batch)
 }
 
+func catalogSeedApp(t *testing.T) *plugin.App {
+	t.Helper()
+	log := logger.NewWithWriter(io.Discard, "error")
+	return &plugin.App{
+		Logger: log,
+		Bus:    event.NewBus(log),
+		Config: &config.Config{
+			Plugins: config.PluginsConfig{
+				Extra: map[string]map[string]string{
+					"metaldogs": {"enabled": "true"},
+				},
+			},
+		},
+	}
+}
+
 func bindTestCatalogSeed(t *testing.T, app *plugin.App, db *sql.DB, imports *int) {
 	t.Helper()
-	products, err := postgres.NewProductRepo(db)
+	boot, err := newPluginBootstrap(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	variants, err := postgres.NewVariantRepo(db)
-	if err != nil {
+	if err := bindProductPorts(app, boot); err != nil {
 		t.Fatal(err)
 	}
-	prices, err := postgres.NewPriceRepo(db)
-	if err != nil {
+	scratch := &plugin.App{}
+	if err := bindCatalogSeedPort(scratch, boot); err != nil {
 		t.Fatal(err)
 	}
-	history, err := postgres.NewPriceHistoryRepo(db)
-	if err != nil {
-		t.Fatal(err)
+	raw, ok := scratch.CatalogSeedPort()
+	if !ok || raw == nil {
+		t.Fatal("bindCatalogSeedPort left catalog seed unbound")
 	}
-	stock, err := postgres.NewStockRepo(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := pluginsdk.NewCatalogSeedPort(products, variants, prices, history, stock, db)
-	if err != nil {
-		t.Fatal(err)
+	port, ok := raw.(pluginsdk.CatalogSeedPort)
+	if !ok {
+		t.Fatalf("catalog seed port type %T", raw)
 	}
 	if err := app.BindCatalogSeedPort(countingSeed{CatalogSeedPort: port, imports: imports}); err != nil {
 		t.Fatal(err)
@@ -844,7 +857,7 @@ func repoCatalogDir(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	return filepath.Join(filepath.Dir(file), "catalog")
+	return filepath.Join(filepath.Dir(file), "..", "..", "plugins", "metaldogs", "catalog")
 }
 
 func setCatalogAmounts(t *testing.T, dir string, amountFor func(sku string) (string, bool)) {

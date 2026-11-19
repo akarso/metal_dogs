@@ -174,42 +174,30 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 
 ## Upstream deviations
 
-Files that differ from the pinned Shopanda commit outside `plugins/metaldogs/` and `storefront/` must be listed here and re-checked on every upgrade. Treat this table as the upgrade conflict allowlist together with [`../runbooks/shopanda-upgrade.md`](../runbooks/shopanda-upgrade.md).
+`.github/scripts/check-upstream-deviations.sh` diffs the whole tree against the pinned SHA and allowlists every path below. It ignores product-owned trees: `plugins/metaldogs/**`, `docs/**`, `*.md` (root `README.md`, `AGENTS.md`, `RUNBOOK.md`, `PLUGINS.md`, demo `plugins/*/README.md`), `.github/workflows/**` (`ci.yml` adds `integration-metaldogs` and the hardened docs-policy step; `release.yml` refuses image name `shopanda`), and `.scratch/**`. Those trees are the product. They are not rows in the allowlist. `internal/infrastructure/localfs/storage.go` matches the pin (PR-1580); it is not listed. `internal/interfaces/http/admin/search_admin_test.go` and `internal/interfaces/http/storefront/auth_middleware_test.go` match the pin. The customizer opaque-bearer guest check lives in `cmd/api/register_plugins_metaldogs_test.go`. Nothing under `pkg/` differs.
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
-| `README.md` | Metal Dogs banner, remotes, badges → this repo; documentation section points at Metal Dogs docs + pinned upstream guides | F0 / F0-fix |
-| `AGENTS.md` | Metal Dogs agent rules, remotes, **main-only** branch policy, build commands (replaces upstream AGENTS.md / phase-* workflow) | F0 / F0-fix |
-| `.gitignore` | Union of upstream ignores with Metal Dogs IDE/binary entries (`/app`, `.idea/`) | F0 |
-| `RUNBOOK.md` | Metal Dogs runbook index; Shopanda operator detail via pinned GitHub URLs (full upstream RUNBOOK not retained) | F0-fix |
-| `PLUGINS.md` | Guide/diagram hrefs rewritten to pinned upstream blob URLs; COMMERCIAL stays local | F0-fix |
-| `plugins/*/README.md` (demos + b2b) | Guide hrefs/backticks rewritten to pinned upstream blob URLs (including fragment links) | F0-fix |
-| `.github/scripts/check-product-docs-links.sh` | Skip missing paths; scan Metal Dogs docs; forbid relative/`../` guide/diagram **file** hrefs (incl. `#fragment` / `?query`) and backtick paths; inline self-test before scan | F0-fix |
 | `.cursor/rules/pr-documentation-checklist.mdc` | Metal Dogs main-only / CR-round checklist (not Shopanda `dev` + `docs/phase-*`) | F0-fix |
-| `docs/**` (product) | Metal Dogs roadmap/ADRs/architecture/runbooks/cr-rounds | F0 |
-| `docs/GOVULN_BASELINE.md` | Restored for fail-closed `govuln` CI (empty allowlist at pin) | F0-fix |
-| `docs/COMMERCIAL.md` | Restored (B2B licensing boundary inherited with the GPL tree) | F0-fix |
-| `docs/guides/README.md`, `docs/diagrams/README.md` | Stubs pointing at pinned upstream trees (full guides/diagrams not vendored) | F0-fix |
+| `.env.example` | Private media path `./var/media`, sign-secret note, `SHOPANDA_PLUGINS_METALDOGS_ENABLED`, compose DSN | F1 / F4 |
+| `.github/scripts/check-product-docs-links.sh` | Scan Metal Dogs docs; forbid relative guide/diagram file hrefs; previous-pin full SHA guard | F0-fix |
+| `.github/scripts/check-upstream-deviations.sh` | This allowlist | F0-fix / UPG4-05 |
+| `.github/scripts/run-integration-tests.sh` | Shopanda postgres/migrate/b2b DSN suite only; Metal Dogs canaries are a separate script | F2 |
+| `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs DSN suite + canaries | F2 |
+| `.gitignore` | `/app`, `.idea/`, `.vscode/` | F0 |
+| `Makefile` | `docs-policy` runs the Metal Dogs link checker and this allowlist script, not `SHOPANDA_PLATFORM=1` | CR-06 |
+| `cmd/api/register_products.go` | `registerMetalDogs` when the plugin is enabled or the flag does not parse. `register_plugins.go` matches the pin | UPG4-01 |
+| `cmd/api/register_plugins_metaldogs_test.go` | Registration, NoCache, boot helpers, catalog-seed dispatch through `newPluginBootstrap` + `bindProductPorts`, opaque bearer guest check | UPG4-01 / 05 |
+| `cmd/api/migrate_plugins_test.go` | Metal Dogs migrator is collected when the plugin is enabled | UPG4-01 |
+| `cmd/api/metaldogs_catalog_seed_test.go` | Catalog seed behaviour. `bindTestCatalogSeed` calls `newPluginBootstrap`, `bindProductPorts`, and `bindCatalogSeedPort` | UPG4-02 / 05 |
+| `configs/config.example.yaml` | Commented `plugins.metaldogs` block (enabled + `generation`) | F1 |
+| `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` | F2 |
+| `scripts/ci/docs-policy.sh` | Prefer `.github/scripts/check-product-docs-links.sh`; skip the promote fixture unless `SHOPANDA_PLATFORM=1` | CR-06 |
+| `scripts/product-init/reserved-slugs.txt` | `metaldogs` so `--force` cannot clobber the product plugin | CR-06 |
+| `scripts/product-init/product-init_test.sh` | Refuses `--force` for slug `metaldogs` and checks the tree is unchanged | CR-06 |
+| `scripts/product-init/seed/scripts-ci/docs-policy.sh` | Seed copy of the product `docs-policy.sh` | CR-06 |
+| `storefront/.gitkeep` | Empty storefront directory (product app is not the upstream theme tree) | F0 |
 
-Inherited CI workflows still mention Shopanda `main`/`dev` dual-branch semantics; Metal Dogs ignores promote tooling until an upgrade deliberately adapts it.
-
-| Path | Why it differs | Introduced |
-| --- | --- | --- |
-| `cmd/api/register_products.go` | Calls `registerMetalDogs` when `plugins.metaldogs.enabled` (`register_plugins.go` matches the pin). Catalog seed uses `Host.CatalogSeed()` via upstream `runPluginCLICommand` (PR-1574); `cmd/api/metaldogs_catalog.go` is gone | UPG4-01 / 02 / 00d |
-| `configs/config.example.yaml` | Documented `plugins.metaldogs` toggle | F1 |
-| `plugins/metaldogs/**` | Product plugin (hexagonal layout + Migrator; F1 `/enabled`, F3 health/obs — see F3 rows) | F1 |
-| `cmd/api/register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Product registration / migrate coverage. Guest GET/HEAD `no-store` comes from `pluginsdk.NoCache()` on each registered `/api/customizer/*` route. Exact `/api/customizer` is not registered ([CR-21](../cr-rounds/CR-21-upg4-pin-7c982b00.md)) | UPG4-01 / 01c |
-| `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` for host-side tests | F2 |
-| `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs–only DSN suite + canaries (decoupled from Shopanda) | F2 |
-| `.github/workflows/ci.yml` | `integration-metaldogs` job + no-DSN / metaldogs coverage artifacts; docs-policy uses MD hardened checker (no promote step) | F2 / CR-06 |
-| `.github/workflows/release.yml` | Fail-closed unless `vars.SHOPANDA_IMAGE_NAME` is set and ≠ `shopanda` | CR-06 |
-| `Makefile` `docs-policy` | Runs `.github/scripts/check-product-docs-links.sh` (not Phase 17 scanner / not `SHOPANDA_PLATFORM=1`) | CR-06 |
-| `scripts/product-init/reserved-slugs.txt` | Includes `metaldogs` so `--force` cannot clobber the product plugin | CR-06 |
-| `plugins/metaldogs/**` (correlation alias, public/admin health, `obs.ping`) | Product facade; depths admin-only. Uses pin `BoundQueue` and sync `request_id` reinjection. Generate claim fence is `Host.OnRequeued` in `Plugin.Init`. Terminal re-pend is `Queue.Requeue` with `WithRequeueTerminal` ([CR-21](../cr-rounds/CR-21-upg4-pin-7c982b00.md)) | F3 / UPG4-03 |
-| `plugins/metaldogs` AssetStore (`ports`, `adapters/mediastore` → platform SignedURLStorage) | Private object storage port; keys under `private/blobs/`; C2 `UploadService` Put + `metaldogs_assets` | F4 / C2 |
-| `plugins/metaldogs/generation/**`, `cli.go` (`metaldogs:eval`) | Offline ImageProvider port + fake + eval report; CLI only (no HTTP) | G0 |
-| `plugins/metaldogs/generation/openai`, spike templates, `ocr` | OpenAI Images candidate + scorecard/OCR stub; smoke gated | G1 |
-
-**Pin absorb honesty:** Pin is `abc82f51` (PR-1580 on top of `58aa6987`). `ReadableStorage.Read` takes a context; `internal/infrastructure/localfs/storage.go` and `search_admin_test.go` match the pin (the product `ReadContext` patch is superseded by PR-1580). Non-UUID job ids are `ErrRequeueNotFound` before the lock query (PR-1579); `internal/infrastructure/postgres/job_queue.go` matches the pin. Typed `MetalDogsPluginConfig` and empty `SHOPANDA_PLUGINS_*` env overlays are fixed upstream (PR-1570/1571); `internal/platform/config/config.go` and `plugins_extra.go` match the pin. `CapCatalogSeed` is CLI-only (PR-1572). `cmd/api/cli_plugins.go` matches the pin (PR-1574): `RequiresDB` binds read ports and binds `CatalogSeedPort` only for the command's owning plugin. The 00c `prepareProductCLI` hook is gone. Attribute mismatch errors include stored and requested values (PR-1573). `pkg/pluginsdk` matches the pin, including `Host.PlatformConfig` (`queue.driver`, `search.engine`, `cache.driver`, `media.storage`). `internal/platform/plugin/public_routes.go` matches the pin (NoCache cuts at `{` and refuses `/` and `/api`). Jobs core, postgres/redis queues, `queue_hooks.go`, and `cmd/api` job wiring match this pin. Skip lists for serve, worker, and plugin CLI live in `cmd/api/plugin_boot.go` (`assertServeNeedsMet`, `assertWorkerNeedsMet`, `assertPluginCLINeedsMet`); `bootServePlugins` / `bootWorkerPlugins` are the test helpers for those lists. The generate claim fence is plugin-side (`Host.OnRequeued` in `Plugin.Init`, `pluginsdk.RequeueTx`). Non-postgres `queue.driver` fails Init via `pluginsdk.RequireQueueDriver` (empty driver counts as postgres). Conflict on `failed`/`done`/`cancelled` calls `Queue.Requeue` with `WithRequeueTerminal` (attempts kept, `last_error` left in place, `OnRequeued` in that transaction; a hook error rolls the re-pend back). `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` calls `bootServePlugins` / `bootWorkerPlugins`. Platform `Complete`/`Fail` are attempt-aware (`ErrOutcomeNotApplied`). `jobs:retry` retries a failed job (`attempts=0`). `jobs:requeue` reclaims a stale processing claim and keeps attempts; `--terminal --force` is the CLI for exhausted failed / done / cancelled (API `WithRequeueTerminal` is ungated). E1 catalog seed uses `Host.CatalogSeed().Import` (`cmd/api/metaldogs_catalog.go` removed in UPG4 ticket 02). Add-to-cart still uses `pluginsdk.Host.Cart()` and `Host.Catalog()` ([CR-20](../cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `DiscardEmptyGuestCart` and `ClassifyProductSlug` exist on the pin and are not used yet. Treat the rows above as the conflict allowlist.
+**Pin absorb honesty:** Pin is `fd4dd577` (PR-1581 on top of `abc82f51`). Cart extension fakes are race-free; `scripts/ci/unit.sh` runs `go test -race ./internal/application/cart/`. `ReadableStorage.Read` takes a context; `localfs/storage.go` matches the pin. Non-UUID job ids are `ErrRequeueNotFound` (PR-1579). `internal/` and `pkg/` have no Metal Dogs edits. `CapCatalogSeed` is CLI-only and auto-bound for the owning plugin (PR-1574). The generate claim fence is `Host.OnRequeued`. Terminal re-pend is `Queue.Requeue` with `WithRequeueTerminal`. Add-to-cart uses `pending_line`, `ClassifyProductSlug`, and `DiscardEmptyGuestCart` ([CR-21](../cr-rounds/CR-21-upg4-pin-7c982b00.md)). E1 catalog seed uses `Host.CatalogSeed().Import`. Treat the table as the conflict allowlist together with [`../runbooks/shopanda-upgrade.md`](../runbooks/shopanda-upgrade.md).
 
 Architecture diagrams in this directory describe the **target** module layout and job names (`integration.sync.metaldogs.*`). F3 adds platform job observability + a thin customizer health/obs.ping surface. G0 adds offline `metaldogs:eval` (fake provider).

@@ -6,8 +6,8 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `abc82f510029ce0cbbe4f0bcf5c8e01701358d33` |
-| Pinned subject | Merge pull request #627 from akarso/dev |
+| Pinned commit | `fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75` |
+| Pinned subject | Merge pull request #629 from akarso/dev |
 | Verified locally | 2026-11-19 (explicit SHA from `upstream/main`) |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
@@ -63,5 +63,7 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 - [shopanda#625](https://github.com/akarso/shopanda/pull/625) — promote that `dev` tip onto `main` (`58aa6987`)
 - [shopanda#626](https://github.com/akarso/shopanda/pull/626) — context-aware `ReadableStorage.Read`, PR-1580 (`32c937c6`, harden `52964e1d`)
 - [shopanda#627](https://github.com/akarso/shopanda/pull/627) — promote that `dev` tip onto `main` (`abc82f51`)
+- [shopanda#628](https://github.com/akarso/shopanda/pull/628) — cart extension fake is race-free; `scripts/ci/unit.sh` runs `./internal/application/cart/` with `-race`, PR-1581 (`b021817b`, harden `93aef832`)
+- [shopanda#629](https://github.com/akarso/shopanda/pull/629) — promote that `dev` tip onto `main` (`fd4dd577`)
 
 **Still Metal Dogs–only** (do not claim the deviations are gone): product registration, the Metal Dogs plugin, and storefront docs. UPG4 ticket 03 deleted the kept copies of `BoundQueue`, sync `request_id` reinjection, the jobs attempt fence, and `Admin.RequeueLease`; those match this pin. The generate claim fence is `Host.OnRequeued` in `Plugin.Init` (`pluginsdk.RequeueTx` in the re-pend transaction). Non-postgres `queue.driver` fails Init via `pluginsdk.RequireQueueDriver` (`Host.PlatformConfig`; empty counts as postgres). Terminal re-pend is `Queue.Requeue(..., WithRequeueTerminal())` on the bound queue; `OnRequeued` runs in that transaction ([overview](architecture/overview.md)). Typed MetalDogs config and empty `SHOPANDA_PLUGINS_*` overlays are fixed upstream (PR-1570/1571). `CapCatalogSeed` is CLI-only (PR-1572) and auto-bound on `RequiresDB` commands whose plugin declared the Need (PR-1574). `cmd/api/cli_plugins.go` matches this pin. `internal/infrastructure/postgres/job_queue.go` matches this pin (non-UUID requeue ids are `ErrRequeueNotFound`, PR-1579). `internal/infrastructure/localfs/storage.go` matches this pin (`ReadableStorage.Read(ctx, path)`, PR-1580); the product `ReadContext` patch is gone. `plugins/metaldogs/adapters/mediastore` calls that `Read`. Listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `pkg/pluginsdk` matches this pin. `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` and `cmd/api/metaldogs_catalog.go` are removed. `metaldogs:catalog-seed` calls `Host.CatalogSeed().Import` once, with `CatalogPriceSeed.Update`. Attribute mismatch errors include the stored and requested values (PR-1573).

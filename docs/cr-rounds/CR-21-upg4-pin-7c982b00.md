@@ -49,7 +49,7 @@ Kept Metal Dogs where the file is a listed deviation. `pkg/pluginsdk/*_test.go` 
 - `cmd/api/register_products.go` and `registerProductPlugins`.
 - `pluginsdk.NoCache` on `RegisterPublicRoute`.
 - `Config.Extra` / `SHOPANDA_PLUGINS_<SLUG>_*` (`internal/platform/config`).
-- `CatalogSeedPort` (`pkg/pluginsdk`, `cmd/api/plugin_ports.go`). Not used by Metal Dogs seed (ticket 02 deferred).
+- `CatalogSeedPort` (`pkg/pluginsdk`, `cmd/api/plugin_ports.go`). Not used at this pin. Ticket 02 stayed deferred while `EnsurePrice` was create-only: the M3 republish step updates a placeholder price, and a create-only port would break that step. PR-1567 added `CatalogPriceSeed.Update`. Ticket 02 then moved `metaldogs:catalog-seed` onto `Host.CatalogSeed().Import`.
 - `jobs.Queue.Complete`/`Fail(ctx, id, attempt)`, `ErrSkipOutcome`, `Queue.Requeue`, `Host.OnQueueBound`, `Host.OnRequeued`.
 
 ## Ticket 01 — registration, Extra config, NoCache
@@ -236,7 +236,7 @@ The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` de
 
 `metaldogs:catalog-seed` declares `RequiresDB` and `Need(CapCatalogSeed)`. The write test calls `runPluginCLICommandWithDeps` with `bindPluginCLIPorts` and an injected `OpenDB`. The command does not read `cli.Context.DB`: this root never sets it. Writes go through `Host.CatalogSeed()`. Serve and worker still skip the seed port. A `parent_sku` mismatch error names `parent_sku` next to the stored and requested values.
 
-`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` calls `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream has no shared serve/worker function for that sequence. `runWorker`, the scheduler, and search reindex inline the dual skip; serve inlines `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. A later change to those skip lists is not caught by this test. **Fixed in ticket 03b** (PR-1575 `bootServePlugins` / `bootWorkerPlugins`, shopanda#618). The Metal Dogs test calls those helpers. A plugin that `Need`s `CapCatalogSeed` and a seed CLI that did not bind the port are already covered by `plugin_boot_test.go`.
+At this pin `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` called `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream had no shared serve/worker function for that sequence, so `runWorker`, the scheduler, and search reindex inlined the dual skip, and serve inlined `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. That copy did not track later skip-list edits. Superseded by ticket 03b (PR-1575 `bootServePlugins` / `bootWorkerPlugins`, shopanda#618): the test calls those helpers. A plugin that `Need`s `CapCatalogSeed` and a seed CLI that did not bind the port are covered by `plugin_boot_test.go`.
 
 ## Ticket 03 — job delivery fence on SDK hooks
 
@@ -302,9 +302,9 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 - `pkg/pluginsdk` `Host.PlatformConfig` and `RequireQueueDriver`: allowlist is `queue.driver`, `search.engine`, `cache.driver`, `media.storage`. Empty `queue.driver` counts as `postgres`. Other keys, including `plugins.*` and secrets, return empty. Scoped `ConfigValue` still does not see core keys (PR-1577, `58b87ea7`).
 - `cmd/api/jobs_cli_test.go`: `TestNewJobsRuntime_WarehousedemoReachesBind` sets `SHOPANDA_DEV_MODE` and `Media.Local.BasePath` so `core/storage-local` Init does not fail on an empty base path (PR-1578, `6d253b50`).
 
-`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`. **Fixed in ticket 03b.**
+At this pin `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still called `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locked were the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`. Superseded by ticket 03b, which calls `bootServePlugins` / `bootWorkerPlugins`.
 
-`TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` is red on pin `de29a0c1` and on this tree. The test passes `"missing-id"` into UUID column `jobs.id`. The lock query returns `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, so `RequeueWithBeforeCommit` does not return `ErrRequeueNotFound`. `internal/infrastructure/postgres/job_queue.go` matches the pin. Not patched (see Shopanda gaps).
+`TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` was red on pin `de29a0c1` and on this tree: the test passes `"missing-id"` into UUID column `jobs.id`, the lock query returned `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, and `RequeueWithBeforeCommit` did not return `ErrRequeueNotFound`. `internal/infrastructure/postgres/job_queue.go` matched the pin and was not patched here. Ticket 00f merged PR-1579 (`58aa6987`); the test passes.
 
 ## Ticket 00f — pin `58aa6987`
 
@@ -340,7 +340,7 @@ Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_t
 ## Ticket 00g — pin `abc82f51`
 
 - Date: 2026-11-19
-- Pin: `abc82f510029ce0cbbe4f0bcf5c8e01701358d33` (`upstream/main`, PR #627)
+- Pin: `abc82f51…` (`upstream/main`, PR #627)
 - Previous pin on this branch: `58aa6987…`
 
 `media.ReadableStorage.Read` is `Read(ctx, path)`. The product patch on `internal/infrastructure/localfs/storage.go` (`Read` delegating to a local `ReadContext`) is superseded by PR-1580 (shopanda#626, `32c937c6`, harden `52964e1d`). Upstream `Read` checks `ctx` before open and between 32 KiB windows and keeps `ReadContext` as a concrete alias. This tree takes that file as-is.
@@ -408,4 +408,50 @@ From `logs/MIG1/review-iter2.json` (approve, minors only):
 | Dead `setPendingDesign` alias of `rememberPending` | Yes. Alias and `rememberPending` removed |
 
 Not this ticket: the owner-token test still imports `internal/domain/customer` and `internal/domain/identity`. CR-20 kept that test next to the plugin. The production cart path does not import those packages.
+
+## Ticket 05 — pin `fd4dd577`, deviations, close-out
+
+- Date: 2026-11-19
+- Pin: `fd4dd577…` (`upstream/main`, PR #629)
+- Previous pin on this branch: `abc82f51…`
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `docs/phase-17-product-packaging/ROADMAP.md`, `prs/PR-1581.md` | Deleted (modify/delete and the new PR note). Stub indexes stay |
+| `internal/application/cart/service_test.go`, `service_extensions_test.go` | Upstream (PR-1581). No Metal Dogs edit |
+| `scripts/ci/unit.sh`, `scripts/ci/README.md`, `scripts/product-init/seed/scripts-ci/unit.sh` | Upstream. `unit.sh` runs `go test -race ./internal/application/cart/` |
+
+No other conflicts. `internal/infrastructure/localfs/storage.go` was already identical to `abc82f51` and stays identical to this pin (PR-1580). It is not on the allowlist.
+
+### Tests moved off upstream files
+
+`internal/interfaces/http/admin/search_admin_test.go` already matched `abc82f51` (dead `jobs` alias only; no further product edit). Left as the pin.
+
+`internal/interfaces/http/storefront/auth_middleware_test.go` had `TestAuthMiddleware_CustomizerOpaqueBearerIsGuest`. The helpers it uses (`AuthMiddleware`, `auth.TokenParser`, `identity.Identity`) are exported, so the test moved to `cmd/api/register_plugins_metaldogs_test.go` with its own parser stub. The upstream file matches the pin.
+
+### Catalog seed binder
+
+`cmd/api/metaldogs_catalog_seed_test.go` (moved from `plugins/metaldogs/catalog_seed_test.go`) keeps `bindTestCatalogSeed`. That helper calls `newPluginBootstrap`, `bindProductPorts`, and `bindCatalogSeedPort`. The port from `bindCatalogSeedPort` is wrapped only to count `Import` calls; the repos are not built again in the test. `TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` dispatches `metaldogs:catalog-seed` through `newPluginBootstrap` + `bindProductPorts` + `bindCatalogSeedPort` and checks the product and variant rows.
+
+### C4 assertions vs `3593795d`
+
+`git diff 3593795d HEAD` for the five files:
+
+| File | Result |
+| --- | --- |
+| `plugins/metaldogs/application/generate_test.go` | `delete_after` check tightened to `clock.Now().Add(SourceAttachedRetention)` |
+| `plugins/metaldogs/sync_prepare_production_test.go` | No diff |
+| `plugins/metaldogs/adapters/postgres/generation_job_repo_test.go` | No diff |
+| `plugins/metaldogs/sync_generate_test.go` | `conflictAdmin.Requeue` (the old `RequeueLease` stub) removed. `queueWithAdmin.Requeue` is `jobs.Queue.Requeue`. Existing checks stay: live claim is a no-op, stale processing re-pends, `hookCalls == 1`. Added: one terminal retry on `ErrRequeueWrongAttempt`, stop after a second mismatch, `reclaiming` errors and does not requeue |
+| `plugins/metaldogs/job_fence_test.go` | Stub removal. The old test asserted `SetOnRequeued` and `RequireOnRequeued(MetalDogsGenerateJobType)` on a queue double, and rejected a queue that did not implement that double. The fence is `Host.OnRequeued` (`InstallGenerateJobFence`); it does not wrap the queue. The replacement asserts the hook runs (requeue with no database returns `database required`) and a nil host is rejected. No customer-visible assertion from the other three files was dropped |
+
+### Allowlist
+
+The checker walks the whole tree except `plugins/metaldogs/**`, `docs/**`, `*.md`, `.github/workflows/**`, and `.scratch/**`. Every other path that `git diff <pin> HEAD` still lists is in the script and in `docs/architecture/overview.md`. `localfs/storage.go` is absent from both.
+
+### Seed
+
+Recorded under ticket 02 and the `7c982b00` range note: ticket 02 was deferred while `EnsurePrice` was create-only because the M3 step updates a placeholder price. PR-1567 made the update possible. The command uses `CatalogPriceSeed.Update`. Attributes stay create-only; a missing `parent_sku` on an existing product is not backfilled.
 

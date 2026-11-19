@@ -17,9 +17,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/akarso/shopanda/internal/domain/identity"
 	"github.com/akarso/shopanda/internal/domain/media"
 	"github.com/akarso/shopanda/internal/domain/rbac"
 	"github.com/akarso/shopanda/internal/interfaces/http/shared"
+	storefront "github.com/akarso/shopanda/internal/interfaces/http/storefront"
+	"github.com/akarso/shopanda/internal/platform/auth"
+	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/event"
@@ -343,7 +347,26 @@ func TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant(t *testing.T) {
 		OpenDB: func(*config.Config) (*sql.DB, error) {
 			return db.Open(dsn)
 		},
-		Bind: bindPluginCLIPorts,
+		Bind: func(app *plugin.App, conn *sql.DB, cmd cli.Command) error {
+			boot, err := newPluginBootstrap(conn)
+			if err != nil {
+				return err
+			}
+			app.Bootstrap = boot
+			if err := bindProductPorts(app, boot); err != nil {
+				return err
+			}
+			if cmd.Plugin == "" || !app.CapabilityDeclaredBy(plugin.CapCatalogSeed, cmd.Plugin) {
+				return fmt.Errorf("plugin CLI: %s must bind catalog seed for %s", cmd.Name, cmd.Plugin)
+			}
+			if err := bindCatalogSeedPort(app, boot); err != nil {
+				return err
+			}
+			if _, ok := app.CatalogSeedPort(); !ok {
+				return fmt.Errorf("plugin CLI: catalog seed port unbound after bindCatalogSeedPort")
+			}
+			return assertPluginCLINeedsMet(app, true)
+		},
 	}
 	ran, err := runPluginCLICommandWithDeps(cfg, log, func() (*pluginCLIRuntime, error) {
 		return bootstrapPluginCLIRegistry(cfg, log)
@@ -470,3 +493,47 @@ func coreMigrationsDir(t *testing.T) string {
 	}
 	return dir
 }
+
+func TestAuthMiddleware_CustomizerOpaqueBearerIsGuest(t *testing.T) {
+	parser := &opaqueBearerParser{err: fmt.Errorf("%w: opaque", auth.ErrNotCustomerToken)}
+	mw := storefront.AuthMiddleware(parser)
+	for _, path := range []string{
+		"/api/customizer/designs/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"/api/customizer",
+		"/api/customizer-other",
+	} {
+		t.Run(path, func(t *testing.T) {
+			parser.lastToken = ""
+			var gotID identity.Identity
+			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotID = auth.IdentityFrom(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "bearer "+opaqueOwnerToken)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			if !gotID.IsGuest() {
+				t.Fatalf("expected guest, got %+v", gotID)
+			}
+			if parser.lastToken != opaqueOwnerToken {
+				t.Fatalf("parser token = %q", parser.lastToken)
+			}
+		})
+	}
+}
+
+type opaqueBearerParser struct {
+	err       error
+	lastToken string
+}
+
+func (s *opaqueBearerParser) Parse(_ context.Context, token string) (identity.Identity, error) {
+	s.lastToken = token
+	return identity.Identity{}, s.err
+}
+
+const opaqueOwnerToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"

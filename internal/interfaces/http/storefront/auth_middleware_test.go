@@ -540,39 +540,3 @@ func TestRequireAuth_Guest(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
-
-func TestAuthMiddleware_CustomizerOpaqueBearerIsGuest(t *testing.T) {
-	parser := &stubTokenParser{err: fmt.Errorf("%w: opaque", auth.ErrNotCustomerToken)}
-	mw := storefront.AuthMiddleware(parser)
-
-	for _, path := range []string{
-		"/api/customizer/designs/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-		"/api/customizer",
-		"/api/customizer-other",
-	} {
-		t.Run(path, func(t *testing.T) {
-			parser.lastToken = ""
-			var gotID identity.Identity
-			handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotID = auth.IdentityFrom(r.Context())
-				w.WriteHeader(http.StatusOK)
-			}))
-			req := httptest.NewRequest("GET", path, nil)
-			req.Header.Set("Authorization", "bearer "+base64urlOwnerToken)
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-			}
-			if !gotID.IsGuest() {
-				t.Fatalf("expected guest, got %+v", gotID)
-			}
-			if parser.lastToken != base64urlOwnerToken {
-				t.Fatalf("parser token = %q", parser.lastToken)
-			}
-		})
-	}
-}
-
-// raw base64url owner-token shape (no JWT dots).
-const base64urlOwnerToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
