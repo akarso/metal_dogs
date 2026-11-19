@@ -259,7 +259,7 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 
 `plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line.
 
-`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that. The write is listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` is the schema contract.
+`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that. The write is listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` is the schema contract. From ticket 03b that UPDATE is `Queue.Requeue` with `WithRequeueTerminal`, and the test asserts the same row outcome through that upstream API.
 
 ### Shopanda gaps (ticket 03)
 

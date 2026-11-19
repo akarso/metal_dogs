@@ -102,41 +102,39 @@ func resolveGenerateEnqueueConflict(queue jobs.Queue, ctx context.Context, gener
 		return nil
 	}
 	if errors.Is(err, jobs.ErrRequeueNotProcessing) {
-		return rependTerminalGenerateJob(queue, reader, ctx, generationJobID, detail.Attempts)
+		return requeueTerminalGenerateJob(queue, reader, ctx, generationJobID, detail.Attempts)
 	}
 	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
 }
 
 // A wrong attempt is a raced completion: reload once and retry with the live count.
-func rependTerminalGenerateJob(queue jobs.Queue, reader jobs.Reader, ctx context.Context, id string, attempt int) error {
-	termErr := queue.Requeue(ctx, id, attempt, jobs.WithRequeueTerminal())
-	if termErr == nil {
-		return nil
+func requeueTerminalGenerateJob(queue jobs.Queue, reader jobs.Reader, ctx context.Context, id string, attempt int) error {
+	err := requeueTerminalGenerateOnce(queue, reader, ctx, id, attempt)
+	if err == nil || !errors.Is(err, jobs.ErrRequeueWrongAttempt) {
+		return err
 	}
-	if errors.Is(termErr, jobs.ErrRequeueNotTerminal) {
-		return leaveNonTerminalGenerateJob(reader, ctx, id)
-	}
-	if !errors.Is(termErr, jobs.ErrRequeueWrongAttempt) {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
-	}
-	again, err := reader.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+	again, getErr := reader.Get(ctx, id)
+	if getErr != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", getErr)
 	}
 	if again == nil {
 		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", id)
 	}
 	if again.Attempts == attempt {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
+		return err
 	}
-	termErr = queue.Requeue(ctx, id, again.Attempts, jobs.WithRequeueTerminal())
-	if termErr == nil {
+	return requeueTerminalGenerateOnce(queue, reader, ctx, id, again.Attempts)
+}
+
+func requeueTerminalGenerateOnce(queue jobs.Queue, reader jobs.Reader, ctx context.Context, id string, attempt int) error {
+	err := queue.Requeue(ctx, id, attempt, jobs.WithRequeueTerminal())
+	if err == nil {
 		return nil
 	}
-	if errors.Is(termErr, jobs.ErrRequeueNotTerminal) {
+	if errors.Is(err, jobs.ErrRequeueNotTerminal) {
 		return leaveNonTerminalGenerateJob(reader, ctx, id)
 	}
-	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
+	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
 }
 
 // leaveNonTerminalGenerateJob accepts pending and processing. Any other
