@@ -88,6 +88,10 @@ Fixed upstream (PR-1570/1571), pin `7bd34bef` (ticket 00c):
 - Typed `MetalDogsPluginConfig` is gone and `metaldogs` is not in `typedPluginYAMLKeys`. `config.go` and `plugins_extra.go` match the pin and left the allowlist.
 - Empty `SHOPANDA_PLUGINS_*` values are skipped. YAML `enabled: true` plus empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` keeps the plugin enabled. Test: `TestSettingsFrom_EmptyEnabledEnvKeepsYAML`.
 
+Open on pin `de29a0c1` (ticket 00e; Shopanda roadmap):
+
+- `TestJobQueue_Requeue_MissingID` is red. The test passes `"missing-id"` into UUID column `jobs.id`. The lock query returns `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, so `RequeueWithBeforeCommit` does not return `ErrRequeueNotFound`. Upstream should treat a non-UUID id as not found, or the test should use an absent UUID. This tree does not patch `internal/infrastructure/postgres/job_queue.go`.
+
 ## Ticket 01 config criterion
 
 Nested YAML `generation:` loads the same explicit fields as the old typed `MetalDogsGenerationConfig`. No PO decision rejects that map. Omitted keys inside the map use the documented defaults (fake / 3 / 3 / 30). The old struct zeroed an omitted `cooldown_seconds` to 0 when `plugins:` was present, because `UnmarshalYAML` replaced defaults; that wipe is not restored. A non-integer scalar fails Init. A list under `generation:` fails Load. A further nested map flattens (the old expander rejected any non-scalar).
@@ -300,5 +304,5 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 
 `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`.
 
-`TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` passes `"missing-id"` against UUID `jobs.id`. The lock query returns `22P02`, not `ErrNoRows`. `RequeueWithBeforeCommit` maps `22P02` to `ErrRequeueNotFound`. The test file still matches the pin. `job_queue.go` drifts from the pin on that mapping only. The deviations script does not scan `internal/infrastructure/postgres`, so the allowlist is unchanged.
+`TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` is red on pin `de29a0c1` and on this tree. The test passes `"missing-id"` into UUID column `jobs.id`. The lock query returns `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, so `RequeueWithBeforeCommit` does not return `ErrRequeueNotFound`. `internal/infrastructure/postgres/job_queue.go` matches the pin. Not patched (see Shopanda gaps).
 

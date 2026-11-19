@@ -361,11 +361,6 @@ func (q *JobQueue) RequeueWithBeforeCommit(ctx context.Context, id string, attem
 		return fmt.Errorf("job_queue: requeue %s: %w", id, jobs.ErrRequeueNotFound)
 	}
 	if err != nil {
-		// jobs.id is uuid; a non-uuid never becomes ErrNoRows (22P02).
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
-			return fmt.Errorf("job_queue: requeue %s: %w", id, jobs.ErrRequeueNotFound)
-		}
 		return fmt.Errorf("job_queue: requeue lock: %w", err)
 	}
 	jobStatus := jobs.Status(status)
