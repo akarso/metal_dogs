@@ -1,10 +1,10 @@
-# CR-21: Shopanda pin `7c982b00` (UPG4 ticket 00)
+# CR-21: Shopanda pin `fd4dd577` (UPG4 tickets 00–05)
 
-- Status: pin merged; later UPG4 tickets still delete deviations
-- Date: 2026-11-17
-- Slice: UPG4 ticket 00
+- Status: closed
+- Date: 2026-11-17 (opened); closed 2026-11-19
+- Slice: UPG4 tickets 00–05 (including 00b–00g, 01b/01c, 03b)
 - Base: `3593795d` (`origin/main` after PR #40)
-- Pin: `7c982b00…` (`upstream/main`, PR #606)
+- Pin: `fd4dd577…` (`upstream/main`, PR #629). First merge on this round was `7c982b00…` (PR #606); later tickets moved the pin (see each section).
 
 ## Conflict resolution
 
@@ -263,7 +263,7 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 
 ### Shopanda gaps (ticket 03)
 
-- No queue API re-pends `failed` / `done` / `cancelled`, keeps `attempts`, and runs `OnRequeued` in the same transaction. `Queue.Requeue` is processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` is failed-only, resets `attempts`, and does not run the hook. The plugin updates `jobs` itself for that case. Follow-up: a terminal requeue that keeps attempts and runs `OnRequeued` in the same transaction. `Host.ConfigValue` on a scoped host cannot read `queue.driver`, so Init reads `App.Config.Queue.Driver`. **Fixed in ticket 03b** (PR-1576 `WithRequeueTerminal`, shopanda#622; PR-1577 `RequireQueueDriver`, shopanda#621).
+At pin `565dde5a` no queue API re-pended `failed` / `done` / `cancelled` while keeping `attempts` and running `OnRequeued` in the same transaction. `Queue.Requeue` was processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` was failed-only, reset `attempts`, and did not run the hook. The plugin updated `jobs` itself for that case. `Host.ConfigValue` on a scoped host could not read `queue.driver`, so Init read `App.Config.Queue.Driver`. Superseded by ticket 03b (PR-1576 `WithRequeueTerminal`, shopanda#622; PR-1577 `RequireQueueDriver`, shopanda#621).
 
 ### Known red on the pin (not Metal Dogs wiring)
 
@@ -433,7 +433,7 @@ No other conflicts. `internal/infrastructure/localfs/storage.go` was already ide
 
 ### Catalog seed binder
 
-`TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` dispatches `metaldogs:catalog-seed` through `newPluginBootstrap`, `bindProductPorts`, and `bindCatalogSeedPort` (`assertPluginCLINeedsMet` after the port is bound) and checks the product and variant rows. It does not use `bindTestCatalogSeed`.
+`TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` uses `defaultPluginCLIDeps()` and overrides only `OpenDB` (isolated DSN). Production `Bind` is `bindPluginCLIPorts` (`newPluginBootstrap` → `bindPluginCLIPortsFromBoot` → `bindProductPorts` → `CapabilityDeclaredBy` → `bindCatalogSeedPort` → `assertPluginCLINeedsMet`). The test checks the product and variant rows. It does not copy that bind sequence and does not use `bindTestCatalogSeed`.
 
 `bindTestCatalogSeed` stays in `plugins/metaldogs/catalog_seed_test.go`. `cart_harness_test.go` and the catalog seed cases are `package metaldogs_test` and call it. `newPluginBootstrap` and `bindCatalogSeedPort` are unexported in `package main`, so this helper cannot call them. It still builds `pluginsdk.NewCatalogSeedPort` from the same repos the production binder uses, and wraps that port to count `Import`. Moving the file into `cmd/api` broke those helpers (`catalogPLNHost`, `runCatalogSeed`, `listCatalogProducts`). The production path is the `cmd/api` test above.
 
@@ -447,7 +447,7 @@ No other conflicts. `internal/infrastructure/localfs/storage.go` was already ide
 | `plugins/metaldogs/sync_prepare_production_test.go` | No diff |
 | `plugins/metaldogs/adapters/postgres/generation_job_repo_test.go` | No diff |
 | `plugins/metaldogs/sync_generate_test.go` | `conflictAdmin.Requeue` (the old `RequeueLease` stub) removed. `queueWithAdmin.Requeue` is `jobs.Queue.Requeue`. Existing checks stay: live claim is a no-op, stale processing re-pends, `hookCalls == 1`. Added: one terminal retry on `ErrRequeueWrongAttempt`, stop after a second mismatch, `reclaiming` errors and does not requeue |
-| `plugins/metaldogs/job_fence_test.go` | Stub removal. The old test asserted `SetOnRequeued` and `RequireOnRequeued(MetalDogsGenerateJobType)` on a queue double, and rejected a queue that did not implement that double. The fence is `Host.OnRequeued` (`InstallGenerateJobFence`); it does not wrap the queue. The replacement asserts the hook runs (requeue with no database returns `database required`) and a nil host is rejected. No customer-visible assertion from the other three files was dropped |
+| `plugins/metaldogs/job_fence_test.go` | Stub removal. The old test asserted `SetOnRequeued` and `RequireOnRequeued(MetalDogsGenerateJobType)` on a queue double, and rejected a queue that did not implement that double. The fence is `Host.OnRequeued` (`InstallGenerateJobFence`); it does not wrap the queue. The no-DB replacement asserts the hook runs (requeue with no database returns `database required`) and a nil host is rejected. `RequireOnRequeued` limited the fence to `MetalDogsGenerateJobType`. That type check is now “row exists in `metaldogs_generation_jobs`”. A requeue with the fence installed, a database, and no reclaim transaction returns nil when the id is not that row (`!owned`) and when the id is not a UUID. That assertion is `TestGenerateFence_MissingTxBlocksOnlyGenerationRow` in `plugins/metaldogs/job_fence_notx_test.go` (DSN). The same test still fails a real generation row with `requeue transaction missing`. No customer-visible assertion from the other three files was dropped |
 
 ### Allowlist
 

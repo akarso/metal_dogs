@@ -23,7 +23,6 @@ import (
 	"github.com/akarso/shopanda/internal/interfaces/http/shared"
 	storefront "github.com/akarso/shopanda/internal/interfaces/http/storefront"
 	"github.com/akarso/shopanda/internal/platform/auth"
-	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/event"
@@ -343,30 +342,9 @@ func TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant(t *testing.T) {
 	dsn := useIsolatedCatalogSchema(t)
 	cfg := metalDogsEnabledConfig()
 	log := logger.NewWithWriter(io.Discard, "error")
-	deps := pluginCLIDeps{
-		OpenDB: func(*config.Config) (*sql.DB, error) {
-			return db.Open(dsn)
-		},
-		Bind: func(app *plugin.App, conn *sql.DB, cmd cli.Command) error {
-			boot, err := newPluginBootstrap(conn)
-			if err != nil {
-				return err
-			}
-			app.Bootstrap = boot
-			if err := bindProductPorts(app, boot); err != nil {
-				return err
-			}
-			if cmd.Plugin == "" || !app.CapabilityDeclaredBy(plugin.CapCatalogSeed, cmd.Plugin) {
-				return fmt.Errorf("plugin CLI: %s must bind catalog seed for %s", cmd.Name, cmd.Plugin)
-			}
-			if err := bindCatalogSeedPort(app, boot); err != nil {
-				return err
-			}
-			if _, ok := app.CatalogSeedPort(); !ok {
-				return fmt.Errorf("plugin CLI: catalog seed port unbound after bindCatalogSeedPort")
-			}
-			return assertPluginCLINeedsMet(app, true)
-		},
+	deps := defaultPluginCLIDeps()
+	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
+		return db.Open(dsn)
 	}
 	ran, err := runPluginCLICommandWithDeps(cfg, log, func() (*pluginCLIRuntime, error) {
 		return bootstrapPluginCLIRegistry(cfg, log)
