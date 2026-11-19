@@ -309,7 +309,7 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 ## Ticket 00f — pin `58aa6987`
 
 - Date: 2026-11-19
-- Pin: `58aa698702b10952b5062cfc4bb1d3ec308d6cf2` (`upstream/main`, PR #625)
+- Pin: `58aa6987…` (`upstream/main`, PR #625)
 - Previous pin on this branch: `de29a0c1…`
 
 Merge only. No Metal Dogs edit under `internal/infrastructure/postgres/job_queue.go`.
@@ -336,4 +336,32 @@ Ticket 00e commit `d4c04ead` mapped SQLSTATE `22P02` to `ErrRequeueNotFound` ins
 - `cmd/api/jobs_cli.go`: `jobs:requeue` and `jobs:show` treat a nil `Get` as "no job with id". `ErrRequeueNotFound` after a successful `Get` is still the TOCTOU miss (`jobs_cli_requeue.go` copy: "missing or deleted under TOCTOU").
 
 Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_test.go`, `register_products.go`.
+
+## Ticket 00g — pin `abc82f51`
+
+- Date: 2026-11-19
+- Pin: `abc82f510029ce0cbbe4f0bcf5c8e01701358d33` (`upstream/main`, PR #627)
+- Previous pin on this branch: `58aa6987…`
+
+`media.ReadableStorage.Read` is `Read(ctx, path)`. The product patch on `internal/infrastructure/localfs/storage.go` (`Read` delegating to a local `ReadContext`) is superseded by PR-1580 (shopanda#626, `32c937c6`, harden `52964e1d`). Upstream `Read` checks `ctx` before open and between 32 KiB windows and keeps `ReadContext` as a concrete alias. This tree takes that file as-is.
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| C4 diagram sources and the developer guide | Deleted (modify/delete). Stub indexes stay |
+| `docs/phase-17-product-packaging/ROADMAP.md`, `prs/PR-1580.md` | Deleted (modify/delete and the new PR note) |
+| `internal/infrastructure/localfs/storage.go` | Upstream. `git diff abc82f51` empty for `internal/infrastructure/localfs/` |
+| `internal/interfaces/http/admin/search_admin_test.go` | Already identical to the pin (no conflict). `git diff abc82f51` empty |
+
+`plugins/metaldogs/adapters/mediastore.Store.Read` calls `ReadableStorage.Read(ctx, key)`. The optional `ReadContext` interface and the non-context fallback are gone. A cancelled context still returns `context.Canceled`.
+
+### Upstream range `58aa6987..abc82f51` touching files we use
+
+- `internal/domain/media/storage.go`: `ReadableStorage.Read(ctx, path)` (PR-1580).
+- `internal/infrastructure/localfs`: `Read` honours ctx between chunks; `ReadContext` aliases `Read`. Signed GET stays `Open` + `ServeContent`.
+- `internal/interfaces/http/admin/invoice_admin.go` and `storefront/download_account.go`: `Read(ctx, path)`; `context.Canceled` / `DeadlineExceeded` return without an Internal error.
+- `search_admin_test.go`: `jobs` import alias is `domainjobs` (same diff was already on this branch from ticket 00f).
+
+Allowlist unchanged. `localfs` is outside `check-upstream-deviations.sh` and now matches the pin.
 

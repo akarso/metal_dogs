@@ -25,7 +25,7 @@ BT_GUIDE_PATH='`(\.\./)*(docs/guides|docs/diagrams)/[^`]+`'
 STUB_ALLOW='(docs/)?guides/README\.md|(docs/)?diagrams/README\.md'
 # Previous pin full SHA must not linger in product-facing markdown after a pin bump
 # (blob/tree rewrite alone misses prose). History may use the abbreviated form.
-PREVIOUS_PIN_FULL_SHA='de29a0c159c6f56bd082876fd338c9a28f1ffb4c'
+PREVIOUS_PIN_FULL_SHA='58aa698702b10952b5062cfc4bb1d3ec308d6cf2'
 
 self_test() {
   local tmp hits

@@ -62,7 +62,7 @@ func (f *fakeSigned) SignedURL(_ context.Context, path string, opts media.SignUR
 	}
 	return "https://signed.example/" + path + "?sig=1", nil
 }
-func (f *fakeSigned) Read(path string) ([]byte, error) {
+func (f *fakeSigned) Read(_ context.Context, path string) ([]byte, error) {
 	b, ok := f.objects[path]
 	if !ok {
 		return nil, os.ErrNotExist
@@ -160,14 +160,14 @@ type blockingCtxReadable struct {
 	release chan struct{}
 }
 
-func (b *blockingCtxReadable) ReadContext(ctx context.Context, path string) ([]byte, error) {
+func (b *blockingCtxReadable) Read(ctx context.Context, path string) ([]byte, error) {
 	select {
 	case b.started <- struct{}{}:
 	default:
 	}
 	select {
 	case <-b.release:
-		return b.fakeSigned.Read(path)
+		return b.fakeSigned.Read(ctx, path)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

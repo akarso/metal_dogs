@@ -20,11 +20,6 @@ type contentTypedSaver interface {
 	SaveWithContentType(path string, file io.Reader, contentType string) error
 }
 
-// contextReadable is optional on backends that honor ctx during Read.
-type contextReadable interface {
-	ReadContext(ctx context.Context, path string) ([]byte, error)
-}
-
 // previewMIMEByExt is the allowlist for inline customizer delivery.
 // Anything else is stored/served as octet-stream with attachment disposition.
 var previewMIMEByExt = map[string]string{
@@ -127,8 +122,7 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, contentType st
 	return nil
 }
 
-// Read returns object bytes via media.ReadableStorage when the backend supports it.
-// Prefers ReadContext when available so cancellation reaches the backend.
+// Read returns object bytes via media.ReadableStorage.Read.
 func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -136,29 +130,16 @@ func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
 	if err := rejectKey(key); err != nil {
 		return nil, err
 	}
-	if cr, ok := s.inner.(contextReadable); ok {
-		b, err := cr.ReadContext(ctx, key)
-		if err != nil {
-			if cerr := ctx.Err(); cerr != nil {
-				return nil, cerr
-			}
-			return nil, fmt.Errorf("mediastore: read: %w", err)
-		}
-		return b, nil
-	}
 	readable, ok := s.inner.(media.ReadableStorage)
 	if !ok {
 		return nil, fmt.Errorf("mediastore: read: backend does not support ReadableStorage")
 	}
-	b, err := readable.Read(key)
+	b, err := readable.Read(ctx, key)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
 		return nil, fmt.Errorf("mediastore: read: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
 	}
 	return b, nil
 }

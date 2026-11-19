@@ -60,7 +60,7 @@ func (f *fakeSigned) SignedURL(_ context.Context, path string, _ media.SignURLOp
 	}
 	return "https://signed.example/" + path, nil
 }
-func (f *fakeSigned) Read(path string) ([]byte, error) {
+func (f *fakeSigned) Read(_ context.Context, path string) ([]byte, error) {
 	b, ok := f.objects[path]
 	if !ok {
 		return nil, os.ErrNotExist
