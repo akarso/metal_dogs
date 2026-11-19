@@ -300,5 +300,5 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 
 `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`.
 
-`TestNewJobsRuntime_WarehousedemoReachesBind` passes. Gate package `internal/infrastructure/postgres` (`-run JobQueue|Requeue`) fails `TestJobQueue_Requeue_MissingID`: `jobs.id` is UUID, the test passes `"missing-id"`, and the lock query returns `invalid input syntax for type uuid` instead of `ErrRequeueNotFound`. The test file matches the pin. Not patched here.
+`TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` passes `"missing-id"` against UUID `jobs.id`. The lock query returns `22P02`, not `ErrNoRows`. `RequeueWithBeforeCommit` maps `22P02` to `ErrRequeueNotFound`. The test file still matches the pin. `job_queue.go` drifts from the pin on that mapping only. The deviations script does not scan `internal/infrastructure/postgres`, so the allowlist is unchanged.
 
