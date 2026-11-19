@@ -5,12 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/akarso/shopanda/internal/platform/apperror"
 	"github.com/akarso/shopanda/internal/platform/pluginwrite"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
@@ -195,4 +199,170 @@ func TestPlace_FailedAddOnFilledCartDoesNotDiscard(t *testing.T) {
 	if cart.discardCalls != 0 || cart.addCalls != 1 {
 		t.Fatalf("discard=%d add=%d", cart.discardCalls, cart.addCalls)
 	}
+}
+
+func TestPlace_ParallelSameVariantSeesOwnPendingDesign(t *testing.T) {
+	repo := &recordingDesignRepo{}
+	p := New()
+	p.designs = &application.DesignService{Designs: repo}
+	cart := &pendingValidateCart{plugin: p, enter: make(chan struct{}, 2), goOn: make(chan struct{})}
+	p.host = quietHost{
+		cart:    cart,
+		catalog: fixedTeeCatalog{},
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, designID := range []string{"design-a", "design-b"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", id)
+			if err != nil {
+				errs <- err
+			}
+		}(designID)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-cart.enter:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Place did not reach AddItem")
+		}
+	}
+	close(cart.goOn)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	seen := append([]string(nil), repo.ids...)
+	repo.mu.Unlock()
+	if len(seen) != 2 || !hasBoth(seen, "design-a", "design-b") {
+		t.Fatalf("designs loaded during cart.validate = %v", seen)
+	}
+}
+
+func hasBoth(ids []string, a, b string) bool {
+	var sawA, sawB bool
+	for _, id := range ids {
+		switch id {
+		case a:
+			sawA = true
+		case b:
+			sawB = true
+		}
+	}
+	return sawA && sawB
+}
+
+type quietHost struct {
+	cart    pluginsdk.CartPort
+	catalog pluginsdk.CatalogPort
+}
+
+func (h quietHost) Cart() (pluginsdk.CartPort, bool) { return h.cart, h.cart != nil }
+func (h quietHost) Catalog() (pluginsdk.CatalogPort, bool) {
+	return h.catalog, h.catalog != nil
+}
+func (quietHost) CatalogSeed() (pluginsdk.CatalogSeedPort, bool) { return nil, false }
+func (quietHost) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
+	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)
+}
+func (quietHost) Logger() pluginsdk.Logger { return nil }
+
+type fixedTeeCatalog struct{}
+
+func (fixedTeeCatalog) FindVariant(ctx context.Context, id string) (*extapi.CatalogVariant, error) {
+	found, err := fixedTeeCatalog{}.FindVariants(ctx, []string{id})
+	if err != nil {
+		return nil, err
+	}
+	return found[id], nil
+}
+
+func (fixedTeeCatalog) FindVariants(_ context.Context, ids []string) (map[string]*extapi.CatalogVariant, error) {
+	out := make(map[string]*extapi.CatalogVariant, len(ids))
+	for _, id := range ids {
+		out[id] = &extapi.CatalogVariant{ID: id, ProductSlug: customTeeSlug, ProductVisible: true}
+	}
+	return out, nil
+}
+
+func (fixedTeeCatalog) FindProduct(context.Context, string) (*extapi.CatalogProduct, error) {
+	return nil, nil
+}
+
+// Both AddItem calls block until the test releases them, so the two cart.validate hooks overlap.
+type pendingValidateCart struct {
+	plugin *Plugin
+	enter  chan struct{}
+	goOn   chan struct{}
+}
+
+func (c *pendingValidateCart) AddItem(_ context.Context, cartID, _, variantID string, quantity int, opts pluginsdk.CartAddItemOpts) error {
+	c.enter <- struct{}{}
+	<-c.goOn
+	exts := make([]extapi.CartLineExtension, len(opts.Extensions))
+	for i, e := range opts.Extensions {
+		exts[i] = extapi.CartLineExtension{Code: e.Code, Value: e.Value}
+	}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &extapi.CartView{
+		ID:    cartID,
+		Items: []extapi.CartLineView{{VariantID: variantID, Quantity: quantity}},
+	})
+	hctx.Set("pending_line", &extapi.PendingCartLine{
+		VariantID:  variantID,
+		Quantity:   quantity,
+		Extensions: exts,
+	})
+	return c.plugin.onCartValidate(hctx)
+}
+
+func (c *pendingValidateCart) Get(context.Context, string, string) (*extapi.CartView, error) {
+	return &extapi.CartView{ID: "cart-1"}, nil
+}
+
+func (c *pendingValidateCart) EnsureActive(context.Context, string, string) (*extapi.CartView, error) {
+	return &extapi.CartView{ID: "cart-1"}, nil
+}
+
+func (c *pendingValidateCart) EnsureStorefrontCart(context.Context, http.ResponseWriter, *http.Request, string) (*extapi.CartView, error) {
+	return &extapi.CartView{ID: "cart-1"}, nil
+}
+
+func (c *pendingValidateCart) DiscardEmptyGuestCart(context.Context, http.ResponseWriter, *http.Request, string) error {
+	return nil
+}
+
+func (c *pendingValidateCart) DeleteLineExtension(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (c *pendingValidateCart) UpsertLineExtension(context.Context, string, string, string, []pluginsdk.CartExtensionValue, string) error {
+	return nil
+}
+
+type recordingDesignRepo struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (r *recordingDesignRepo) GetByID(_ context.Context, id string) (domain.Design, bool, error) {
+	r.mu.Lock()
+	r.ids = append(r.ids, id)
+	r.mu.Unlock()
+	return domain.Design{}, false, nil
+}
+
+func (r *recordingDesignRepo) Insert(context.Context, domain.Design) error { return nil }
+func (r *recordingDesignRepo) UpdateEditable(context.Context, domain.Design, string, time.Time, time.Time) error {
+	return nil
+}
+func (r *recordingDesignRepo) CreateBound(context.Context, domain.Design, time.Time) error {
+	return nil
+}
+func (r *recordingDesignRepo) ReplaceSource(context.Context, domain.Design, string, time.Time, time.Time) (string, error) {
+	return "", nil
 }

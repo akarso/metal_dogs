@@ -403,7 +403,7 @@ From `logs/MIG1/review-iter2.json` (approve, minors only):
 
 | Minor | Closed |
 | --- | --- |
-| Goroutine-id map: `currentGID` parses `runtime.Stack`; gid 0 shares one slot | Yes. Map, `runtime.Stack`, `bindPending` / `rememberPending` / `releasePending` removed. Design id comes from `pending_line` |
+| Goroutine-id map: `currentGID` parses `runtime.Stack`; gid 0 shares one slot | Yes. Map, `runtime.Stack`, `bindPending` / `rememberPending` / `releasePending` removed. Design id comes from `pending_line`. `TestPlace_ParallelSameVariantSeesOwnPendingDesign` runs two `Place` calls on one variant with different design ids and checks each `cart.validate` loads its own id |
 | `FindVariants` on `context.Background()`: empty `ProductSlug` skipped the tee (fail-open) | Yes. Unknown is a blocking issue, including a draft / out-of-scope parent (`TestCartValidation_DraftTeeBlocks`, `TestOnCartValidate_DraftTeeBlocks`) |
 | Dead `setPendingDesign` alias of `rememberPending` | Yes. Alias and `rememberPending` removed |
 
