@@ -31,14 +31,10 @@ func registerGenerate(app *plugin.App, worker *application.GenerateWorker, maxRe
 	return sdk.Integration(PluginName).RegisterManual(generateJobName, generateHandler(worker), opts...)
 }
 
-// enqueueGenerateIdempotent enqueues integration.sync.metaldogs.generate using the
-// product generation_job_id as the platform job primary key. On Conflict it loads
-// the existing row (Postgres Reader/Admin) and re-pends failed/done/cancelled or
-// processing older than the stage lease; pending / young processing are left alone.
-// Product claim fencing runs in Host.OnRequeued (pluginsdk.RequeueTx, same
-// transaction as the re-pend). Stale processing uses WithRequeueMinAge.
-// Failed, done, and cancelled use WithRequeueTerminal. Pending and a young
-// processing claim are left alone.
+// enqueueGenerateIdempotent enqueues integration.sync.metaldogs.generate using
+// generation_job_id as the platform job id. On conflict it re-pends through
+// Queue.Requeue (WithRequeueMinAge for a stale processing claim, WithRequeueTerminal
+// for failed, done, or cancelled); the product fence runs in Host.OnRequeued.
 func enqueueGenerateIdempotent(app *plugin.App, ctx context.Context, generationJobID, designID string) error {
 	if app == nil {
 		return fmt.Errorf("metaldogs generate enqueue: app required")
@@ -106,16 +102,41 @@ func resolveGenerateEnqueueConflict(queue jobs.Queue, ctx context.Context, gener
 		return nil
 	}
 	if errors.Is(err, jobs.ErrRequeueNotProcessing) {
-		termErr := queue.Requeue(ctx, generationJobID, detail.Attempts, jobs.WithRequeueTerminal())
-		if termErr == nil {
-			return nil
-		}
-		if errors.Is(termErr, jobs.ErrRequeueNotTerminal) {
-			return leaveNonTerminalGenerateJob(reader, ctx, generationJobID)
-		}
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
+		return rependTerminalGenerateJob(queue, reader, ctx, generationJobID, detail.Attempts)
 	}
 	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+}
+
+// A wrong attempt is a raced completion: reload once and retry with the live count.
+func rependTerminalGenerateJob(queue jobs.Queue, reader jobs.Reader, ctx context.Context, id string, attempt int) error {
+	termErr := queue.Requeue(ctx, id, attempt, jobs.WithRequeueTerminal())
+	if termErr == nil {
+		return nil
+	}
+	if errors.Is(termErr, jobs.ErrRequeueNotTerminal) {
+		return leaveNonTerminalGenerateJob(reader, ctx, id)
+	}
+	if !errors.Is(termErr, jobs.ErrRequeueWrongAttempt) {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
+	}
+	again, err := reader.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+	}
+	if again == nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", id)
+	}
+	if again.Attempts == attempt {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
+	}
+	termErr = queue.Requeue(ctx, id, again.Attempts, jobs.WithRequeueTerminal())
+	if termErr == nil {
+		return nil
+	}
+	if errors.Is(termErr, jobs.ErrRequeueNotTerminal) {
+		return leaveNonTerminalGenerateJob(reader, ctx, id)
+	}
+	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", termErr)
 }
 
 // leaveNonTerminalGenerateJob accepts pending and processing. Any other

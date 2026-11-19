@@ -2,7 +2,9 @@ package metaldogs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,14 +15,15 @@ import (
 )
 
 type conflictAdmin struct {
-	mu        sync.Mutex
-	requeued  bool
-	retried   bool
-	status    jobs.Status
-	updatedAt time.Time
-	hookCalls int
-	attempts  int
-	retryHook func(*conflictAdmin) error
+	mu          sync.Mutex
+	requeued    bool
+	retried     bool
+	status      jobs.Status
+	updatedAt   time.Time
+	hookCalls   int
+	attempts    int
+	retryHook   func(*conflictAdmin) error
+	beforeCheck func(*conflictAdmin, bool)
 }
 
 func (a *conflictAdmin) Retry(_ context.Context, _ string) error {
@@ -81,26 +84,26 @@ func (q *queueWithAdmin) Requeue(_ context.Context, _ string, attempt int, opts 
 	a := q.conflictAdmin
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.attempts != 0 && attempt != a.attempts {
-		return jobs.ErrRequeueWrongAttempt
-	}
 	settings := jobs.ResolveRequeueOptions(opts)
+	if a.beforeCheck != nil {
+		a.beforeCheck(a, settings.Terminal)
+	}
 	if settings.Terminal {
 		switch a.status {
 		case jobs.StatusFailed, jobs.StatusDone, jobs.StatusCancelled:
-			a.status = jobs.StatusPending
-			a.requeued = true
-			a.hookCalls++
-			return nil
 		default:
 			return jobs.ErrRequeueNotTerminal
 		}
+	} else {
+		if a.status != jobs.StatusProcessing {
+			return jobs.ErrRequeueNotProcessing
+		}
+		if time.Since(a.updatedAt) < settings.MinAge {
+			return jobs.ErrRequeueTooFresh
+		}
 	}
-	if a.status != jobs.StatusProcessing {
-		return jobs.ErrRequeueNotProcessing
-	}
-	if time.Since(a.updatedAt) < settings.MinAge {
-		return jobs.ErrRequeueTooFresh
+	if attempt != a.attempts {
+		return jobs.ErrRequeueWrongAttempt
 	}
 	a.status = jobs.StatusPending
 	a.requeued = true
@@ -136,5 +139,58 @@ func TestResolveGenerateEnqueueConflict_ReliesOnRequeueHookOnly(t *testing.T) {
 	// Conflict path must not add a second InvalidateClaim; fencing is OnRequeued once.
 	if admin.hookCalls != 1 {
 		t.Fatalf("OnRequeued-equivalent calls=%d, want 1", admin.hookCalls)
+	}
+}
+
+func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptRetriesOnce(t *testing.T) {
+	t.Parallel()
+	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 2}
+	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
+		if terminal && a.attempts == 2 {
+			a.attempts = 3
+			a.status = jobs.StatusDone
+		}
+	}
+	q := &queueWithAdmin{conflictAdmin: admin}
+	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !admin.requeued || admin.status != jobs.StatusPending || admin.attempts != 3 {
+		t.Fatalf("retry must re-pend once with the live attempt: requeued=%v status=%s attempts=%d", admin.requeued, admin.status, admin.attempts)
+	}
+	if admin.hookCalls != 1 {
+		t.Fatalf("OnRequeued-equivalent calls=%d, want 1", admin.hookCalls)
+	}
+}
+
+func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptStopsAfterOneRetry(t *testing.T) {
+	t.Parallel()
+	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 2}
+	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
+		if terminal {
+			a.attempts++
+			a.status = jobs.StatusDone
+		}
+	}
+	q := &queueWithAdmin{conflictAdmin: admin}
+	err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1")
+	if err == nil || !errors.Is(err, jobs.ErrRequeueWrongAttempt) {
+		t.Fatalf("second mismatch must surface: %v", err)
+	}
+	if admin.requeued {
+		t.Fatal("must not re-pend after the single retry")
+	}
+}
+
+func TestResolveGenerateEnqueueConflict_ReclaimingReturnsError(t *testing.T) {
+	t.Parallel()
+	admin := &conflictAdmin{status: jobs.StatusReclaiming}
+	q := &queueWithAdmin{conflictAdmin: admin}
+	err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1")
+	if err == nil || !strings.Contains(err.Error(), string(jobs.StatusReclaiming)) {
+		t.Fatalf("reclaiming must error, got %v", err)
+	}
+	if admin.requeued {
+		t.Fatal("reclaiming must not requeue")
 	}
 }
