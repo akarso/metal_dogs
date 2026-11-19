@@ -127,6 +127,31 @@ func TestRegisterPlugins_MetalDogs_BadEnabled_InitFails(t *testing.T) {
 	}
 }
 
+func TestCollectMigrations_MetalDogs_NoInit(t *testing.T) {
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Extra: map[string]map[string]string{
+				"metaldogs": {"enabled": "true"},
+			},
+			B2B: config.B2BPluginConfig{Enabled: false},
+		},
+	}
+	log := logger.NewWithWriter(io.Discard, "error")
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, cfg)
+	regs, err := registry.CollectMigrations(cfg.Plugins.DependsOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regs) != 1 || regs[0].PluginName != "metaldogs" {
+		t.Fatalf("CollectMigrations = %+v, want only metaldogs", regs)
+	}
+	spec := metaldogs.New().Migration()
+	if regs[0].Dir != spec.Dir {
+		t.Fatalf("Dir = %q, want %q", regs[0].Dir, spec.Dir)
+	}
+}
+
 func TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{

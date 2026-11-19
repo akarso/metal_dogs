@@ -259,7 +259,7 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 
 `plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line.
 
-`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that. The write is listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` is the schema contract. From ticket 03b that UPDATE is `Queue.Requeue` with `WithRequeueTerminal`, and the test asserts the same row outcome through that upstream API.
+At this pin `rependTerminalGenerateJob` still set `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It did not reset `attempts` (`Admin.Retry` did, and did not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also left `last_error` in place (`Fail` writes it). The terminal UPDATE matched that. The write was listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` was the schema contract. Superseded by ticket 03b: that UPDATE is `Queue.Requeue` with `WithRequeueTerminal`, and the test asserts the same row outcome through that upstream API.
 
 ### Shopanda gaps (ticket 03)
 
@@ -279,7 +279,7 @@ The fixture sets `queue.driver=postgres` and warehousedemo, and leaves `media.st
 - Pin: `de29a0c1…` (`upstream/main`, PR #623)
 - Previous pin on this branch: `565dde5a…`
 
-Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Config.Queue.Driver`. Ticket 03b adopts `WithRequeueTerminal` and `RequireQueueDriver`.
+Merge only. At this pin the plugin still called `rependTerminalGenerateJob` and read `App.Config.Queue.Driver`. Superseded by ticket 03b (`WithRequeueTerminal`, `RequireQueueDriver`).
 
 ### Conflict resolution
 
@@ -289,9 +289,11 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 | `README.md` | Product pin links. `jobs:requeue` row taken from upstream (`--min-age` / `--terminal --force`) |
 | `RUNBOOK.md` | Metal Dogs index plus pin links. Upstream operator body discarded |
 | Shopanda guides (DEVELOPER, EXTENSION_POINTS) and phase-17 PR-1575–1578 notes | Deleted (modify/delete and new PR notes). Stub indexes stay |
-| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Ours, unchanged (allowlist). No conflict |
+| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go` | Ours, unchanged (allowlist). No conflict |
 
-`internal/domain/jobs`, postgres and redis queues, `queue_hooks.go`, `pkg/pluginsdk`, and `cmd/api` other than those three paths match the pin. `internal/infrastructure/localfs/storage.go` `ReadContext` was already a product difference before this merge and is outside the deviations script scan.
+`cmd/api/migrate_plugins_test.go` was ours at this merge (Metal Dogs `CollectMigrations` test). Ticket 05 restored the pin copy.
+
+`internal/domain/jobs`, postgres and redis queues, `queue_hooks.go`, `pkg/pluginsdk`, and `cmd/api` other than `register_products.go`, `register_plugins_metaldogs_test.go`, and `migrate_plugins_test.go` match the pin. `internal/infrastructure/localfs/storage.go` `ReadContext` was already a product difference before this merge and is outside the deviations script scan.
 
 ### Upstream range `565dde5a..de29a0c1` touching files we use
 
@@ -324,7 +326,9 @@ Ticket 00e commit `d4c04ead` mapped SQLSTATE `22P02` to `ErrRequeueNotFound` ins
 | --- | --- |
 | `RUNBOOK.md` | Metal Dogs index plus pin links. Upstream operator body discarded |
 | `docs/phase-17-product-packaging/ROADMAP.md` and `prs/PR-1579.md` | Deleted (modify/delete and the new PR note). Stub indexes stay |
-| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Ours, unchanged (allowlist stays 3 paths). No conflict |
+| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go` | Ours, unchanged (allowlist). No conflict |
+
+`cmd/api/migrate_plugins_test.go` was still ours at this merge. Ticket 05 restored the pin copy.
 
 `internal/domain/jobs/job.go`, `internal/infrastructure/postgres/job_queue.go` (+ test), `job_uuid.go` (+ test), `cmd/api/jobs_cli.go`, `jobs_cli_requeue.go`, and `jobs_cli_test.go` match the pin (`git diff 58aa6987` empty).
 
@@ -335,7 +339,7 @@ Ticket 00e commit `d4c04ead` mapped SQLSTATE `22P02` to `ErrRequeueNotFound` ins
 - `internal/domain/jobs/job.go`: `ErrRequeueNotFound` covers an unknown id and an id the adapter rejected before lookup.
 - `cmd/api/jobs_cli.go`: `jobs:requeue` and `jobs:show` treat a nil `Get` as "no job with id". `ErrRequeueNotFound` after a successful `Get` is still the TOCTOU miss (`jobs_cli_requeue.go` copy: "missing or deleted under TOCTOU").
 
-Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_test.go`, `register_products.go`.
+Allowlist at this pin was `cmd/api/register_plugins_metaldogs_test.go`, `register_products.go`, and `migrate_plugins_test.go`. Ticket 05 took the last file off the allowlist.
 
 ## Ticket 00g — pin `abc82f51`
 
@@ -352,7 +356,7 @@ Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_t
 | C4 diagram sources and the developer guide | Deleted (modify/delete). Stub indexes stay |
 | `docs/phase-17-product-packaging/ROADMAP.md`, `prs/PR-1580.md` | Deleted (modify/delete and the new PR note) |
 | `internal/infrastructure/localfs/storage.go` | Upstream. `git diff abc82f51` empty for `internal/infrastructure/localfs/` |
-| `internal/interfaces/http/admin/search_admin_test.go` | Already identical to the pin (no conflict). `git diff abc82f51` empty |
+| `internal/interfaces/http/admin/search_admin_test.go` | No conflict. `git diff abc82f51` empty. Both sides already used `domainjobs.RequeueOption` |
 
 `plugins/metaldogs/adapters/mediastore.Store.Read` calls `ReadableStorage.Read(ctx, key)`. The optional `ReadContext` interface and the non-context fallback are gone. When `Read` returns an error and `ctx` is done, `Store` returns that context error. A `Read` that returns bytes is kept, including when `ctx` ends during the last chunk. The old post-success `ctx.Err` check ran only on the non-context fallback; localfs never used it (`ReadContext` already returned the finished buffer on EOF). Between-chunk cancellation stays in the backend (PR-1580).
 
@@ -361,7 +365,7 @@ Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_t
 - `internal/domain/media/storage.go`: `ReadableStorage.Read(ctx, path)` (PR-1580).
 - `internal/infrastructure/localfs`: `Read` honours ctx between chunks; `ReadContext` aliases `Read`. Signed GET stays `Open` + `ServeContent`.
 - `internal/interfaces/http/admin/invoice_admin.go` and `storefront/download_account.go`: `Read(ctx, path)`; `context.Canceled` / `DeadlineExceeded` return without an Internal error.
-- `search_admin_test.go`: `jobs` import alias is `domainjobs` (same diff was already on this branch from ticket 00f).
+- `search_admin_test.go`: fake `Requeue` option type `jobs.RequeueOption` → `domainjobs.RequeueOption` (`32c937c6`; the import was already `domainjobs`). Ticket 03 (`688b1392`) had the same edit, so this merge did not change the file. Full `git diff` note is under ticket 05.
 
 Allowlist unchanged. `localfs` is outside `check-upstream-deviations.sh` and now matches the pin.
 
@@ -427,7 +431,9 @@ No other conflicts. `internal/infrastructure/localfs/storage.go` was already ide
 
 ### Tests moved off upstream files
 
-`internal/interfaces/http/admin/search_admin_test.go` already matched `abc82f51` (dead `jobs` alias only; no further product edit). Left as the pin.
+`internal/interfaces/http/admin/search_admin_test.go`: at ticket 00f the file differed from pin `58aa6987` only by the fake `Requeue` signature (`jobs.RequeueOption` vs `domainjobs.RequeueOption`; the import was already `domainjobs`). Ticket 03 commit `688b1392` made that edit (`git diff 58aa6987 d0229bb3` is that hunk). Upstream `32c937c6` (inside `abc82f51`) made the same edit. At the 00g merge `1a12c205` both sides matched, so `git diff abc82f51` was empty and the merge did not edit the file. At pin `fd4dd577`, `git diff fd4dd577 HEAD` for this file is empty.
+
+`TestCollectMigrations_MetalDogs_NoInit` moved from `cmd/api/migrate_plugins_test.go` to `cmd/api/register_plugins_metaldogs_test.go` (same package `main`; it uses only exported plugin APIs). `migrate_plugins_test.go` matches pin `fd4dd577` and is not on the allowlist. The b2b collect message is the pin text again.
 
 `internal/interfaces/http/storefront/auth_middleware_test.go` had `TestAuthMiddleware_CustomizerOpaqueBearerIsGuest`. The helpers it uses (`AuthMiddleware`, `auth.TokenParser`, `identity.Identity`) are exported, so the test moved to `cmd/api/register_plugins_metaldogs_test.go` with its own parser stub. The upstream file matches the pin.
 

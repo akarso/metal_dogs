@@ -25,8 +25,7 @@ ALLOWLIST=(
   .github/scripts/run-metaldogs-integration-tests.sh # Metal Dogs DSN suite and canaries
   .gitignore # /app, .idea/, .vscode/
   Makefile # docs-policy runs the product link checker and this script
-  cmd/api/migrate_plugins_test.go # Metal Dogs migrator collected when the plugin is enabled
-  cmd/api/register_plugins_metaldogs_test.go # registration, NoCache, boot, catalog-seed CLI, opaque bearer
+  cmd/api/register_plugins_metaldogs_test.go # registration, NoCache, boot, catalog-seed CLI, opaque bearer, migrator collect
   cmd/api/register_products.go # registerMetalDogs when enabled or the flag does not parse
   configs/config.example.yaml # commented plugins.metaldogs block
   docker-compose.yml # Postgres on 127.0.0.1 and SHOPANDA_DATABASE_HOST_PORT

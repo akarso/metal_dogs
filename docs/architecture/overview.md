@@ -174,7 +174,7 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 
 ## Upstream deviations
 
-`.github/scripts/check-upstream-deviations.sh` diffs the whole tree against the pinned SHA and allowlists every path below. It ignores product-owned trees: `plugins/metaldogs/**`, `docs/**`, `*.md` (root `README.md`, `AGENTS.md`, `RUNBOOK.md`, `PLUGINS.md`, demo `plugins/*/README.md`), `.github/workflows/**` (`ci.yml` adds `integration-metaldogs` and the hardened docs-policy step; `release.yml` refuses image name `shopanda`), and `.scratch/**`. Those trees are the product. They are not rows in the allowlist. `internal/infrastructure/localfs/storage.go` matches the pin (PR-1580); it is not listed. `internal/interfaces/http/admin/search_admin_test.go` and `internal/interfaces/http/storefront/auth_middleware_test.go` match the pin. The customizer opaque-bearer guest check lives in `cmd/api/register_plugins_metaldogs_test.go`. Nothing under `pkg/` differs.
+`.github/scripts/check-upstream-deviations.sh` diffs the whole tree against the pinned SHA and allowlists every path below. It ignores product-owned trees: `plugins/metaldogs/**`, `docs/**`, `*.md` (root `README.md`, `AGENTS.md`, `RUNBOOK.md`, `PLUGINS.md`, demo `plugins/*/README.md`), `.github/workflows/**` (`ci.yml` adds `integration-metaldogs` and the hardened docs-policy step; `release.yml` refuses image name `shopanda`), and `.scratch/**`. Those trees are the product. They are not rows in the allowlist. `internal/infrastructure/localfs/storage.go` matches the pin (PR-1580); it is not listed. `internal/interfaces/http/admin/search_admin_test.go`, `internal/interfaces/http/storefront/auth_middleware_test.go`, and `cmd/api/migrate_plugins_test.go` match the pin. The customizer opaque-bearer guest check and the Metal Dogs migrator collect test live in `cmd/api/register_plugins_metaldogs_test.go`. Nothing under `pkg/` differs.
 
 | Path | Why it differs | Introduced |
 | --- | --- | --- |
@@ -187,8 +187,7 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 | `.gitignore` | `/app`, `.idea/`, `.vscode/` | F0 |
 | `Makefile` | `docs-policy` runs the Metal Dogs link checker and this allowlist script, not `SHOPANDA_PLATFORM=1` | CR-06 |
 | `cmd/api/register_products.go` | `registerMetalDogs` when the plugin is enabled or the flag does not parse. `register_plugins.go` matches the pin | UPG4-01 |
-| `cmd/api/register_plugins_metaldogs_test.go` | Registration, NoCache, boot helpers, catalog-seed dispatch through `bindPluginCLIPorts`, opaque bearer guest check | UPG4-01 / 05 |
-| `cmd/api/migrate_plugins_test.go` | Metal Dogs migrator is collected when the plugin is enabled | UPG4-01 |
+| `cmd/api/register_plugins_metaldogs_test.go` | Registration, NoCache, boot helpers, catalog-seed dispatch through `bindPluginCLIPorts`, opaque bearer guest check, Metal Dogs migrator collected when the plugin is enabled | UPG4-01 / 05 |
 | `configs/config.example.yaml` | Commented `plugins.metaldogs` block (enabled + `generation`) | F1 |
 | `docker-compose.yml` | Publish Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}` | F2 |
 | `scripts/ci/docs-policy.sh` | Prefer `.github/scripts/check-product-docs-links.sh`; skip the promote fixture unless `SHOPANDA_PLATFORM=1` | CR-06 |
