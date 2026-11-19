@@ -217,7 +217,7 @@ The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` de
 ## Ticket 00d — pin `565dde5a`
 
 - Date: 2026-11-18
-- Pin: `565dde5a284ea3983b431e915acb4a37ae166a3c` (`upstream/main`, PR #617)
+- Pin: `565dde5a…` (`upstream/main`, PR #617)
 - Previous pin on this branch: `7bd34bef…`
 
 ### Conflict resolution
@@ -237,7 +237,7 @@ The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` de
 ## Ticket 03 — job delivery fence on SDK hooks
 
 - Date: 2026-11-18
-- Pin: unchanged `565dde5a284ea3983b431e915acb4a37ae166a3c`
+- Pin: unchanged `565dde5a…`
 
 Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, `internal/infrastructure/postgres/job_queue.go` (+ test), `internal/platform/plugin/providers.go`, `queue_hooks.go`, `internal/application/integration/sync_runtime.go`, `cmd/api/job_queue_bind.go`, `jobs_cli.go`, `main.go`, and the queue test doubles listed with them. `BoundQueue` does not fall back to `RegisterQueue`. Sync handlers re-inject `payload.request_id` only.
 
@@ -263,9 +263,42 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 
 ### Known red on the pin (not Metal Dogs wiring)
 
-`TestNewJobsRuntime_WarehousedemoReachesBind` fails on pin `565dde5a284ea3983b431e915acb4a37ae166a3c` and on this tree. `cmd/api/jobs_cli.go` and `cmd/api/jobs_cli_test.go` match the pin (`git diff 565dde5a` empty). The test logger is `io.Discard`; a one-off stdout logger on a detached worktree of that commit printed:
+`TestNewJobsRuntime_WarehousedemoReachesBind` fails on pin `565dde5a…` and on this tree. `cmd/api/jobs_cli.go` and `cmd/api/jobs_cli_test.go` match the pin (`git diff 565dde5a` empty). The test logger is `io.Discard`; a one-off stdout logger on a detached worktree of that commit printed:
 
 `plugin.init.failed` `core/storage-local`: `local storage: empty base_path`
 
 The fixture sets `queue.driver=postgres` and warehousedemo, and leaves `media.storage` empty, so `CoreLocalStorageEnabled()` is true and `Media.Local.BasePath` is empty. `registerProductPlugins` does not register metaldogs when `plugins.metaldogs.enabled` is unset. Same failure on the pin. Left as an upstream red; the test file stays the pin copy.
+
+## Ticket 00e — pin `de29a0c1`
+
+- Date: 2026-11-19
+- Pin: `de29a0c159c6f56bd082876fd338c9a28f1ffb4c` (`upstream/main`, PR #623)
+- Previous pin on this branch: `565dde5a…`
+
+Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Config.Queue.Driver`. Ticket 03b adopts `WithRequeueTerminal` and `RequireQueueDriver`.
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `AGENTS.md` | Metal Dogs. Build/test commands were already the product section; upstream's plugin-philosophy tail was discarded |
+| `README.md` | Product pin links. `jobs:requeue` row taken from upstream (`--min-age` / `--terminal --force`) |
+| `RUNBOOK.md` | Metal Dogs index plus pin links. Upstream operator body discarded |
+| Shopanda guides (DEVELOPER, EXTENSION_POINTS) and phase-17 PR-1575–1578 notes | Deleted (modify/delete and new PR notes). Stub indexes stay |
+| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Ours, unchanged (allowlist). No conflict |
+
+`internal/domain/jobs`, postgres and redis queues, `queue_hooks.go`, `pkg/pluginsdk`, and `cmd/api` other than those three paths match the pin. `internal/infrastructure/localfs/storage.go` `ReadContext` was already a product difference before this merge and is outside the deviations script scan.
+
+### Upstream range `565dde5a..de29a0c1` touching files we use
+
+- `cmd/api/plugin_boot.go` (+ test): `serveNeedsSkip` is `CapCatalogSeed`; `workerNeedsSkip` is `CapCart` and `CapCatalogSeed`; plugin CLI skips `CapCart` and `CapIntegration*` and skips `CapCatalogSeed` only when the command did not bind it. `bootServePlugins` / `bootWorkerPlugins` lock those lists in tests. Production scheduler, worker, search reindex, and non-seed CLIs call `assertWorkerNeedsMet`. Serve calls `assertServeNeedsMet` after `BindCartPort` (`wire_services.go`). `runPluginCLICommand` calls `assertPluginCLINeedsMet` (PR-1575, `0bed9b1f`, harden `2e029ac4`).
+- `internal/domain/jobs/job.go`: `WithRequeueTerminal` re-pends `failed`/`done`/`cancelled`, keeps attempts, ignores min-age, sets `run_at` to now, leaves `last_error`. `OnRequeued` runs before pending in the reclaim transaction. Missing row is `ErrRequeueNotFound`. Wrong status is `ErrRequeueNotTerminal`. Default reclaim stays processing-only. API is ungated. CLI `jobs:requeue --terminal --force` covers exhausted failed and done/cancelled; bare `--terminal` is the rare non-exhausted failed path. `Admin.Retry` is still failed-only, `attempts=0`, no hook (PR-1576, `a2fc61f1`, harden through `2fbee1fa`).
+- `internal/infrastructure/postgres/job_queue.go` and redis queue: backends honor `WithRequeueTerminal`. Postgres keeps the row locked in its prior status while `OnRequeued` runs.
+- `internal/platform/plugin/queue_hooks.go`: abort leaves failed/done/cancelled in place when the option is set, same as processing for the default reclaim.
+- `pkg/pluginsdk` `Host.PlatformConfig` and `RequireQueueDriver`: allowlist is `queue.driver`, `search.engine`, `cache.driver`, `media.storage`. Empty `queue.driver` counts as `postgres`. Other keys, including `plugins.*` and secrets, return empty. Scoped `ConfigValue` still does not see core keys (PR-1577, `58b87ea7`).
+- `cmd/api/jobs_cli_test.go`: `TestNewJobsRuntime_WarehousedemoReachesBind` sets `SHOPANDA_DEV_MODE` and `Media.Local.BasePath` so `core/storage-local` Init does not fail on an empty base path (PR-1578, `6d253b50`).
+
+`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`.
+
+`TestNewJobsRuntime_WarehousedemoReachesBind` passes. Gate package `internal/infrastructure/postgres` (`-run JobQueue|Requeue`) fails `TestJobQueue_Requeue_MissingID`: `jobs.id` is UUID, the test passes `"missing-id"`, and the lock query returns `invalid input syntax for type uuid` instead of `ErrRequeueNotFound`. The test file matches the pin. Not patched here.
 

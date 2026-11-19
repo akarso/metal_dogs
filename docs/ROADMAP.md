@@ -10,7 +10,7 @@ No calendar dates are given. Ordering is expressed through dependencies and mile
 
 ## 1. Ground truth this plan is built on
 
-Inspected against Shopanda source at pin [`565dde5a284ea3983b431e915acb4a37ae166a3c`](UPSTREAM_PIN.md) (`upstream/main`; PR-1574 on top of `7bd34bef`). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
+Inspected against Shopanda source at pin [`de29a0c159c6f56bd082876fd338c9a28f1ffb4c`](UPSTREAM_PIN.md) (`upstream/main`; PR-1575–1578 on top of `565dde5a`). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
 
 | Capability | Status | Consequence for Metal Dogs |
 | --- | --- | --- |
@@ -236,7 +236,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`565dde5a…` on `upstream/main`; PR-1574 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00d: `metaldogs:catalog-seed` is bound by upstream `runPluginCLICommand` (`register_products.go` only registers the plugin).
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`de29a0c1…` on `upstream/main`; PR-1575–1578 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00d: `metaldogs:catalog-seed` is bound by upstream `runPluginCLICommand` (`register_products.go` only registers the plugin). Ticket 00e: pin includes `WithRequeueTerminal`, `Host.PlatformConfig`, and `cmd/api/plugin_boot.go`; the plugin still re-pends terminal jobs itself.
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
@@ -263,7 +263,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
 - **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
-- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/565dde5a284ea3983b431e915acb4a37ae166a3c/docs/guides/SYNC_JOB_OBSERVABILITY.md).
+- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/de29a0c159c6f56bd082876fd338c9a28f1ffb4c/docs/guides/SYNC_JOB_OBSERVABILITY.md).
 
 #### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; pin absorb 2026-11-08)
 
