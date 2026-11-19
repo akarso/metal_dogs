@@ -4,6 +4,6 @@ Metal Dogs product documentation lives under [`docs/`](../README.md) (roadmap, A
 
 Upstream Shopanda guides are **not** vendored in this fork. Read them at the pinned commit:
 
-https://github.com/akarso/shopanda/tree/de29a0c159c6f56bd082876fd338c9a28f1ffb4c/docs/guides
+https://github.com/akarso/shopanda/tree/58aa698702b10952b5062cfc4bb1d3ec308d6cf2/docs/guides
 
 Pin record: [`../UPSTREAM_PIN.md`](../UPSTREAM_PIN.md).

@@ -28,4 +28,4 @@ Restart after changing config. Registration is wired in `cmd/api/register_plugin
 
 - Use `app.Slots("<vendor>/<name>").RegisterRenderer(...)` with `extapi` anchor constants
 - Theme templates must declare matching `{{slot_container "anchor"}}` or `{{slot . "anchor" "placement"}}` markers
-- See [PLUGINS.md](../../PLUGINS.md) and [EXTENSION_API.md](https://github.com/akarso/shopanda/blob/de29a0c159c6f56bd082876fd338c9a28f1ffb4c/docs/guides/EXTENSION_API.md)
+- See [PLUGINS.md](../../PLUGINS.md) and [EXTENSION_API.md](https://github.com/akarso/shopanda/blob/58aa698702b10952b5062cfc4bb1d3ec308d6cf2/docs/guides/EXTENSION_API.md)

@@ -88,9 +88,9 @@ Fixed upstream (PR-1570/1571), pin `7bd34bef` (ticket 00c):
 - Typed `MetalDogsPluginConfig` is gone and `metaldogs` is not in `typedPluginYAMLKeys`. `config.go` and `plugins_extra.go` match the pin and left the allowlist.
 - Empty `SHOPANDA_PLUGINS_*` values are skipped. YAML `enabled: true` plus empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` keeps the plugin enabled. Test: `TestSettingsFrom_EmptyEnabledEnvKeepsYAML`.
 
-Open on pin `de29a0c1` (ticket 00e; Shopanda roadmap):
+Fixed upstream (PR-1579, shopanda#624), pin `58aa6987` (ticket 00f):
 
-- `TestJobQueue_Requeue_MissingID` is red. The test passes `"missing-id"` into UUID column `jobs.id`. The lock query returns `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, so `RequeueWithBeforeCommit` does not return `ErrRequeueNotFound`. Upstream should treat a non-UUID id as not found, or the test should use an absent UUID. This tree does not patch `internal/infrastructure/postgres/job_queue.go`.
+- `TestJobQueue_Requeue_MissingID` was red on pin `de29a0c1`. `"missing-id"` against UUID column `jobs.id` returned `22P02` instead of `ErrNoRows`. Ticket 00e commit `d4c04ead` mapped that SQLSTATE to `ErrRequeueNotFound` in `job_queue.go`; escalation `afa4125b` deleted the mapping so the file matched the pin again. Pin `58aa6987` rejects a non-UUID id before the query (`jobIDUnusable`) and maps a residual `22P02` the same way. This tree does not edit that file.
 
 ## Ticket 01 config criterion
 
@@ -276,7 +276,7 @@ The fixture sets `queue.driver=postgres` and warehousedemo, and leaves `media.st
 ## Ticket 00e — pin `de29a0c1`
 
 - Date: 2026-11-19
-- Pin: `de29a0c159c6f56bd082876fd338c9a28f1ffb4c` (`upstream/main`, PR #623)
+- Pin: `de29a0c1…` (`upstream/main`, PR #623)
 - Previous pin on this branch: `565dde5a…`
 
 Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Config.Queue.Driver`. Ticket 03b adopts `WithRequeueTerminal` and `RequireQueueDriver`.
@@ -305,4 +305,35 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`.
 
 `TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` is red on pin `de29a0c1` and on this tree. The test passes `"missing-id"` into UUID column `jobs.id`. The lock query returns `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, so `RequeueWithBeforeCommit` does not return `ErrRequeueNotFound`. `internal/infrastructure/postgres/job_queue.go` matches the pin. Not patched (see Shopanda gaps).
+
+## Ticket 00f — pin `58aa6987`
+
+- Date: 2026-11-19
+- Pin: `58aa698702b10952b5062cfc4bb1d3ec308d6cf2` (`upstream/main`, PR #625)
+- Previous pin on this branch: `de29a0c1…`
+
+Merge only. No Metal Dogs edit under `internal/infrastructure/postgres/job_queue.go`.
+
+### The 22P02 patch
+
+Ticket 00e commit `d4c04ead` mapped SQLSTATE `22P02` to `ErrRequeueNotFound` inside `RequeueWithBeforeCommit` so `TestJobQueue_Requeue_MissingID` would pass. Escalation commit `afa4125b` removed that mapping; the file matched pin `de29a0c1` again and the test stayed red. This ticket does not put the mapping back. Upstream PR-1579 (shopanda#624, `50fd03b4`, harden through `a7da3d84`, on `main` as `58aa6987`) treats a non-UUID id as not-found before the lock query (`jobIDUnusable`) and maps a residual `22P02` the same way (`isInvalidTextUUID`). `Get`, `Retry`, and `Cancel` use the same miss.
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `RUNBOOK.md` | Metal Dogs index plus pin links. Upstream operator body discarded |
+| `docs/phase-17-product-packaging/ROADMAP.md` and `prs/PR-1579.md` | Deleted (modify/delete and the new PR note). Stub indexes stay |
+| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go`, `migrate_plugins_test.go` | Ours, unchanged (allowlist stays 3 paths). No conflict |
+
+`internal/domain/jobs/job.go`, `internal/infrastructure/postgres/job_queue.go` (+ test), `job_uuid.go` (+ test), `cmd/api/jobs_cli.go`, `jobs_cli_requeue.go`, and `jobs_cli_test.go` match the pin (`git diff 58aa6987` empty).
+
+### Upstream range `de29a0c1..58aa6987` touching files we use
+
+- `internal/infrastructure/postgres/job_uuid.go`: `jobIDUnusable` is a non-UUID id; `isInvalidTextUUID` is SQLSTATE `22P02` (PR-1579, `50fd03b4`).
+- `job_queue.go`: `RequeueWithBeforeCommit` returns `ErrRequeueNotFound` for an unusable id before `BEGIN`, and for a residual `22P02` on the lock query. `Get` returns `(nil, nil)` for the same cases. `Retry` and `Cancel` follow `Get`.
+- `internal/domain/jobs/job.go`: `ErrRequeueNotFound` covers an unknown id and an id the adapter rejected before lookup.
+- `cmd/api/jobs_cli.go`: `jobs:requeue` and `jobs:show` treat a nil `Get` as "no job with id". `ErrRequeueNotFound` after a successful `Get` is still the TOCTOU miss (`jobs_cli_requeue.go` copy: "missing or deleted under TOCTOU").
+
+Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_test.go`, `register_products.go`.
 
