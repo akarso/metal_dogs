@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
+	"github.com/akarso/shopanda/internal/platform/apperror"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
@@ -272,3 +275,28 @@ type prepareResult int64
 
 func (r prepareResult) LastInsertId() (int64, error) { return 0, nil }
 func (r prepareResult) RowsAffected() (int64, error) { return int64(r), nil }
+
+func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
+	t.Parallel()
+	app := &plugin.App{}
+	if err := registerPrepareProduction(app); err != nil {
+		t.Fatal(err)
+	}
+	admin := &conflictAdmin{status: jobs.StatusPending}
+	q := &queueWithAdmin{
+		conflictAdmin: admin,
+		enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
+	}
+	if err := app.BindQueue(q); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueuePrepareProduction(app, context.Background(), "ver-1", "des-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
+	err := enqueuePrepareProduction(app, context.Background(), "ver-1", "des-1")
+	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "get after conflict") {
+		t.Fatalf("non-conflict must not enter conflict resolution: %v", err)
+	}
+}

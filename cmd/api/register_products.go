@@ -14,10 +14,17 @@ import (
 // Seeded empty by scripts/product-init.sh when missing. Do not move
 // extref / *demo registration into this file upstream.
 func registerProductPlugins(registry *plugin.Registry, cfg *config.Config) {
-	on, err := metaldogs.Enabled(cfg)
+	on, err := metaldogs.Enabled(metalDogsExtra(cfg))
 	if err != nil || on {
 		registerMetalDogs(registry)
 	}
+}
+
+func metalDogsExtra(cfg *config.Config) map[string]string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Plugins.Extra["metaldogs"]
 }
 
 func registerMetalDogs(registry *plugin.Registry) {

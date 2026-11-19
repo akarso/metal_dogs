@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/akarso/shopanda/internal/domain/rbac"
-	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
@@ -21,6 +19,9 @@ import (
 // PluginName is the stable plugin identity and Migrator namespace
 // (schema versions plugin:metaldogs:<basename>).
 const PluginName = "metaldogs"
+
+// permJobsRead is core rbac.JobsRead ("jobs.read"); Host.RegisterAdminRoute takes the string.
+const permJobsRead = "jobs.read"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
@@ -189,7 +190,7 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := mountCustomizerRoute(h, "GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
 	}
-	if err := app.RegisterAdminRoute("GET /api/v1/admin/customizer/health", rbac.JobsRead, httpapi.AdminHealth(app)); err != nil {
+	if err := h.RegisterAdminRoute("GET /api/v1/admin/customizer/health", permJobsRead, httpapi.AdminHealth(app)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}
 	if err := registerObsPing(app); err != nil {
@@ -217,7 +218,7 @@ func mountCustomizerRoute(h pluginsdk.Host, pattern string, handler http.Handler
 	return h.RegisterPublicRoute(pattern, handler, pluginsdk.NoCache())
 }
 
-func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *application.UploadService {
+func newUploadService(store ports.AssetStore, db *sql.DB, log pluginsdk.Logger) *application.UploadService {
 	if store == nil || db == nil {
 		return nil
 	}
@@ -239,7 +240,7 @@ func newUploadService(store ports.AssetStore, db *sql.DB, log logger.Logger) *ap
 	return svc
 }
 
-func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, maxAttempts, cooldownSecs int, log logger.Logger) *application.DesignService {
+func newDesignService(store ports.AssetStore, db *sql.DB, templates *application.TemplateCatalog, maxAttempts, cooldownSecs int, log pluginsdk.Logger) *application.DesignService {
 	if store == nil || db == nil || templates == nil {
 		return nil
 	}
@@ -288,7 +289,7 @@ func newGenerateServices(
 	db *sql.DB,
 	providerName string,
 	maxRetries, maxAttempts, cooldownSecs int,
-	log logger.Logger,
+	log pluginsdk.Logger,
 ) (*application.GenerateService, *application.GenerateWorker, error) {
 	if store == nil || db == nil || app == nil {
 		return nil, nil, nil

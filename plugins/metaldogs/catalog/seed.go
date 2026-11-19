@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	domcat "github.com/akarso/shopanda/internal/domain/catalog"
 	"github.com/akarso/shopanda/internal/domain/shared"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
@@ -21,6 +20,10 @@ const (
 	stockFile    = "stock.csv"
 
 	parentSKUAttribute = "parent_sku"
+
+	// Catalog seed port takes strings. Same literals as domain/catalog StatusDraft and TypeConfigurable.
+	productStatusDraft      = "draft"
+	productTypeConfigurable = "configurable"
 )
 
 // Seed loads the catalog CSVs and applies them with one CatalogSeedPort.Import.
@@ -204,10 +207,10 @@ func loadProducts(path string) ([]productRow, error) {
 				return nil, fieldErr(productsFile, line, pair.col, "empty")
 			}
 		}
-		if row.productType != string(domcat.TypeConfigurable) {
-			return nil, fieldErr(productsFile, line, "type", fmt.Sprintf("want %s", domcat.TypeConfigurable))
+		if row.productType != productTypeConfigurable {
+			return nil, fieldErr(productsFile, line, "type", fmt.Sprintf("want %s", productTypeConfigurable))
 		}
-		if row.status != string(domcat.StatusDraft) {
+		if row.status != productStatusDraft {
 			return nil, fieldErr(productsFile, line, "status", "want draft")
 		}
 		if _, dup := seenSKU[row.sku]; dup {
