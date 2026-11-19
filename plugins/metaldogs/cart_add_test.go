@@ -375,6 +375,84 @@ func getDesign(t *testing.T, srv *httptest.Server, designID, token string) httpa
 	return view
 }
 
+func TestAddToCart_FailedFirstAddLeavesNoGuestCart(t *testing.T) {
+	srv, db := newDesignCartServer(t)
+	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	variantL := teeVariantID(t, srv, "MDOGS-TEE-L")
+	approved, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 40)
+	draft, draftToken := insertCartDesign(t, db, domain.DesignDraft, time.Now().UTC().Add(24*time.Hour), 41)
+	before := cartRowCount(t, db)
+
+	status, _, cookies := addDesignToCart(t, srv, draft.ID, draftToken, variantM, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("draft status=%d", status)
+	}
+	if id := guestCartCookieID(cookies); id != "" || cartRowCount(t, db) != before {
+		t.Fatalf("draft left cookie=%q rows=%d", id, cartRowCount(t, db))
+	}
+
+	status, _, cookies = addDesignToCart(t, srv, approved.ID, token, id.New(), nil)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown variant status=%d", status)
+	}
+	if id := guestCartCookieID(cookies); id != "" || cartRowCount(t, db) != before {
+		t.Fatalf("unknown variant left cookie=%q rows=%d", id, cartRowCount(t, db))
+	}
+
+	setTeeStock(t, db, 0)
+	status, body, cookies := addDesignToCart(t, srv, approved.ID, token, variantM, nil)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("stock status=%d body=%s", status, body)
+	}
+	if id := guestCartCookieID(cookies); id != "" || cartRowCount(t, db) != before {
+		t.Fatalf("validation left cookie=%q rows=%d want %d", id, cartRowCount(t, db), before)
+	}
+
+	setTeeStock(t, db, 5)
+	status, body, cookies = addDesignToCart(t, srv, approved.ID, token, variantM, nil)
+	if status != http.StatusOK {
+		t.Fatalf("seed status=%d body=%s", status, body)
+	}
+	cartID := guestCartCookieID(cookies)
+	if cartID == "" {
+		t.Fatal("seed cart cookie missing")
+	}
+	filled := cartItems(t, srv, cartID)
+	setTeeStock(t, db, 0)
+	status, body, _ = addDesignToCart(t, srv, approved.ID, token, variantL, &http.Cookie{Name: sessionCartCookie, Value: cartID})
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("filled status=%d body=%s", status, body)
+	}
+	after := cartItems(t, srv, cartID)
+	if len(after) != len(filled) || after[0].VariantID != filled[0].VariantID || after[0].Quantity != filled[0].Quantity {
+		t.Fatalf("filled cart changed\nbefore=%+v\nafter=%+v", filled, after)
+	}
+}
+
+func guestCartCookieID(cookies []*http.Cookie) string {
+	id := ""
+	for _, c := range cookies {
+		if c == nil || c.Name != sessionCartCookie {
+			continue
+		}
+		if c.MaxAge < 0 {
+			id = ""
+			continue
+		}
+		id = c.Value
+	}
+	return id
+}
+
+func cartRowCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM carts`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func assertDesignUnchanged(t *testing.T, before, after httpapi.DesignResponse) {
 	t.Helper()
 	if after.Status != before.Status || after.TemplateVersion != before.TemplateVersion ||

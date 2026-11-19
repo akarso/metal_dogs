@@ -234,6 +234,20 @@ func TestCartValidation_DesignLines(t *testing.T) {
 	})
 }
 
+func TestCartValidation_DraftTeeBlocks(t *testing.T) {
+	srv, db := newDesignCartServer(t)
+	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 30)
+	cartID := addDesignLine(t, srv, design.ID, token, variantM)
+	if _, err := db.ExecContext(context.Background(), `UPDATE products SET status = 'draft' WHERE slug = 'mdogs-tee'`); err != nil {
+		t.Fatal(err)
+	}
+	issues := cartValidationIssues(t, srv, cartID)
+	if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.ProductUnavailableCode, "product is not available", variantM) {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
 func TestAddToCart_ConcurrentSameDesignKeepsDesignID(t *testing.T) {
 	srv, db := newDesignCartServer(t)
 	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")

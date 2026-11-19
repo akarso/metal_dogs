@@ -3,6 +3,7 @@ package metaldogs
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,7 +88,7 @@ func TestOnCartValidate_OtherProductWithoutDesigns(t *testing.T) {
 	}
 }
 
-func TestOnCartValidate_EmptyProductSlugIsNotTee(t *testing.T) {
+func TestOnCartValidate_EmptyProductSlugBlocks(t *testing.T) {
 	catalog := &slugCatalog{slugs: map[string]string{"tee": ""}}
 	p := New()
 	p.host = &surface{cart: &qtyCart{}, catalog: catalog}
@@ -96,7 +97,26 @@ func TestOnCartValidate_EmptyProductSlugIsNotTee(t *testing.T) {
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
-	if issues := hookIssues(hctx); len(issues) != 0 {
+	issues := hookIssues(hctx)
+	if len(issues) != 1 || issues[0].Code != ports.ProductUnavailableCode || issues[0].Message != "product is not available" || issues[0].VariantID != "tee" || issues[0].Level != "" {
+		t.Fatalf("issues=%+v", issues)
+	}
+	if catalog.calls != 1 {
+		t.Fatalf("catalog=%d", catalog.calls)
+	}
+}
+
+func TestOnCartValidate_DraftTeeBlocks(t *testing.T) {
+	catalog := &slugCatalog{hidden: map[string]string{"tee": customTeeSlug}}
+	p := New()
+	p.host = &surface{cart: &qtyCart{}, catalog: catalog}
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "tee", Quantity: 1}}})
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	issues := hookIssues(hctx)
+	if len(issues) != 1 || issues[0].Code != ports.ProductUnavailableCode || issues[0].Message != "product is not available" || issues[0].VariantID != "tee" || issues[0].Level != "" {
 		t.Fatalf("issues=%+v", issues)
 	}
 }
@@ -123,9 +143,16 @@ func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
 		t.Fatalf("issues=%+v", issues)
 	}
 
-	p.setPendingDesign("cart-1", "tee", "design-a")
 	hctx = &extapi.HookContext{}
 	hctx.Set("cart", view)
+	hctx.Set("pending_line", &extapi.PendingCartLine{
+		VariantID: "tee",
+		Quantity:  1,
+		Extensions: []extapi.CartLineExtension{{
+			Code:  ports.DesignIDFieldCode,
+			Value: "design-a",
+		}},
+	})
 	if err := p.onCartValidate(hctx); err != nil {
 		t.Fatal(err)
 	}
@@ -160,9 +187,10 @@ func (r *recLog) Warn(string, map[string]interface{})         {}
 func (r *recLog) Error(string, error, map[string]interface{}) { r.errors++ }
 
 type slugCatalog struct {
-	slugs map[string]string
-	calls int
-	ctx   context.Context
+	slugs  map[string]string
+	hidden map[string]string
+	calls  int
+	ctx    context.Context
 }
 
 func (s *slugCatalog) FindVariant(ctx context.Context, id string) (*extapi.CatalogVariant, error) {
@@ -178,11 +206,15 @@ func (s *slugCatalog) FindVariants(ctx context.Context, ids []string) (map[strin
 	s.ctx = ctx
 	out := map[string]*extapi.CatalogVariant{}
 	for _, id := range ids {
+		if slug, ok := s.hidden[id]; ok {
+			out[id] = &extapi.CatalogVariant{ID: id, ProductSlug: slug, ProductVisible: false}
+			continue
+		}
 		slug, ok := s.slugs[id]
 		if !ok {
 			continue
 		}
-		out[id] = &extapi.CatalogVariant{ID: id, ProductSlug: slug}
+		out[id] = &extapi.CatalogVariant{ID: id, ProductSlug: slug, ProductVisible: strings.TrimSpace(slug) != ""}
 	}
 	return out, nil
 }
@@ -192,24 +224,27 @@ func (s *slugCatalog) FindProduct(context.Context, string) (*extapi.CatalogProdu
 }
 
 type qtyCart struct {
-	missing     bool
-	persisted   *extapi.CartView
-	getCalls    int
-	addCalls    int
-	upsertCalls int
-	deleteCalls int
-	ensureCalls int
-	ensureCtx   context.Context
-	addCtx      context.Context
-	ensureView  *extapi.CartView
-	lastOpts    pluginsdk.CartAddItemOpts
+	missing      bool
+	persisted    *extapi.CartView
+	getCalls     int
+	addCalls     int
+	upsertCalls  int
+	deleteCalls  int
+	ensureCalls  int
+	discardCalls int
+	discardID    string
+	ensureCtx    context.Context
+	addCtx       context.Context
+	ensureView   *extapi.CartView
+	lastOpts     pluginsdk.CartAddItemOpts
+	addErr       error
 }
 
 func (q *qtyCart) AddItem(ctx context.Context, _, _, _ string, _ int, opts pluginsdk.CartAddItemOpts) error {
 	q.addCalls++
 	q.addCtx = ctx
 	q.lastOpts = opts
-	return nil
+	return q.addErr
 }
 
 func (q *qtyCart) Get(context.Context, string, string) (*extapi.CartView, error) {
@@ -238,7 +273,9 @@ func (q *qtyCart) DeleteLineExtension(context.Context, string, string, string, s
 	return nil
 }
 
-func (q *qtyCart) DiscardEmptyGuestCart(context.Context, http.ResponseWriter, *http.Request, string) error {
+func (q *qtyCart) DiscardEmptyGuestCart(_ context.Context, _ http.ResponseWriter, _ *http.Request, cartID string) error {
+	q.discardCalls++
+	q.discardID = cartID
 	return nil
 }
 func (q *qtyCart) UpsertLineExtension(context.Context, string, string, string, []pluginsdk.CartExtensionValue, string) error {

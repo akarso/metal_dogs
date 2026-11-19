@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/rbac"
@@ -25,16 +24,12 @@ const PluginName = "metaldogs"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets     ports.AssetStore
-	uploads    *application.UploadService
-	designs    *application.DesignService
-	generate   *application.GenerateService
-	worker     *application.GenerateWorker
-	host       cartSurface
-	pendingMu  sync.Mutex
-	pendingSeq uint64
-	// One slot per AddItem goroutine: cart.validate does not receive the Place context.
-	pending map[uint64]pendingCall
+	assets   ports.AssetStore
+	uploads  *application.UploadService
+	designs  *application.DesignService
+	generate *application.GenerateService
+	worker   *application.GenerateWorker
+	host     cartSurface
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.

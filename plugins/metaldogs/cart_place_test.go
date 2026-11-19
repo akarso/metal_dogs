@@ -3,15 +3,13 @@ package metaldogs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 
+	"github.com/akarso/shopanda/internal/platform/apperror"
 	"github.com/akarso/shopanda/internal/platform/pluginwrite"
 	"github.com/akarso/shopanda/pkg/extapi"
-	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -107,143 +105,78 @@ func TestPlace_UpdatedByFollowsCartCustomer(t *testing.T) {
 	}
 }
 
-func TestPlace_InterleavedSameVariantKeepsOwnDesign(t *testing.T) {
-	p := New()
-	aIn := make(chan struct{})
-	bIn := make(chan struct{})
-	aGone := make(chan struct{})
-	errs := make(chan error, 4)
-	cart := &gateCart{plugin: p, stage: func(design string) {
-		switch design {
-		case "design-a":
-			close(aIn)
-			<-bIn
-			id, ok := p.pendingDesign("cart-1", "v")
-			if !ok || id != "design-a" {
-				errs <- fmt.Errorf("A saw %q ok=%v", id, ok)
-			}
-		case "design-b":
-			close(bIn)
-			<-aIn
-			<-aGone
-			id, ok := p.pendingDesign("cart-1", "v")
-			if !ok || id != "design-b" {
-				errs <- fmt.Errorf("B saw %q ok=%v", id, ok)
-			}
-		default:
-			errs <- fmt.Errorf("design %q", design)
-		}
-	}}
-	p.host = quietHost{cart: cart, catalog: fixedTeeCatalog{}}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		if _, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a"); err != nil {
-			errs <- err
-		}
-		close(aGone)
-	}()
-	go func() {
-		defer wg.Done()
-		if _, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-b"); err != nil {
-			errs <- err
-		}
-	}()
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Error(err)
-	}
-	p.pendingMu.Lock()
-	left := len(p.pending)
-	p.pendingMu.Unlock()
-	if left != 0 {
-		t.Fatalf("pending left=%d", left)
-	}
-}
-
-type quietHost struct {
-	cart    pluginsdk.CartPort
-	catalog pluginsdk.CatalogPort
-}
-
-func (q quietHost) Cart() (pluginsdk.CartPort, bool) { return q.cart, q.cart != nil }
-func (q quietHost) Catalog() (pluginsdk.CatalogPort, bool) {
-	return q.catalog, q.catalog != nil
-}
-func (q quietHost) CatalogSeed() (pluginsdk.CatalogSeedPort, bool) { return nil, false }
-func (q quietHost) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
-	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)
-}
-func (q quietHost) Logger() pluginsdk.Logger { return nil }
-
-type fixedTeeCatalog struct{}
-
-func (fixedTeeCatalog) FindVariant(ctx context.Context, id string) (*extapi.CatalogVariant, error) {
-	found, err := fixedTeeCatalog{}.FindVariants(ctx, []string{id})
-	if err != nil {
-		return nil, err
-	}
-	return found[id], nil
-}
-
-func (fixedTeeCatalog) FindVariants(context.Context, []string) (map[string]*extapi.CatalogVariant, error) {
-	return map[string]*extapi.CatalogVariant{"v": {ID: "v", ProductSlug: customTeeSlug}}, nil
-}
-
-func (fixedTeeCatalog) FindProduct(context.Context, string) (*extapi.CatalogProduct, error) {
-	return nil, nil
-}
-
-type gateCart struct {
-	plugin *Plugin
-	stage  func(design string)
-}
-
-func (g *gateCart) AddItem(_ context.Context, _, _, variantID string, _ int, opts pluginsdk.CartAddItemOpts) error {
-	design, _ := opts.Extensions[0].Value.(string)
-	hctx := &extapi.HookContext{}
-	hctx.Set("cart_id", "cart-1")
-	hctx.Set("variant_id", variantID)
-	hctx.Set("extensions", []map[string]interface{}{{
-		"field_code": ports.DesignIDFieldCode,
-		"value":      design,
-	}})
-	if err := g.plugin.onAddItemBefore(hctx); err != nil {
-		return err
-	}
-	g.stage(design)
-	return nil
-}
-
-func (g *gateCart) Get(context.Context, string, string) (*extapi.CartView, error) { return nil, nil }
-func (g *gateCart) EnsureActive(context.Context, string, string) (*extapi.CartView, error) {
-	return nil, nil
-}
-func (g *gateCart) EnsureStorefrontCart(context.Context, http.ResponseWriter, *http.Request, string) (*extapi.CartView, error) {
-	return &extapi.CartView{ID: "cart-1"}, nil
-}
-func (g *gateCart) DeleteLineExtension(context.Context, string, string, string, string) error {
-	return nil
-}
-func (g *gateCart) DiscardEmptyGuestCart(context.Context, http.ResponseWriter, *http.Request, string) error {
-	return nil
-}
-func (g *gateCart) UpsertLineExtension(context.Context, string, string, string, []pluginsdk.CartExtensionValue, string) error {
-	return nil
-}
-
-func TestPlace_EmptySlugIsNotTee(t *testing.T) {
+func TestPlace_EmptySlugBlocks(t *testing.T) {
 	cart := &qtyCart{}
 	p := New()
 	p.host = &surface{cart: cart, catalog: &slugCatalog{slugs: map[string]string{"v": ""}}}
 	_, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a")
 	var de *application.DesignError
-	if !errors.As(err, &de) || de.Code != application.DesignErrUnprocessable {
+	if !errors.As(err, &de) || de.Code != application.DesignErrUnprocessable || de.Message != "product is not available" {
+		t.Fatalf("err=%v", err)
+	}
+	if cart.ensureCalls != 0 || cart.discardCalls != 0 {
+		t.Fatalf("ensure=%d discard=%d", cart.ensureCalls, cart.discardCalls)
+	}
+}
+
+func TestPlace_OtherProductSkipsTee(t *testing.T) {
+	cart := &qtyCart{}
+	p := New()
+	p.host = &surface{cart: cart, catalog: &slugCatalog{slugs: map[string]string{"v": "other-shirt"}}}
+	_, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a")
+	var de *application.DesignError
+	if !errors.As(err, &de) || de.Code != application.DesignErrUnprocessable || de.Message != "variant is not part of the custom tee" {
+		t.Fatalf("err=%v", err)
+	}
+	if cart.ensureCalls != 0 || cart.discardCalls != 0 {
+		t.Fatalf("ensure=%d discard=%d", cart.ensureCalls, cart.discardCalls)
+	}
+}
+
+func TestPlace_HiddenTeeBlocks(t *testing.T) {
+	cart := &qtyCart{}
+	p := New()
+	p.host = &surface{cart: cart, catalog: &slugCatalog{hidden: map[string]string{"v": customTeeSlug}}}
+	_, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a")
+	var de *application.DesignError
+	if !errors.As(err, &de) || de.Code != application.DesignErrUnprocessable || de.Message != "product is not available" {
 		t.Fatalf("err=%v", err)
 	}
 	if cart.ensureCalls != 0 {
-		t.Fatal("EnsureStorefrontCart ran for a non-tee")
+		t.Fatal("EnsureStorefrontCart ran for an unreadable product")
+	}
+}
+
+func TestPlace_FailedFirstAddDiscardsEmptyGuestCart(t *testing.T) {
+	cart := &qtyCart{addErr: apperror.Validation("no stock")}
+	p := New()
+	p.host = &surface{cart: cart, catalog: &slugCatalog{slugs: map[string]string{"v": customTeeSlug}}}
+	rec := httptest.NewRecorder()
+	_, err := p.Place(context.Background(), rec, httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a")
+	var de *application.DesignError
+	if !errors.As(err, &de) || de.Code != application.DesignErrUnprocessable {
+		t.Fatalf("err=%v", err)
+	}
+	if cart.discardCalls != 1 || cart.discardID != "cart-1" || cart.ensureCalls != 1 {
+		t.Fatalf("discard=%d id=%q ensure=%d", cart.discardCalls, cart.discardID, cart.ensureCalls)
+	}
+}
+
+func TestPlace_FailedAddOnFilledCartDoesNotDiscard(t *testing.T) {
+	cart := &qtyCart{
+		addErr: apperror.Validation("no stock"),
+		ensureView: &extapi.CartView{
+			ID:    "c1",
+			Items: []extapi.CartLineView{{VariantID: "shirt", Quantity: 1}},
+		},
+	}
+	p := New()
+	p.host = &surface{cart: cart, catalog: &slugCatalog{slugs: map[string]string{"v": customTeeSlug}}}
+	_, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a")
+	if err == nil {
+		t.Fatal("expected add failure")
+	}
+	if cart.discardCalls != 0 || cart.addCalls != 1 {
+		t.Fatalf("discard=%d add=%d", cart.discardCalls, cart.addCalls)
 	}
 }

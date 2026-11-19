@@ -25,9 +25,6 @@ func registerCartValidation(app *plugin.App, p *Plugin) error {
 	if app == nil || p == nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: app not configured")
 	}
-	if err := app.Hooks(p.Name()).Register(extapi.HookCartAddItemBefore, 100, p.onAddItemBefore); err != nil {
-		return err
-	}
 	return app.Hooks(p.Name()).Register(extapi.HookCartValidate, 100, p.onCartValidate)
 }
 
@@ -68,7 +65,13 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if err != nil {
 		return err
 	}
-	tees := customTeeVariants(found)
+	tees, unknown := splitTeeLines(current.Items, found)
+	for _, item := range current.Items {
+		if _, ok := unknown[item.VariantID]; !ok {
+			continue
+		}
+		hctx.AppendValidationError(productUnavailableIssue(item.VariantID))
+	}
 	if len(tees) == 0 {
 		return nil
 	}
@@ -90,11 +93,8 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 			continue
 		}
 		designID, present := lineDesignID(item)
-		if !present {
-			if pending, ok := p.pendingDesign(current.ID, item.VariantID); ok {
-				designID = pending
-				present = true
-			}
+		if id, ok := pendingLineDesign(hctx, item.VariantID); ok {
+			designID, present = id, true
 		}
 		var foundDesign domain.Design
 		known := false
@@ -123,15 +123,42 @@ func cartFromValidatePayload(raw any) (*extapi.CartView, error) {
 	return current, nil
 }
 
-func customTeeVariants(found map[string]*extapi.CatalogVariant) map[string]struct{} {
-	out := map[string]struct{}{}
-	for id, variant := range found {
-		if variant == nil || variant.ProductSlug != customTeeSlug {
-			continue
+func splitTeeLines(items []extapi.CartLineView, found map[string]*extapi.CatalogVariant) (match, unknown map[string]struct{}) {
+	match = map[string]struct{}{}
+	unknown = map[string]struct{}{}
+	for _, item := range items {
+		switch extapi.ClassifyProductSlug(found[item.VariantID], customTeeSlug) {
+		case extapi.ProductSlugMatch:
+			match[item.VariantID] = struct{}{}
+		case extapi.ProductSlugOther:
+		default:
+			unknown[item.VariantID] = struct{}{}
 		}
-		out[id] = struct{}{}
 	}
-	return out
+	return match, unknown
+}
+
+func productUnavailableIssue(variantID string) extapi.CartValidationIssue {
+	return extapi.CartValidationIssue{
+		VariantID: variantID,
+		Code:      ports.ProductUnavailableCode,
+		Message:   "product is not available",
+	}
+}
+
+func pendingLineDesign(hctx *extapi.HookContext, variantID string) (string, bool) {
+	if hctx == nil {
+		return "", false
+	}
+	raw, ok := hctx.Get("pending_line")
+	if !ok || raw == nil {
+		return "", false
+	}
+	pending, ok := raw.(*extapi.PendingCartLine)
+	if !ok || pending == nil || pending.VariantID != variantID {
+		return "", false
+	}
+	return lineDesignID(extapi.CartLineView{Extensions: pending.Extensions})
 }
 
 func persistedLineQuantities(ctx context.Context, port pluginsdk.CartPort, cartID, customerID string) (map[string]int, bool, error) {
