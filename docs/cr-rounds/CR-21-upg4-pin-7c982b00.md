@@ -393,9 +393,9 @@ The direct-write row is gone from `docs/architecture/overview.md`. Operator path
 
 `cart.add_item.before` is no longer registered. `cart.validate` reads the design id of the line being added from hook key `pending_line` (`*extapi.PendingCartLine`). Core already redacts plugin-only fields per registrant before the handler runs. Stored line extensions are used when `pending_line` is absent (checkout and later reads).
 
-`Place` and `cart.validate` call `extapi.ClassifyProductSlug` against `mdogs-tee`. Match runs the design checks. A different loaded slug is skipped. Unknown (parent outside read scope, including a draft product, or a blank loaded slug) is blocking issue `metaldogs.product_unavailable` ("product is not available"). `Place` returns `422` `unprocessable` with that message and does not call `EnsureStorefrontCart`.
+`Place` and `cart.validate` call `extapi.ClassifyProductSlug` against `mdogs-tee`. Match runs the design checks. A different loaded slug is skipped. Unknown (parent outside read scope, including a draft product, or a blank loaded slug) is blocking issue `metaldogs.product_unavailable` ("product is not available") on the same lines as the design checks: a new or changed line, and every such line when the cart snapshot is unchanged. A mutation of a different line does not raise it for an unchanged line, including a non-tee product that later goes draft. `Place` returns `422` `unprocessable` with that message and does not call `EnsureStorefrontCart`.
 
-A failed `AddItem` calls `DiscardEmptyGuestCart` with the id from `EnsureStorefrontCart` only when that snapshot had no lines. Invalid design and an unreadable variant never reach Ensure.
+A failed `AddItem` calls `DiscardEmptyGuestCart` with the id from `EnsureStorefrontCart` only when that snapshot had no lines and no customer id. Invalid design and an unreadable variant never reach Ensure.
 
 ### MIG1 reviewer minors closed
 

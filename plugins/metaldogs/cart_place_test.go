@@ -162,6 +162,22 @@ func TestPlace_FailedFirstAddDiscardsEmptyGuestCart(t *testing.T) {
 	}
 }
 
+func TestPlace_FailedAddOnEmptyCustomerCartDoesNotDiscard(t *testing.T) {
+	cart := &qtyCart{
+		addErr:     apperror.Validation("no stock"),
+		ensureView: &extapi.CartView{ID: "c1", CustomerID: "cust-9"},
+	}
+	p := New()
+	p.host = &surface{cart: cart, catalog: &slugCatalog{slugs: map[string]string{"v": customTeeSlug}}}
+	_, err := p.Place(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil), "v", "design-a")
+	if err == nil {
+		t.Fatal("expected add failure")
+	}
+	if cart.discardCalls != 0 || cart.addCalls != 1 {
+		t.Fatalf("discard=%d add=%d", cart.discardCalls, cart.addCalls)
+	}
+}
+
 func TestPlace_FailedAddOnFilledCartDoesNotDiscard(t *testing.T) {
 	cart := &qtyCart{
 		addErr: apperror.Validation("no stock"),

@@ -66,13 +66,7 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 		return err
 	}
 	tees, unknown := splitTeeLines(current.Items, found)
-	for _, item := range current.Items {
-		if _, ok := unknown[item.VariantID]; !ok {
-			continue
-		}
-		hctx.AppendValidationError(productUnavailableIssue(item.VariantID))
-	}
-	if len(tees) == 0 {
+	if len(tees) == 0 && len(unknown) == 0 {
 		return nil
 	}
 	port, ok := p.host.Cart()
@@ -83,13 +77,24 @@ func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {
 	if err != nil {
 		return err
 	}
-	scope := teeLinesToValidate(current.Items, persisted, stored, tees)
+	watched := make(map[string]struct{}, len(tees)+len(unknown))
+	for id := range tees {
+		watched[id] = struct{}{}
+	}
+	for id := range unknown {
+		watched[id] = struct{}{}
+	}
+	scope := teeLinesToValidate(current.Items, persisted, stored, watched)
 	now := time.Now().UTC()
 	if p.designs != nil && p.designs.Clock != nil {
 		now = p.designs.Clock.Now().UTC()
 	}
 	for _, item := range current.Items {
 		if _, ok := scope[item.VariantID]; !ok {
+			continue
+		}
+		if _, ok := unknown[item.VariantID]; ok {
+			hctx.AppendValidationError(productUnavailableIssue(item.VariantID))
 			continue
 		}
 		designID, present := lineDesignID(item)

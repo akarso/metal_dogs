@@ -121,6 +121,45 @@ func TestOnCartValidate_DraftTeeBlocks(t *testing.T) {
 	}
 }
 
+func TestOnCartValidate_UnchangedUnknownDoesNotBlockSibling(t *testing.T) {
+	catalog := &slugCatalog{
+		slugs:  map[string]string{"tee": customTeeSlug},
+		hidden: map[string]string{"shirt": "other-shirt"},
+	}
+	stored := &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{
+		{VariantID: "shirt", Quantity: 1},
+		{VariantID: "tee", Quantity: 1},
+	}}
+	p := New()
+	p.host = &surface{cart: &qtyCart{persisted: stored}, catalog: catalog}
+
+	hctx := &extapi.HookContext{}
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{
+		{VariantID: "shirt", Quantity: 1},
+		{VariantID: "tee", Quantity: 2},
+	}})
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	issues := hookIssues(hctx)
+	if len(issues) != 1 || issues[0].Code != ports.DesignRequiredCode || issues[0].VariantID != "tee" {
+		t.Fatalf("sibling change issues=%+v", issues)
+	}
+
+	hctx = &extapi.HookContext{}
+	hctx.Set("cart", &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{
+		{VariantID: "shirt", Quantity: 2},
+		{VariantID: "tee", Quantity: 1},
+	}})
+	if err := p.onCartValidate(hctx); err != nil {
+		t.Fatal(err)
+	}
+	issues = hookIssues(hctx)
+	if len(issues) != 1 || issues[0].Code != ports.ProductUnavailableCode || issues[0].VariantID != "shirt" {
+		t.Fatalf("changed unknown issues=%+v", issues)
+	}
+}
+
 func TestOnCartValidate_TeeWithoutDesignRepository(t *testing.T) {
 	view := &extapi.CartView{ID: "cart-1", Items: []extapi.CartLineView{{VariantID: "tee", Quantity: 1}}}
 	catalog := &slugCatalog{slugs: map[string]string{"tee": customTeeSlug}}

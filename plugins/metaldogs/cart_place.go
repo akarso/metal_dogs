@@ -67,7 +67,7 @@ func (p *Plugin) Place(ctx context.Context, w http.ResponseWriter, r *http.Reque
 		}},
 		UpdatedBy: cartLineActor(cart.CustomerID),
 	}); err != nil {
-		if len(cart.Items) == 0 {
+		if len(cart.Items) == 0 && strings.TrimSpace(cart.CustomerID) == "" {
 			discardCtx, cancel := context.WithTimeout(context.Background(), cartValidateTimeout)
 			defer cancel()
 			if derr := port.DiscardEmptyGuestCart(discardCtx, w, r, cart.ID); derr != nil {
