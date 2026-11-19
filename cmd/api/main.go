@@ -81,16 +81,16 @@ func run() error {
 
 	// Subcommand dispatch.
 	if len(os.Args) > 1 {
-		var pluginCLIRegistry *plugin.Registry
-		pluginCLIRegistryFn := func() (*plugin.Registry, error) {
-			if pluginCLIRegistry == nil {
-				reg, err := bootstrapPluginCLIRegistry(cfg, log)
+		var cachedPluginCLI *pluginCLIRuntime
+		pluginCLIRegistryFn := func() (*pluginCLIRuntime, error) {
+			if cachedPluginCLI == nil {
+				rt, err := bootstrapPluginCLIRegistry(cfg, log)
 				if err != nil {
 					return nil, err
 				}
-				pluginCLIRegistry = reg
+				cachedPluginCLI = rt
 			}
-			return pluginCLIRegistry, nil
+			return cachedPluginCLI, nil
 		}
 		switch os.Args[1] {
 		case "help":
@@ -172,6 +172,8 @@ func run() error {
 			return runJobsShow(os.Stdout, cfg, log, os.Args[2:])
 		case "jobs:retry":
 			return runJobsRetry(os.Stdout, cfg, log, os.Args[2:])
+		case "jobs:requeue":
+			return runJobsRequeue(os.Stdout, cfg, log, os.Args[2:])
 		case "jobs:cancel":
 			return runJobsCancel(os.Stdout, cfg, log, os.Args[2:])
 		case "cache:stats":
@@ -593,11 +595,8 @@ func runScheduler(cfg *config.Config, log logger.Logger) error {
 	if bootInterrupted != nil {
 		return bootInterrupted
 	}
-	// Non-serve process: CartPort is never bound here (only serve constructs
-	// cart.Service and calls BindCartPort), so a plugin declaring
-	// Needs(CapCart) (e.g. plugins/extref) must not block this boot path.
-	if err := pluginApp.AssertNeedsMetExcept(plugin.CapCart); err != nil {
-		return fmt.Errorf("plugin capabilities: %w", err)
+	if err := assertWorkerNeedsMet(pluginApp); err != nil {
+		return err
 	}
 	freezePermissionRegistry(pluginApp) // scheduler: freeze only (no BindRuntime; multi-command process)
 
@@ -789,7 +788,7 @@ func registerDefaultSeeders(reg *seed.Registry) {
 	reg.Register(&seed.GpsrAttributesSeeder{})
 }
 
-func printHelp(cfg *config.Config, log logger.Logger, pluginCLIRegistryFn func() (*plugin.Registry, error)) {
+func printHelp(cfg *config.Config, log logger.Logger, pluginCLIRegistryFn func() (*pluginCLIRuntime, error)) {
 	fmt.Print(appendPluginCLIHelp(pluginCLIRegistryFn, `Usage: app <command> [arguments]
 
 Commands:
@@ -831,7 +830,8 @@ Commands:
   export:oss <f>       Export OSS/IOSS tax report ([--summary] [--from=YYYY-MM-DD] [--to=YYYY-MM-DD] <file.csv>)
   jobs:list            List background jobs ([--type=X] [--status=Y] [--limit=N] [--offset=N] [--json])
   jobs:show <id>       Show a job's full detail ([--json])
-  jobs:retry <id>      Retry a failed job (or reclaim stale processing)
+  jobs:retry <id>      Retry a failed job
+  jobs:requeue <id> [--min-age=5m|--terminal --force]  Requeue processing, or --terminal --force for exhausted failed/done/cancelled (bare --terminal rare; prefer jobs:retry; API ungated)
   jobs:cancel <id>     Cancel a pending job
   cache:stats          Show cache occupancy ([--json])
   cache:clear          Clear cache (--prefix=<p> | --tag=<t> | --key=<k> | --all)
@@ -1083,11 +1083,8 @@ func runWorker(cfg *config.Config, log logger.Logger) error {
 	if bootInterrupted != nil {
 		return bootInterrupted
 	}
-	// Non-serve process: CartPort is never bound here (only serve constructs
-	// cart.Service and calls BindCartPort), so a plugin declaring
-	// Needs(CapCart) (e.g. plugins/extref) must not block this boot path.
-	if err := pluginApp.AssertNeedsMetExcept(plugin.CapCart); err != nil {
-		return fmt.Errorf("plugin capabilities: %w", err)
+	if err := assertWorkerNeedsMet(pluginApp); err != nil {
+		return err
 	}
 	freezePermissionRegistry(pluginApp) // worker: freeze only (no BindRuntime)
 
@@ -1252,12 +1249,9 @@ func newSearchReindexService(cfg *config.Config, log logger.Logger) (svc *search
 		conn.Close()
 		return nil, nil, nil, fmt.Errorf("plugin init failed: %d plugin(s) failed to initialize", summary.Failed)
 	}
-	// Non-serve process: CartPort is never bound here (only serve constructs
-	// cart.Service and calls BindCartPort), so a plugin declaring
-	// Needs(CapCart) (e.g. plugins/extref) must not block this boot path.
-	if err := pluginApp.AssertNeedsMetExcept(plugin.CapCart); err != nil {
+	if err := assertWorkerNeedsMet(pluginApp); err != nil {
 		conn.Close()
-		return nil, nil, nil, fmt.Errorf("plugin capabilities: %w", err)
+		return nil, nil, nil, err
 	}
 	freezePermissionRegistry(pluginApp) // search-reindex: freeze only (no BindRuntime)
 

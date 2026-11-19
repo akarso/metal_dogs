@@ -1,0 +1,471 @@
+# CR-21: Shopanda pin `fd4dd577` (UPG4 tickets 00–05)
+
+- Status: closed
+- Date: 2026-11-17 (opened); closed 2026-11-19
+- Slice: UPG4 tickets 00–05 (including 00b–00g, 01b/01c, 03b)
+- Base: `3593795d` (`origin/main` after PR #40)
+- Pin: `fd4dd577…` (`upstream/main`, PR #629). First merge on this round was `7c982b00…` (PR #606); later tickets moved the pin (see each section).
+
+## Conflict resolution
+
+Kept Metal Dogs where the file is a listed deviation. `pkg/pluginsdk/*_test.go` took upstream (they match the pin). Other conflicts took upstream. `docs/` additions from Shopanda were not vendored.
+
+| File | Kept |
+| --- | --- |
+| `AGENTS.md`, `PLUGINS.md`, `RUNBOOK.md` | Metal Dogs. Blob/tree links rewritten to the new pin |
+| `cmd/api/bind_queue_test.go`, `jobs_cli.go`, `jobs_cli_test.go`, `main.go`, `wire_routes.go` | Ours. `jobs_cli_test.go` was restored from HEAD after a bad auto-merge (upstream helpers `newJobsRuntime` / `newJobsIntrospection` are not on our CLI) |
+| `cmd/api/register_plugins.go` | Ours `registerMetalDogs` plus upstream `registerProductPlugins` |
+| `configs/config.example.yaml` | Metal Dogs `plugins.metaldogs` block plus upstream Extra-config comment |
+| `internal/platform/config/config.go` | Metal Dogs `generation.*` env/flatten plus upstream `applyPluginsExtraEnv` / `flattenPluginsExtra` |
+| `internal/application/integration/sync_runtime.go` (+ tests), `sync_manual_roundtrip_test.go` | Ours |
+| `internal/domain/jobs/worker.go`, `worker_test.go` | Ours. Test double gained `Requeue` so it still implements `jobs.Queue` |
+| `internal/domain/jobs/job.go` | Ours `Complete`/`Fail(ctx, id, attempts)` and `ErrSkipOutcome` text `job: skip outcome`. Added upstream `Queue.Requeue(ctx, id, attempt)`, `ErrOutcomeNotApplied`, `ErrRequeueConflict`, `ErrRequeueUnsupported`, `DefaultRequeueMinAge` so merged drivers compile |
+| `internal/domain/jobs/admin.go` | Ours lease reclaim, renamed `Requeue` → `RequeueLease`. `Queue.Requeue(ctx, id, attempt) error` and `Admin.Requeue(ctx, id, lease) (bool, error)` cannot both exist on `*postgres.JobQueue` |
+| `internal/platform/plugin/providers.go` (+ test), `sync_job_test.go` | Ours, plus upstream `Bootstrap.Prices` / `PriceHistory` / `Stock` (required by merged `plugin_ports.go`) |
+| `internal/platform/runtime/scheduler_test.go` | Ours, plus `Requeue` stub |
+| `cmd/api/job_queue_bind.go` | Ours (no `WrapRequeueNotify` before `BindQueue`). Auto-merge had inserted the wrap; `BindQueue` still requires the registered instance, and the generate fence type-asserts the Postgres queue. In this tree `Host.OnQueueBound` and `Host.OnRequeued` register hooks that never run, and `jobs:requeue` is absent, until ticket 03 restores upstream `job_queue_bind.go` and `jobs_cli.go` |
+| `internal/platform/plugin/queue_hooks.go` (+ test) | Upstream, plus `RequeueLease` forwarder. Test fake implements `RequeueLease` so it still counts as `jobs.Admin` |
+| `internal/infrastructure/postgres/job_queue.go` (+ test) | Ours (`SetOnRequeued`, `RequireOnRequeued`, `RequeueLease`). Added upstream `Requeue(ctx, id, attempt)`. It refuses `MetalDogsGenerateJobType` and `RequireOnRequeued` types: the bare UPDATE skipped `runOnRequeued`. Ticket 03 must replace that refusal with the in-transaction requeue. The pin query casts min-age as `$3::text`; the milliseconds argument is passed as a string so pgx can encode it |
+| `internal/infrastructure/{kafka,rabbitmq,redis,sqs}/job_queue.go`, `redis/job_queue_test.go` | Upstream |
+| `pkg/pluginsdk/sdk_test.go`, `pkg/pluginsdk/harness/harness_test.go` | Upstream (identical to the pin) |
+| `plugins/example/plugin_test.go` | Upstream |
+| importer/inventory/search/webhook/search-admin tests | Upstream |
+| Shopanda guide files under docs/guides (DEVELOPER, EXTENSION_POINTS, PLUGIN_RUNTIME_CONTRACT, PRODUCT_SITES, SYNC_JOB_OBSERVABILITY) | Deleted (modify/delete). Stub index stays |
+| `docs/phase-17-product-packaging/**`, `docs/runbooks/product-fork-upgrade.md` | Deleted |
+
+## Fence compile adaptation
+
+- `plugins/metaldogs/sync_generate.go` calls `admin.RequeueLease`.
+- `plugins/metaldogs/job_fence.go` still uses `SetOnRequeued` / `RequireOnRequeued` on the Postgres queue. That API is not on the pin; the file was kept so the fence still installs.
+- Cart test doubles (`qtyCart`, `gateCart`) implement `DiscardEmptyGuestCart` as a no-op. Production add-to-cart does not call it yet.
+- Queue test doubles that we kept gained `Requeue(ctx, id, attempt) error`.
+- `Host.OnQueueBound` and `Host.OnRequeued` do nothing here: `cmd/api` never calls `ApplyQueueBoundHooks` or `WrapRequeueNotify`. `jobs:requeue` is missing because `jobs_cli.go` stayed ours. Ticket 03 restores upstream `job_queue_bind.go` and `jobs_cli.go`.
+- Until that lands, `postgres.JobQueue.Requeue` returns an error (not `ErrRequeueConflict`) for `MetalDogsGenerateJobType` and every `RequireOnRequeued` type and leaves the row processing. `RequeueLease` is unchanged and still runs the fence.
+
+## Upstream range `a411c970..7c982b00` touching files we use
+
+- Cart: `pending_line`, `DiscardEmptyGuestCart`, `CatalogVariant.ProductVisible`, `ClassifyProductSlug` (`pkg/extapi`, `pkg/pluginsdk/ports.go`, `internal/application/cart`).
+- `App.BoundQueue`, sync handler `request_id` (`internal/platform/plugin`, `internal/application/integration/sync_runtime.go`).
+- `cmd/api/register_products.go` and `registerProductPlugins`.
+- `pluginsdk.NoCache` on `RegisterPublicRoute`.
+- `Config.Extra` / `SHOPANDA_PLUGINS_<SLUG>_*` (`internal/platform/config`).
+- `CatalogSeedPort` (`pkg/pluginsdk`, `cmd/api/plugin_ports.go`). Not used at this pin. Ticket 02 stayed deferred while `EnsurePrice` was create-only: the M3 republish step updates a placeholder price, and a create-only port would break that step. PR-1567 added `CatalogPriceSeed.Update`. Ticket 02 then moved `metaldogs:catalog-seed` onto `Host.CatalogSeed().Import`.
+- `jobs.Queue.Complete`/`Fail(ctx, id, attempt)`, `ErrSkipOutcome`, `Queue.Requeue`, `Host.OnQueueBound`, `Host.OnRequeued`.
+
+## Ticket 01 — registration, Extra config, NoCache
+
+Moved:
+
+- `registerMetalDogs` from `cmd/api/register_plugins.go` to `registerProductPlugins` in `cmd/api/register_products.go`. `register_plugins.go` and `wire_routes.go` match the pin. Deleted `cmd/api/cache_control_prefixes.go` (+ test).
+- Typed `MetalDogsPluginConfig` / `Plugins.MetalDogs` removed from `internal/platform/config/config.go`. `plugins_extra.go` no longer lists `metaldogs` in `typedPluginYAMLKeys`, so the slug is `Config.Extra`. Both files still differ from the pin (the pin keeps the typed `enabled` field). `config_test.go` matches the pin again.
+- Public `/api/customizer/*` routes use `pluginsdk.NoCache()`. `pathPrefixFromPattern` does not cut at `{`, so `GET /api/customizer/designs/{id}` is not a prefix. `GET /api/customizer` → `http.NotFoundHandler()` supplied `/api/customizer` (removed in ticket 01c). Exact `GET /api/customizer` is a plain 404. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`.
+- `job_queue_bind.go` and `jobs_cli.go` call `metaldogs.Enabled` (Extra) so the generate fence still installs when the plugin is on.
+
+Tests:
+
+- `plugins/metaldogs/settings_test.go` loads production env names `SHOPANDA_PLUGINS_METALDOGS_ENABLED` and `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` through `Host.ConfigValue`.
+- Nested YAML `generation:` with provider / max_retries / max_attempts_per_design / cooldown_seconds yields the same Settings. A non-integer in that map fails Init.
+- Bad ints/bools fail. Defaults stay fake / 3 / 3 / 30. Cooldown `0` stays 0. Counts `<=0` stay 3.
+- `cmd/api/register_plugins_metaldogs_test.go` checks registration, GET/HEAD `no-store` for `/api/customizer/enabled` and `/api/customizer/designs/design-1`, and `SHOPANDA_PLUGINS_METALDOGS_ENABLED=maybe` fails Init.
+
+Env names (working):
+
+- `Config.Extra` is `map[string]map[string]string`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes key `generation_provider`, not `generation.provider`. The plugin accepts that key and the dotted alias `generation.provider`.
+
+## Shopanda gaps
+
+Closed on pin `ab35e965` (ticket 00b). Record of what ticket 01 was waiting on:
+
+- `pathPrefixFromPattern` now cuts at the first `{`. `GET /api/customizer` stayed: param routes denylist `/api/customizer/designs`, not `/api/customizer`, and `/api` alone is refused (removed in ticket 01c).
+- `yamlMapToStringMap` flattens nested maps to dotted keys and stores `.` / `_` aliases. `expandMetalDogsGeneration` is removed. Lists fail Load.
+
+Open after ticket 01b (Shopanda roadmap; not done in this tree):
+
+- `setPluginExtraKey` aliases only all-`_` ↔ all-`.`. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` writes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation.max_retries` is a third key and is not overwritten. Same for `cooldown_seconds` and `max_attempts_per_design`. `generation_provider` ↔ `generation.provider` is a full swap, so `provider` is fine. The plugin reads the underscore key first so env still wins. Upstream should overwrite the mixed key or reject it as the same alias.
+
+Fixed upstream (PR-1570/1571), pin `7bd34bef` (ticket 00c):
+
+- Typed `MetalDogsPluginConfig` is gone and `metaldogs` is not in `typedPluginYAMLKeys`. `config.go` and `plugins_extra.go` match the pin and left the allowlist.
+- Empty `SHOPANDA_PLUGINS_*` values are skipped. YAML `enabled: true` plus empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED` keeps the plugin enabled. Test: `TestSettingsFrom_EmptyEnabledEnvKeepsYAML`.
+
+Fixed upstream (PR-1579, shopanda#624), pin `58aa6987` (ticket 00f):
+
+- `TestJobQueue_Requeue_MissingID` was red on pin `de29a0c1`. `"missing-id"` against UUID column `jobs.id` returned `22P02` instead of `ErrNoRows`. Ticket 00e commit `d4c04ead` mapped that SQLSTATE to `ErrRequeueNotFound` in `job_queue.go`; escalation `afa4125b` deleted the mapping so the file matched the pin again. Pin `58aa6987` rejects a non-UUID id before the query (`jobIDUnusable`) and maps a residual `22P02` the same way. This tree does not edit that file.
+
+## Ticket 01 config criterion
+
+Nested YAML `generation:` loads the same explicit fields as the old typed `MetalDogsGenerationConfig`. No PO decision rejects that map. Omitted keys inside the map use the documented defaults (fake / 3 / 3 / 30). The old struct zeroed an omitted `cooldown_seconds` to 0 when `plugins:` was present, because `UnmarshalYAML` replaced defaults; that wipe is not restored. A non-integer scalar fails Init. A list under `generation:` fails Load. A further nested map flattens (the old expander rejected any non-scalar).
+
+## Ticket 00b — pin `ab35e965`
+
+- Date: 2026-11-18
+- Pin: `ab35e965…` (`upstream/main`, PR #611)
+- Previous pin on this branch: `7c982b00…`
+
+### Conflict resolution
+
+`pkg/pluginsdk/*` did not conflict (tree matched `7c982b00…`); the merge took the pin. `internal/platform/plugin/public_routes.go` likewise.
+
+| File | Kept |
+| --- | --- |
+| `PLUGINS.md`, `RUNBOOK.md`, `README.md`, `configs/config.example.yaml`, `cmd/api/main.go`, `cmd/api/jobs_cli.go` | Metal Dogs. `jobs_cli_test.go` auto-merged a `parseJobsRequeueArgs` test; restored from HEAD because `jobs_cli.go` has no `jobs:requeue` |
+| `cmd/api/bind_queue_test.go` and other queue test doubles | Ours, then `Requeue` gained `...jobs.RequeueOption` so they still implement `jobs.Queue` |
+| `internal/domain/jobs/job.go`, `worker.go`, `worker_test.go` | Ours (`ErrSkipOutcome` text `job: skip outcome`, `DefaultRequeueMinAge` = 1m, `DefaultStaleProcessingLease`). Added pin types: `StatusReclaiming`, `RequeueOption`, `RequeueHookable`, `ErrRequeueTooFresh` / `WrongAttempt` / `NotProcessing` / `InProgress`. `Queue.Requeue` is variadic |
+| `internal/infrastructure/postgres/job_queue.go` (+ test) | Ours. `Requeue` accepts and ignores options; min-age stays `DefaultRequeueMinAge`; fenced types still refused outside the re-pend transaction |
+| `internal/platform/plugin/providers.go` (+ test) | Ours (`BoundQueue` fallback, no `queueChainContains`) |
+| `internal/platform/plugin/queue_hooks.go` (+ test) | Ours, plus the pin hook signature `(ctx, id, attempt) error`. Hook still runs after commit; error and panic do not fail `Requeue` |
+| `internal/platform/config/config.go` | Ours (no typed `MetalDogs`). `applyEnv` returns the Extra env error |
+| `internal/platform/config/plugins_extra.go` | Pin flatten / alias conflict rules. `metaldogs` stays out of `typedPluginYAMLKeys` (pin lists it; our typed field is already gone, so keeping the key would drop YAML and env). `expandMetalDogsGeneration` removed |
+| `internal/application/integration` sync tests, `scheduler_test.go` | Ours, variadic `Requeue` |
+| `.github/workflows/ci.yml` | Auto-merge: Metal Dogs jobs kept; integration job gained upstream `redis5` + `SHOPANDA_TEST_REDIS_URL` |
+| Shopanda guides `EXTENSION_POINTS.md`, `PRODUCT_SITES.md`, `docs/phase-17-product-packaging/**` | Deleted (modify/delete and new PR notes). Stub indexes stay |
+
+### Upstream range `7c982b00..ab35e965` touching files we use
+
+- `CatalogPriceSeed.Update` and `EnsurePrice` → `(written bool, err)` (`pkg/pluginsdk/ports.go`, `port_adapt.go`, `cmd/api/plugin_ports.go`). Create-only remains the default. Attributes stay create-only. At this bump the seed CLI was still `cmd/api/metaldogs_catalog.go` (moved in ticket 02).
+- Price tx: bridged seed `WithTx` without `*sql.Tx` fails closed (`port_adapt.go`).
+- NoCache: static path before `{`; refuse empty, single-segment-after-cut, and roots `/` and `/api`. Static one-segment mounts are allowed. `GET /api/customizer` still registered at this pin bump (removed in ticket 01c).
+- `Config.Extra`: nested YAML → dotted keys; `.` and `_` are aliases; conflict fails closed; lists error. Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_*` still arrives as `generation_*` and is mirrored to `generation.*`.
+- `Host.OnRequeued` is `(ctx, jobID, attempt) error`. `pluginsdk.RequeueTx` reads the reclaim `*sql.Tx`. Our notify wrapper does not use it yet.
+- Redis job-queue reclaim (`25158fbd`) landed in `internal/infrastructure/redis`. Metal Dogs generate fence stays on Postgres.
+- `jobs:requeue --min-age` on the pin was not taken (`jobs_cli.go` stayed ours).
+
+### Compile adaptations that are not behavior changes
+
+- Every `jobs.Queue` stub we kept gained the variadic `Requeue` parameter.
+- Postgres `Requeue` ignores `WithRequeueMinAge`. Pin default min-age is 5m; this queue still uses 1m.
+
+## Ticket 01b — drop config and NoCache workarounds
+
+- `expandMetalDogsGeneration` and `metalDogsExtraSlug` are already gone. The only diff versus the pin in `plugins_extra.go` is the omitted `metaldogs` entry in `typedPluginYAMLKeys`. The pin still has typed `MetalDogsPluginConfig` (`enabled` only) and lists the slug so YAML/env for it do not enter `Extra`. Ticket 01 removed that struct. Putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. The file stays on the allowlist. That acceptance criterion is blocked upstream (see Shopanda gaps), not done.
+
+Alias rule in effect (`setPluginExtraKey`, YAML flatten and env overlay):
+
+- Aliases are all-`_` ↔ all-`.` only. Both of those forms are stored. Different values on those two forms fail Load (`conflicting keys`).
+- `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` becomes `generation_provider` and `generation.provider`. Env overwrites both, so it replaces YAML.
+- A multi-word key has no mixed alias. `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES` becomes `generation_max_retries` and `generation.max.retries`. Nested YAML `generation: {max_retries: 2}` also stores `generation.max_retries`. Env does not write that mixed key. Same for `generation.cooldown_seconds` and `generation.max_attempts_per_design`.
+- The plugin reads the underscore key first (`generation_provider`, `generation_max_retries`, `generation_max_attempts_per_design`, `generation_cooldown_seconds`), then the dotted key, through `Host.ConfigValue`. Env therefore wins over the stale mixed YAML key. Test: `TestSettingsFrom_EnvOverridesNestedYAMLMultiWordKeys`.
+
+Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""`: known difference, recorded in ticket 01c. Test: `TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML`.
+
+Cooldown: intentional behaviour change, recorded in ticket 01c. Omitted `cooldown_seconds` inside `generation:` is 30, not 0. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
+
+NoCache: the JSON `GET /api/customizer` workaround from this ticket is removed in ticket 01c. `httpapi.NotFound` is gone.
+
+## Ticket 01c — close the 01b leftovers
+
+Decisions (do not re-litigate):
+
+- Typed config and empty env below are the ticket 01c record. Both are fixed upstream in ticket 00c (PR-1570/1571).
+- Upstream `ab35e965` still has typed `MetalDogsPluginConfig` and `"metaldogs"` in `typedPluginYAMLKeys` (comment "migrate-next"). This tree does not restore the typed field and does not add Metal Dogs code to core. Putting the key back would drop `plugins.metaldogs` YAML and `SHOPANDA_PLUGINS_METALDOGS_*` (`isTypedPluginEnvRest`) with nowhere to store them. `internal/platform/config/config.go` and `plugins_extra.go` stay on the deviations allowlist. Reason on each row: upstream still types metaldogs; remove when Shopanda drops it.
+- Empty `SHOPANDA_PLUGINS_METALDOGS_ENABLED=""` is a known difference pending a Shopanda change. Old code ignored an empty value. Upstream `applyPluginsExtraEnv` stores it, overwrites YAML `enabled: true`, and `ParseEnabled("")` turns the plugin off. The plugin cannot recover the YAML bool because `Host.Config*` only sees the overwritten string. Test: `TestSettingsFrom_KnownDifference_EmptyEnabledEnvOverwritesYAML`.
+- Cooldown 0 → 30 is an intentional behaviour change. YAML `generation:` with `provider` / `max_retries` and no `cooldown_seconds` yields cooldown 30 (omitted counts stay 3). The old typed struct zeroed an omitted `cooldown_seconds` to 0 when the map was present, because `UnmarshalYAML` replaced defaults. That wipe is not restored. Test: `TestSettingsFrom_GenerationWithoutCooldownDefaultsTo30`.
+- Bare `/api/customizer` is not an endpoint. The route is removed entirely (`plugins/metaldogs/httpapi/notfound.go` deleted). No NoCache workaround route remains. The exact path is a plain 404 and may be cached. `/api` stays refused.
+- Every registered `/api/customizer/*` route uses `pluginsdk.NoCache()`. Guest GET and HEAD are `no-store` through `CacheControlMiddleware`. `GET /api/customizer/enabled` denylists `/api/customizer/enabled`. `GET /api/customizer/designs/{id}` denylists `/api/customizer/designs` (cut at `{`). Test `TestRegisterPlugins_MetalDogs_Enabled_RouteAndMigrator` lists every registered customizer route and fails if one lacks NoCache.
+
+## Ticket 02 — seed on CatalogSeedPort
+
+Verified on this tree before the command moved (no core workaround):
+
+- (a) Empty `Status` on an existing `active` product does not error. `catalogSeedProductMatch` checks status only when the seed sets it. `TestCatalogSeedPort_EnsureProduct_EmptyStatusOnActiveIsNoOp` passed.
+- (b) Create with empty `Status` stays `draft` (`NewProduct`). `Type` `configurable` is valid (`catalog.TypeConfigurable`) and is assigned on the same path as the tested `virtual` type (`TestCatalogSeedPort_EnsureProduct_StatusTypeAttributes`).
+- (c) Variant attribute `size` is stored on create (`TestCatalogSeedPort_EnsureVariant_Attributes`, `TestCatalogSeedPort_Import_StatusTypeAttributes`).
+- (d) `CatalogPriceSeed.Update` writes a price-history row when the amount changes; the same amount is a no-op (`TestCatalogSeedPort_EnsurePrice_CreateOnlyAndUpdate`, `TestCatalogSeedPort_Import_PriceUpdate`).
+
+Attributes stay create-only. A missing `parent_sku` on an existing product is not backfilled. Local databases are recreated, so that backfill is not required.
+
+`metaldogs:catalog-seed` declares `CapCatalogSeed` and calls `Import` once per run. `cmd/api/metaldogs_catalog.go` is deleted. The plugin does not import `internal/infrastructure/postgres`.
+
+Ticket 00c moved the write port off serve and worker. The paragraph below is the ticket 02 finding, before that split.
+
+`CapCatalogSeed` stays on `Needs` and `Init` for serve and the worker as well as the CLI. There is no command-scoped capability. `Host.Require` after `FreezePluginNeeds` is a no-op, and `CatalogSeed()` returns the port only when this plugin declared the capability during Init. `bindProductPorts` still builds the port whenever the catalog repositories exist.
+
+Behaviour that changed because the port does not offer the old writes:
+
+- A missing or different `parent_sku` fails the batch and rolls it back. The error names the slug and `parent_sku`. At this pin it does not repeat both SKU strings (restored in ticket 00c, PR-1573).
+- `SetStock` runs for every stock row. An equal quantity stays equal; `stock.updated_at` moves.
+- Product, variant, price, and stock share one transaction.
+
+CSV checks are unchanged: draft + configurable in the file, price parsing, validate-before-write, a bad file writes nothing. A changed price updates with history. A second run on an `active` product does not change status.
+
+## Ticket 00c — pin `7bd34bef`
+
+- Date: 2026-11-18
+- Pin: `7bd34bef…` (`upstream/main`, PR #615)
+- Previous pin on this branch: `ab35e965…`
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `internal/platform/config/config.go`, `plugins_extra.go` | Upstream. Typed `MetalDogsPluginConfig` is gone on both sides (PR-1570). Empty Extra env is skipped (PR-1571). Both files left the allowlist |
+| `cmd/api/jobs_cli.go` | Ours (ticket 03). Upstream `newJobsRuntime` was not taken; this CLI still installs the generate fence on the postgres queue and has no `jobs:requeue` |
+| `cmd/api/main.go` | Auto-merge. `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` on scheduler, worker, and search reindex. `jobs:retry` help stays ours |
+| `cmd/api/cache_cli.go`, `extension_field_cli.go`, `providers.go`, `schedule_cli.go`, `plugin_ports.go`, `wire_services.go` | Upstream (PR-1572) |
+| `configs/config.example.yaml` | Upstream Extra comment (empty env is unset) plus the Metal Dogs `plugins.metaldogs` example |
+| Shopanda guides (DEVELOPER, EXTENSION_POINTS, PRODUCT_SITES) and phase-17 PR notes | Deleted (modify/delete and new PR notes). Stub indexes stay |
+| `cmd/api/cli_plugins.go`, `cmd/api/cli_plugins_test.go` | Ours, added after the merge: DB-backed plugin commands call `prepareProductCLI` with the App returned by `bootstrapPluginCLIRegistry`. The test file cannot match the pin because `pluginCLIOpen` returns that App. The Metal Dogs command map (`metaldogs:catalog-seed` → `wireCatalogSeedCLI`) lives in `register_products.go` |
+
+### Upstream range `ab35e965..7bd34bef` touching files we use
+
+- `internal/platform/config/config.go`, `plugins_extra.go` (+ test): drop typed MetalDogs; skip empty `SHOPANDA_PLUGINS_*` (PR-1570/1571, `852e15a1`).
+- `cmd/api/plugin_ports.go` (+ test), `wire_services.go`, `main.go` (scheduler, worker, search reindex), `cache_cli.go`, `extension_field_cli.go`, `schedule_cli.go`, `providers.go`, `jobs_cli.go`: `CapCatalogSeed` is not bound by `bindProductPorts`. Serve skips it after `BindCartPort`. Other processes skip `CapCart` and `CapCatalogSeed`. Seed CLIs call `bindCatalogSeedPort` (PR-1572, `1b39989f`, harden `73348d5e`). Our `jobs_cli.go` did not take `newJobsRuntime`.
+- `pkg/pluginsdk/port_adapt.go` (+ `ports_test.go`): attribute mismatch errors include key, stored, and requested (`stored=<missing>` when absent). Empty-map assert lists stored keys. Typed-nil `*sql.DB` is not a transaction starter (PR-1573).
+- `internal/platform/plugin/service_ports.go` (+ test): `AssertNeedsMetExcept` comment covers the CLI-seed skip. No behaviour change beyond the callers above.
+- Shopanda guides `EXTENSION_POINTS.md`, `DEVELOPER.md`, `PRODUCT_SITES.md` and phase-17 PR notes were not vendored.
+
+`config.go` and `plugins_extra.go` equal the pin. Serve and worker do not require `CapCatalogSeed`. `metaldogs:catalog-seed` binds it and checks every other declared capability, including `CapCatalog`. A `parent_sku` mismatch error contains the stored value (`OTHER` or `<missing>`) and the requested value (`MDOGS-TEE`).
+
+The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` deviation from this section are superseded by PR-1574 (ticket 00d). Upstream `runPluginCLICommand` keeps the Init App and binds `CatalogSeedPort` only for the command owner.
+
+## Ticket 00d — pin `565dde5a`
+
+- Date: 2026-11-18
+- Pin: `565dde5a…` (`upstream/main`, PR #617)
+- Previous pin on this branch: `7bd34bef…`
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `cmd/api/cli_plugins.go`, `cmd/api/cli_plugins_test.go` | Upstream (PR-1574). Both files left the allowlist |
+| `cmd/api/main.go` | Upstream CLI runtime (`pluginCLIRuntime`). `jobs:retry` help stays ours; `jobs:requeue` was not taken |
+| `PLUGINS.md` | Upstream CLI / cart / catalog rows in the conflict; product GitHub pin links stay |
+| Shopanda guides (DEVELOPER, EXTENSION_POINTS) and phase-17 PR-1574 notes | Deleted (modify/delete). Stub indexes stay |
+| `cmd/api/register_products.go` | Registration only. `prepareProductCLI` and `wireCatalogSeedCLI` deleted |
+
+`metaldogs:catalog-seed` declares `RequiresDB` and `Need(CapCatalogSeed)`. The write test calls `runPluginCLICommandWithDeps` with `bindPluginCLIPorts` and an injected `OpenDB`. The command does not read `cli.Context.DB`: this root never sets it. Writes go through `Host.CatalogSeed()`. Serve and worker still skip the seed port. A `parent_sku` mismatch error names `parent_sku` next to the stored and requested values.
+
+At this pin `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` called `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream had no shared serve/worker function for that sequence, so `runWorker`, the scheduler, and search reindex inlined the dual skip, and serve inlined `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. That copy did not track later skip-list edits. Superseded by ticket 03b (PR-1575 `bootServePlugins` / `bootWorkerPlugins`, shopanda#618): the test calls those helpers. A plugin that `Need`s `CapCatalogSeed` and a seed CLI that did not bind the port are covered by `plugin_boot_test.go`.
+
+## Ticket 03 — job delivery fence on SDK hooks
+
+- Date: 2026-11-18
+- Pin: unchanged `565dde5a…`
+
+Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, `internal/infrastructure/postgres/job_queue.go` (+ test), `internal/platform/plugin/providers.go`, `queue_hooks.go`, `internal/application/integration/sync_runtime.go`, `cmd/api/job_queue_bind.go`, `jobs_cli.go`, `main.go`, and the queue test doubles listed with them. `BoundQueue` does not fall back to `RegisterQueue`. Sync handlers re-inject `payload.request_id` only.
+
+### Old fence → pin hooks
+
+| Before | After |
+| --- | --- |
+| `postgres.JobQueue.SetOnRequeued(ctx, exec, jobID, jobType)` inside `rependInTx`, after the pending UPDATE, before COMMIT | `Host.OnRequeued(ctx, jobID, attempt)`. `WrapRequeueNotify` calls `RequeueWithBeforeCommit`. Postgres runs that callback before the pending UPDATE, with `jobs.WithRequeueTx`. `pluginsdk.RequeueTx(ctx)` is that `*sql.Tx`. The claim bump commits with the jobs row or rolls back with it |
+| `RequireOnRequeued` + `Requeue` refusing `MetalDogsGenerateJobType` | Dropped. `Queue.Requeue` is the pin implementation. `OnRequeued` has no job type. A missing `RequeueTx` returns an error only when `jobID` is a `metaldogs_generation_jobs` row (non-UUID ids are not that row). Other jobs requeue |
+| `Admin.RequeueLease` (failed/done/cancelled/stale processing, attempts kept, fence in the same tx) | Stale processing: `Queue.Requeue(ctx, id, attempt, WithRequeueMinAge(DefaultClaimLease))`, fence via `OnRequeued`. Failed/done/cancelled: `Queue.Requeue` returns `ErrRequeueNotProcessing`. The plugin then updates those rows to pending in its own transaction and calls `InvalidateClaimExec` on that tx. `Admin.Retry` is failed-only and resets attempts; it does not run `OnRequeued` |
+| `cmd/api` `InstallGenerateJobFence` on the raw queue | `Plugin.Init` calls `Host.OnRequeued` only. Postgres `WrapRequeueNotify` already runs that hook inside `RequeueWithBeforeCommit`. A queue wrap is not installed. `queue.driver` other than postgres (empty means the platform default) fails Init |
+| `ErrSkipOutcome` text `job: skip outcome` | Pin text `jobs: skip outcome`. Same sentinel. Handlers still return it when the product claim is lost. Stale `Complete`/`Fail` return `ErrOutcomeNotApplied` (`not applied`) and leave the newer attempt |
+
+`jobs:list` / `jobs:show` / `jobs:cancel` and `GET /admin/jobs` use the pin service. `jobs:retry` retries a failed job only. `jobs:requeue` is the stale-processing reclaim (attempts kept) and runs `OnRequeued`.
+
+`plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line. Removing that import did not make the test pass. The remaining failures are under ticket 05 (Known red).
+
+At this pin `rependTerminalGenerateJob` still set `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It did not reset `attempts` (`Admin.Retry` did, and did not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also left `last_error` in place (`Fail` writes it). The terminal UPDATE matched that. The write was listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` was the schema contract. Superseded by ticket 03b: that UPDATE is `Queue.Requeue` with `WithRequeueTerminal`, and the test asserts the same row outcome through that upstream API.
+
+### Shopanda gaps (ticket 03)
+
+At pin `565dde5a` no queue API re-pended `failed` / `done` / `cancelled` while keeping `attempts` and running `OnRequeued` in the same transaction. `Queue.Requeue` was processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` was failed-only, reset `attempts`, and did not run the hook. The plugin updated `jobs` itself for that case. `Host.ConfigValue` on a scoped host could not read `queue.driver`, so Init read `App.Config.Queue.Driver`. Superseded by ticket 03b (PR-1576 `WithRequeueTerminal`, shopanda#622; PR-1577 `RequireQueueDriver`, shopanda#621).
+
+### Known red on the pin (not Metal Dogs wiring)
+
+`TestNewJobsRuntime_WarehousedemoReachesBind` fails on pin `565dde5a…` and on this tree. `cmd/api/jobs_cli.go` and `cmd/api/jobs_cli_test.go` match the pin (`git diff 565dde5a` empty). The test logger is `io.Discard`; a one-off stdout logger on a detached worktree of that commit printed:
+
+`plugin.init.failed` `core/storage-local`: `local storage: empty base_path`
+
+The fixture sets `queue.driver=postgres` and warehousedemo, and leaves `media.storage` empty, so `CoreLocalStorageEnabled()` is true and `Media.Local.BasePath` is empty. `registerProductPlugins` does not register metaldogs when `plugins.metaldogs.enabled` is unset. Same failure on the pin. Left as an upstream red; the test file stays the pin copy.
+
+## Ticket 00e — pin `de29a0c1`
+
+- Date: 2026-11-19
+- Pin: `de29a0c1…` (`upstream/main`, PR #623)
+- Previous pin on this branch: `565dde5a…`
+
+Merge only. At this pin the plugin still called `rependTerminalGenerateJob` and read `App.Config.Queue.Driver`. Superseded by ticket 03b (`WithRequeueTerminal`, `RequireQueueDriver`).
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `AGENTS.md` | Metal Dogs. Build/test commands were already the product section; upstream's plugin-philosophy tail was discarded |
+| `README.md` | Product pin links. `jobs:requeue` row taken from upstream (`--min-age` / `--terminal --force`) |
+| `RUNBOOK.md` | Metal Dogs index plus pin links. Upstream operator body discarded |
+| Shopanda guides (DEVELOPER, EXTENSION_POINTS) and phase-17 PR-1575–1578 notes | Deleted (modify/delete and new PR notes). Stub indexes stay |
+| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go` | Ours, unchanged (allowlist). No conflict |
+
+`cmd/api/migrate_plugins_test.go` was ours at this merge (Metal Dogs `CollectMigrations` test). Ticket 05 restored the pin copy.
+
+`internal/domain/jobs`, postgres and redis queues, `queue_hooks.go`, `pkg/pluginsdk`, and `cmd/api` other than `register_products.go`, `register_plugins_metaldogs_test.go`, and `migrate_plugins_test.go` match the pin. `internal/infrastructure/localfs/storage.go` `ReadContext` was already a product difference before this merge and is outside the deviations script scan.
+
+### Upstream range `565dde5a..de29a0c1` touching files we use
+
+- `cmd/api/plugin_boot.go` (+ test): `serveNeedsSkip` is `CapCatalogSeed`; `workerNeedsSkip` is `CapCart` and `CapCatalogSeed`; plugin CLI skips `CapCart` and `CapIntegration*` and skips `CapCatalogSeed` only when the command did not bind it. `bootServePlugins` / `bootWorkerPlugins` lock those lists in tests. Production scheduler, worker, search reindex, and non-seed CLIs call `assertWorkerNeedsMet`. Serve calls `assertServeNeedsMet` after `BindCartPort` (`wire_services.go`). `runPluginCLICommand` calls `assertPluginCLINeedsMet` (PR-1575, `0bed9b1f`, harden `2e029ac4`).
+- `internal/domain/jobs/job.go`: `WithRequeueTerminal` re-pends `failed`/`done`/`cancelled`, keeps attempts, ignores min-age, sets `run_at` to now, leaves `last_error`. `OnRequeued` runs before pending in the reclaim transaction. Missing row is `ErrRequeueNotFound`. Wrong status is `ErrRequeueNotTerminal`. Default reclaim stays processing-only. API is ungated. CLI `jobs:requeue --terminal --force` covers exhausted failed and done/cancelled; bare `--terminal` is the rare non-exhausted failed path. `Admin.Retry` is still failed-only, `attempts=0`, no hook (PR-1576, `a2fc61f1`, harden through `2fbee1fa`).
+- `internal/infrastructure/postgres/job_queue.go` and redis queue: backends honor `WithRequeueTerminal`. Postgres keeps the row locked in its prior status while `OnRequeued` runs.
+- `internal/platform/plugin/queue_hooks.go`: abort leaves failed/done/cancelled in place when the option is set, same as processing for the default reclaim.
+- `pkg/pluginsdk` `Host.PlatformConfig` and `RequireQueueDriver`: allowlist is `queue.driver`, `search.engine`, `cache.driver`, `media.storage`. Empty `queue.driver` counts as `postgres`. Other keys, including `plugins.*` and secrets, return empty. Scoped `ConfigValue` still does not see core keys (PR-1577, `58b87ea7`).
+- `cmd/api/jobs_cli_test.go`: `TestNewJobsRuntime_WarehousedemoReachesBind` sets `SHOPANDA_DEV_MODE` and `Media.Local.BasePath` so `core/storage-local` Init does not fail on an empty base path (PR-1578, `6d253b50`).
+
+At this pin `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still called `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locked were the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`. Superseded by ticket 03b, which calls `bootServePlugins` / `bootWorkerPlugins`.
+
+`TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` was red on pin `de29a0c1` and on this tree: the test passes `"missing-id"` into UUID column `jobs.id`, the lock query returned `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, and `RequeueWithBeforeCommit` did not return `ErrRequeueNotFound`. `internal/infrastructure/postgres/job_queue.go` matched the pin and was not patched here. Ticket 00f merged PR-1579 (`58aa6987`); the test passes.
+
+## Ticket 00f — pin `58aa6987`
+
+- Date: 2026-11-19
+- Pin: `58aa6987…` (`upstream/main`, PR #625)
+- Previous pin on this branch: `de29a0c1…`
+
+Merge only. No Metal Dogs edit under `internal/infrastructure/postgres/job_queue.go`.
+
+### The 22P02 patch
+
+Ticket 00e commit `d4c04ead` mapped SQLSTATE `22P02` to `ErrRequeueNotFound` inside `RequeueWithBeforeCommit` so `TestJobQueue_Requeue_MissingID` would pass. Escalation commit `afa4125b` removed that mapping; the file matched pin `de29a0c1` again and the test stayed red. This ticket does not put the mapping back. Upstream PR-1579 (shopanda#624, `50fd03b4`, harden through `a7da3d84`, on `main` as `58aa6987`) treats a non-UUID id as not-found before the lock query (`jobIDUnusable`) and maps a residual `22P02` the same way (`isInvalidTextUUID`). `Get`, `Retry`, and `Cancel` use the same miss.
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `RUNBOOK.md` | Metal Dogs index plus pin links. Upstream operator body discarded |
+| `docs/phase-17-product-packaging/ROADMAP.md` and `prs/PR-1579.md` | Deleted (modify/delete and the new PR note). Stub indexes stay |
+| `cmd/api/register_products.go`, `register_plugins_metaldogs_test.go` | Ours, unchanged (allowlist). No conflict |
+
+`cmd/api/migrate_plugins_test.go` was still ours at this merge. Ticket 05 restored the pin copy.
+
+`internal/domain/jobs/job.go`, `internal/infrastructure/postgres/job_queue.go` (+ test), `job_uuid.go` (+ test), `cmd/api/jobs_cli.go`, `jobs_cli_requeue.go`, and `jobs_cli_test.go` match the pin (`git diff 58aa6987` empty).
+
+### Upstream range `de29a0c1..58aa6987` touching files we use
+
+- `internal/infrastructure/postgres/job_uuid.go`: `jobIDUnusable` is a non-UUID id; `isInvalidTextUUID` is SQLSTATE `22P02` (PR-1579, `50fd03b4`).
+- `job_queue.go`: `RequeueWithBeforeCommit` returns `ErrRequeueNotFound` for an unusable id before `BEGIN`, and for a residual `22P02` on the lock query. `Get` returns `(nil, nil)` for the same cases. `Retry` and `Cancel` follow `Get`.
+- `internal/domain/jobs/job.go`: `ErrRequeueNotFound` covers an unknown id and an id the adapter rejected before lookup.
+- `cmd/api/jobs_cli.go`: `jobs:requeue` and `jobs:show` treat a nil `Get` as "no job with id". `ErrRequeueNotFound` after a successful `Get` is still the TOCTOU miss (`jobs_cli_requeue.go` copy: "missing or deleted under TOCTOU").
+
+Allowlist at this pin was `cmd/api/register_plugins_metaldogs_test.go`, `register_products.go`, and `migrate_plugins_test.go`. Ticket 05 took the last file off the allowlist.
+
+## Ticket 00g — pin `abc82f51`
+
+- Date: 2026-11-19
+- Pin: `abc82f51…` (`upstream/main`, PR #627)
+- Previous pin on this branch: `58aa6987…`
+
+`media.ReadableStorage.Read` is `Read(ctx, path)`. The product patch on `internal/infrastructure/localfs/storage.go` (`Read` delegating to a local `ReadContext`) is superseded by PR-1580 (shopanda#626, `32c937c6`, harden `52964e1d`). Upstream `Read` checks `ctx` before open and between 32 KiB windows and keeps `ReadContext` as a concrete alias. This tree takes that file as-is.
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| C4 diagram sources and the developer guide | Deleted (modify/delete). Stub indexes stay |
+| `docs/phase-17-product-packaging/ROADMAP.md`, `prs/PR-1580.md` | Deleted (modify/delete and the new PR note) |
+| `internal/infrastructure/localfs/storage.go` | Upstream. `git diff abc82f51` empty for `internal/infrastructure/localfs/` |
+| `internal/interfaces/http/admin/search_admin_test.go` | No conflict. `git diff abc82f51` empty. Both sides already used `domainjobs.RequeueOption` |
+
+`plugins/metaldogs/adapters/mediastore.Store.Read` calls `ReadableStorage.Read(ctx, key)`. The optional `ReadContext` interface and the non-context fallback are gone. When `Read` returns an error and `ctx` is done, `Store` returns that context error. A `Read` that returns bytes is kept, including when `ctx` ends during the last chunk. The old post-success `ctx.Err` check ran only on the non-context fallback; localfs never used it (`ReadContext` already returned the finished buffer on EOF). Between-chunk cancellation stays in the backend (PR-1580).
+
+### Upstream range `58aa6987..abc82f51` touching files we use
+
+- `internal/domain/media/storage.go`: `ReadableStorage.Read(ctx, path)` (PR-1580).
+- `internal/infrastructure/localfs`: `Read` honours ctx between chunks; `ReadContext` aliases `Read`. Signed GET stays `Open` + `ServeContent`.
+- `internal/interfaces/http/admin/invoice_admin.go` and `storefront/download_account.go`: `Read(ctx, path)`; `context.Canceled` / `DeadlineExceeded` return without an Internal error.
+- `search_admin_test.go`: fake `Requeue` option type `jobs.RequeueOption` → `domainjobs.RequeueOption` (`32c937c6`; the import was already `domainjobs`). Ticket 03 (`688b1392`) had the same edit, so this merge did not change the file. Full `git diff` note is under ticket 05.
+
+Allowlist unchanged. `localfs` is outside `check-upstream-deviations.sh` and now matches the pin.
+
+## Ticket 03b — adopt terminal requeue, PlatformConfig, and boot helpers
+
+- Date: 2026-11-19
+- Pin: unchanged `abc82f51…`
+
+Three Metal Dogs workarounds are gone. Customer-visible behaviour is the same.
+
+| Removed | Upstream |
+| --- | --- |
+| `rependTerminalGenerateJob` (`UPDATE jobs` for `failed`/`done`/`cancelled`, attempts kept, claim bump in that transaction) | `Queue.Requeue(ctx, id, attempt, jobs.WithRequeueTerminal())` on the bound queue. `OnRequeued` runs before `pending` in that transaction. A hook error rolls the re-pend back. PR-1576, shopanda#622 (`a2fc61f1`, harden through `2fbee1fa`) |
+| `Plugin.Init` read `App.Config.Queue.Driver` | `pluginsdk.RequireQueueDriver(host, "postgres")` via `Host.PlatformConfig`. Empty driver counts as postgres. PR-1577, shopanda#621 (`58b87ea7`) |
+| `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` hand-copied `AssertNeedsMetExcept` skip lists | `bootServePlugins` / `bootWorkerPlugins` in `cmd/api/plugin_boot.go`. PR-1575, shopanda#618 (`0bed9b1f`, harden `2e029ac4`). `plugin_boot_test.go` already boots a `Need(CapCatalogSeed)` plugin on serve and worker, and fails a seed CLI that did not bind the port |
+
+The direct-write row is gone from `docs/architecture/overview.md`. Operator path for a terminal platform row: `jobs:requeue --terminal [--force]` (`docs/runbooks/generation-job-stuck-or-failed.md`).
+
+### Shopanda gaps marked fixed
+
+- Ticket 03: no terminal requeue that keeps attempts and runs `OnRequeued`; Init could not read `queue.driver` through the scoped host. Fixed (PR-1576, PR-1577).
+- Ticket 00d: no shared serve/worker boot helper, so the Metal Dogs test copied the skip lists. Fixed (PR-1575). The test calls the helpers.
+- Ticket 00e note that the test was not switched to `bootServePlugins`. Fixed in this ticket.
+
+## Ticket 04 — cart path on pending_line
+
+- Date: 2026-11-19
+- Pin: unchanged `abc82f51…`
+
+`cart.add_item.before` is no longer registered. `cart.validate` reads the design id of the line being added from hook key `pending_line` (`*extapi.PendingCartLine`). Core already redacts plugin-only fields per registrant before the handler runs. Stored line extensions are used when `pending_line` is absent (checkout and later reads).
+
+`Place` and `cart.validate` call `extapi.ClassifyProductSlug` against `mdogs-tee`. Match runs the design checks. A different loaded slug is skipped. Unknown (parent outside read scope, including a draft product, or a blank loaded slug) is blocking issue `metaldogs.product_unavailable` ("product is not available") on the same lines as the design checks: a new or changed line, and every such line when the cart snapshot is unchanged. A mutation of a different line does not raise it for an unchanged line, including a non-tee product that later goes draft. `Place` returns `422` `unprocessable` with that message and does not call `EnsureStorefrontCart`.
+
+A failed `AddItem` calls `DiscardEmptyGuestCart` with the id from `EnsureStorefrontCart` only when that snapshot had no lines and no customer id. Invalid design and an unreadable variant never reach Ensure.
+
+### MIG1 reviewer minors closed
+
+From `logs/MIG1/review-iter2.json` (approve, minors only):
+
+| Minor | Closed |
+| --- | --- |
+| Goroutine-id map: `currentGID` parses `runtime.Stack`; gid 0 shares one slot | Yes. Map, `runtime.Stack`, `bindPending` / `rememberPending` / `releasePending` removed. Design id comes from `pending_line`. `TestPlace_ParallelSameVariantSeesOwnPendingDesign` runs two `Place` calls on one variant with different design ids and checks each `cart.validate` loads its own id |
+| `FindVariants` on `context.Background()`: empty `ProductSlug` skipped the tee (fail-open) | Yes. Unknown is a blocking issue, including a draft / out-of-scope parent (`TestCartValidation_DraftTeeBlocks`, `TestOnCartValidate_DraftTeeBlocks`) |
+| Dead `setPendingDesign` alias of `rememberPending` | Yes. Alias and `rememberPending` removed |
+
+Not this ticket: the owner-token test still imports `internal/domain/customer` and `internal/domain/identity`. CR-20 kept that test next to the plugin. The production cart path does not import those packages.
+
+## Ticket 05 — pin `fd4dd577`, deviations, close-out
+
+- Date: 2026-11-19
+- Pin: `fd4dd577…` (`upstream/main`, PR #629)
+- Previous pin on this branch: `abc82f51…`
+
+### Conflict resolution
+
+| File | Kept |
+| --- | --- |
+| `docs/phase-17-product-packaging/ROADMAP.md`, `prs/PR-1581.md` | Deleted (modify/delete and the new PR note). Stub indexes stay |
+| `internal/application/cart/service_test.go`, `service_extensions_test.go` | Upstream (PR-1581). No Metal Dogs edit |
+| `scripts/ci/unit.sh`, `scripts/ci/README.md`, `scripts/product-init/seed/scripts-ci/unit.sh` | Upstream. `unit.sh` runs `go test -race ./internal/application/cart/` |
+
+No other conflicts. `internal/infrastructure/localfs/storage.go` was already identical to `abc82f51` and stays identical to this pin (PR-1580). It is not on the allowlist.
+
+### Tests moved off upstream files
+
+`internal/interfaces/http/admin/search_admin_test.go`: at ticket 00f the file differed from pin `58aa6987` only by the fake `Requeue` signature (`jobs.RequeueOption` vs `domainjobs.RequeueOption`; the import was already `domainjobs`). Ticket 03 commit `688b1392` made that edit (`git diff 58aa6987 d0229bb3` is that hunk). Upstream `32c937c6` (inside `abc82f51`) made the same edit. At the 00g merge `1a12c205` both sides matched, so `git diff abc82f51` was empty and the merge did not edit the file. At pin `fd4dd577`, `git diff fd4dd577 HEAD` for this file is empty.
+
+`TestCollectMigrations_MetalDogs_NoInit` moved from `cmd/api/migrate_plugins_test.go` to `cmd/api/register_plugins_metaldogs_test.go` (same package `main`; it uses only exported plugin APIs). `migrate_plugins_test.go` matches pin `fd4dd577` and is not on the allowlist. The b2b collect message is the pin text again.
+
+`internal/interfaces/http/storefront/auth_middleware_test.go` had `TestAuthMiddleware_CustomizerOpaqueBearerIsGuest`. The helpers it uses (`AuthMiddleware`, `auth.TokenParser`, `identity.Identity`) are exported, so the test moved to `cmd/api/register_plugins_metaldogs_test.go` with its own parser stub. The upstream file matches the pin.
+
+### Catalog seed binder
+
+`TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` uses `defaultPluginCLIDeps()` and overrides only `OpenDB` (isolated DSN). Production `Bind` is `bindPluginCLIPorts` (`newPluginBootstrap` → `bindPluginCLIPortsFromBoot` → `bindProductPorts` → `CapabilityDeclaredBy` → `bindCatalogSeedPort` → `assertPluginCLINeedsMet`). The test checks the product and variant rows. It does not copy that bind sequence and does not use `bindTestCatalogSeed`.
+
+`bindTestCatalogSeed` stays in `plugins/metaldogs/catalog_seed_test.go`. `cart_harness_test.go` and the catalog seed cases are `package metaldogs_test` and call it. `newPluginBootstrap` and `bindCatalogSeedPort` are unexported in `package main`, so this helper cannot call them. It still builds `pluginsdk.NewCatalogSeedPort` from the same repos the production binder uses, and wraps that port to count `Import`. Moving the file into `cmd/api` broke those helpers (`catalogPLNHost`, `runCatalogSeed`, `listCatalogProducts`). The production path is the `cmd/api` test above.
+
+### C4 assertions vs `3593795d`
+
+`git diff 3593795d HEAD` for the five files:
+
+| File | Result |
+| --- | --- |
+| `plugins/metaldogs/application/generate_test.go` | `delete_after` check tightened to `clock.Now().Add(SourceAttachedRetention)` |
+| `plugins/metaldogs/sync_prepare_production_test.go` | No diff |
+| `plugins/metaldogs/adapters/postgres/generation_job_repo_test.go` | No diff |
+| `plugins/metaldogs/sync_generate_test.go` | `conflictAdmin.Requeue` (the old `RequeueLease` stub) removed. `queueWithAdmin.Requeue` is `jobs.Queue.Requeue`. Existing checks stay: live claim is a no-op, stale processing re-pends, `hookCalls == 1`. Added: one terminal retry on `ErrRequeueWrongAttempt`, stop after a second mismatch, `reclaiming` errors and does not requeue |
+| `plugins/metaldogs/job_fence_test.go` | Stub removal. The old test asserted `SetOnRequeued` and `RequireOnRequeued(MetalDogsGenerateJobType)` on a queue double, and rejected a queue that did not implement that double. The fence is `Host.OnRequeued` (`InstallGenerateJobFence`); it does not wrap the queue. The no-DB replacement asserts the hook runs (requeue with no database returns `database required`) and a nil host is rejected. `RequireOnRequeued` limited the fence to `MetalDogsGenerateJobType`. That type check is now “row exists in `metaldogs_generation_jobs`”. A requeue with the fence installed, a database, and no reclaim transaction returns nil when the id is not that row (`!owned`) and when the id is not a UUID. That assertion is `TestGenerateFence_MissingTxBlocksOnlyGenerationRow` in `plugins/metaldogs/job_fence_notx_test.go` (DSN). The same test still fails a real generation row with `requeue transaction missing`. No customer-visible assertion from the other three files was dropped |
+
+### Allowlist
+
+The checker walks the whole tree except `plugins/metaldogs/**`, `docs/**`, `*.md`, `.github/workflows/**`, and `.scratch/**`. Every other path that `git diff <pin> HEAD` still lists is in the script and in `docs/architecture/overview.md`. `localfs/storage.go` is absent from both.
+
+### Seed
+
+Recorded under ticket 02 and the `7c982b00` range note: ticket 02 was deferred while `EnsurePrice` was create-only because the M3 step updates a placeholder price. PR-1567 made the update possible. The command uses `CatalogPriceSeed.Update`. Attributes stay create-only; a missing `parent_sku` on an existing product is not backfilled.
+
+### Known red
+
+`go test ./plugins/ -run ImportBoundary -count=1` fails on this pin (2026-11-19, this tree). Ticket 03 expected it to go green once `job_fence.go` stopped importing `internal/*`. The output has no `job_fence.go` or `generate_fence_queue.go` line, and the test is still red: 30 violations, all class `imports disallowed … (not on allowlist)`, 0 class `imports forbidden`. The allowlist is pkg-only (PR-1552). `sync_generate.go`, `plugin.go`, `cart_validate.go`, and `settings.go` are among the files; they import `internal/platform/plugin`, `internal/domain/jobs`, and `internal/platform/config`.
+
+Follow-up: move those imports onto `pkg/*`, or treat the missing surface as a Shopanda gap where the SDK still has no replacement for the types the plugin uses.
+

@@ -65,7 +65,5 @@ func registerPlugins(registry *plugin.Registry, cfg *config.Config) {
 	if cfg.Plugins.ExtRef.Enabled {
 		registry.Register(pluginsdk.Adapt(extref.New()))
 	}
-	if cfg.Plugins.MetalDogs.Enabled {
-		registerMetalDogs(registry)
-	}
+	registerProductPlugins(registry, cfg)
 }

@@ -10,12 +10,12 @@ No calendar dates are given. Ordering is expressed through dependencies and mile
 
 ## 1. Ground truth this plan is built on
 
-Inspected against Shopanda source at pin [`a411c970bbc869d54d44852bc30f7427be9b2745`](UPSTREAM_PIN.md) (`upstream/main` tree; public extension SDK PR-1540–1555 on top of the `f58a4157` pin). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
+Inspected against Shopanda source at pin [`fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75`](UPSTREAM_PIN.md) (`upstream/main`; PR-1581 on top of `abc82f51`). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
 
 | Capability | Status | Consequence for Metal Dogs |
 | --- | --- | --- |
 | Go + PostgreSQL single binary; runtime modes `serve`, `worker`, `scheduler`, `dev` | Inspected at pin; `go build` exercised | No separate service; generation worker is a Shopanda worker process |
-| Extensions are in-module, **compile-time** plugins registered in `cmd/api/register_plugins.go` | Inspected at pin | Metal Dogs backend is an external plugin `plugins/metaldogs` in a Shopanda fork tracked against upstream ([ADR-0001](adr/0001-metal-dogs-as-shopanda-external-plugin.md)) |
+| Extensions are in-module, **compile-time** plugins registered in `cmd/api/register_products.go` | Inspected at pin | Metal Dogs backend is an external plugin `plugins/metaldogs` in a Shopanda fork tracked against upstream ([ADR-0001](adr/0001-metal-dogs-as-shopanda-external-plugin.md)) |
 | Plugins may own tables (scoped, via `Bootstrap.DB`), register public HTTP routes, events (`Bus.On`/`OnAsync`), cart hooks, checkout steps, extension fields, permissions, admin config, CLI commands | Inspected at pin | Customizer API, snapshot creation, and admin tooling are all plugin-level; no core forks |
 | Import boundary: plugins must not import `internal/infrastructure` or `internal/interfaces` (test-enforced) | Contract-tested (`ImportBoundary`) | Our hexagonal layout sits inside the plugin; Shopanda ports are consumed through `plugin.Bootstrap` |
 | PostgreSQL job queue with admin API and `jobs:*` CLI; cron scheduler | Inspected at pin | Generation, artwork preparation, retention sweeps run as queue jobs ([ADR-0003](adr/0003-async-generation-pg-job-queue-polling.md)) |
@@ -236,12 +236,12 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`a411c970…` on the `upstream/main` tree; #568/#570/#571 still absorbed, #573 public price and stock, #575–#580 plugin-only writes, public extension SDK PR-1540–1555, F3 residuals still listed in overview deviations).
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`fd4dd577…` on `upstream/main`; PR-1581 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00d: `metaldogs:catalog-seed` is bound by upstream `runPluginCLICommand` (`register_products.go` only registers the plugin). Ticket 00e: pin includes `WithRequeueTerminal`, `Host.PlatformConfig`, and `cmd/api/plugin_boot.go`. Ticket 03b calls `Queue.Requeue` with `WithRequeueTerminal`, `pluginsdk.RequireQueueDriver`, and `bootServePlugins` / `bootWorkerPlugins`. Ticket 00f: non-UUID job ids are not-found on the pin; `job_queue.go` is not a Metal Dogs edit. Ticket 00g: `ReadableStorage.Read` takes a context; `localfs/storage.go` matches the pin. Ticket 05: cart extension tests are race-free (`go test -race ./internal/application/cart/` in `scripts/ci/unit.sh`).
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
 - **Goal:** `plugins/metaldogs` registers as an external plugin, enabled by `plugins.metaldogs.enabled` (default `false`), exposes `GET /api/customizer/enabled` only when enabled (not a process probe).
-- **Scope:** `Plugin` implementation; config struct; registration line in `cmd/api/register_plugins.go`; internal layout `domain/`, `application/`, `ports/`, `adapters/`, `httpapi/`; **verification tasks** for custom job types and plugin migrations with the result written into ADR-0003.
+- **Scope:** `Plugin` implementation; config struct; registration line in `cmd/api/register_products.go` (F1 landed it in `register_plugins.go`); internal layout `domain/`, `application/`, `ports/`, `adapters/`, `httpapi/`; **verification tasks** for custom job types and plugin migrations with the result written into ADR-0003.
 - **Tests:** Import-boundary; `registerPlugins` enabled/disabled (route + CollectMigrations); Cache-Control `no-store` for `/api/customizer/*` via shared prefix list.
 - **Safe delivery:** Flag default off; `/api/customizer` on no-cache prefix list.
 - **Docs:** `architecture/overview.md` module layout confirmed; ADR-0003 verification notes.
@@ -263,7 +263,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
 - **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
-- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/a411c970bbc869d54d44852bc30f7427be9b2745/docs/guides/SYNC_JOB_OBSERVABILITY.md).
+- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75/docs/guides/SYNC_JOB_OBSERVABILITY.md).
 
 #### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; pin absorb 2026-11-08)
 
@@ -430,14 +430,14 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 - **Goal:** One Shopanda product "Metal Dogs custom tee" with size variants and SKUs, pricing, tax class, and stock policy (ADR-0009). Delivered as a seed/CSV import and documented, not hand-edited in admin.
 - **Tests:** Import script idempotent; feature test reads variants through Shopanda API.
 - **Safe delivery:** Product unpublished/hidden in Shopanda until M3. Draft status and zero stock are independent protections; launch clears both.
-- **Docs:** [ADR-0009](adr/0009-pod-provider-and-catalog-modelling.md) catalog modelling Accepted (fulfilment stays Proposed until P0); plugin README catalog section; [CR-18](cr-rounds/CR-18-e1-catalog.md).
+- **Docs:** [ADR-0009](adr/0009-pod-provider-and-catalog-modelling.md) catalog modelling Accepted (fulfilment stays Proposed until P0); plugin README catalog section; [CR-18](cr-rounds/CR-18-e1-catalog.md). UPG4 ticket 02 runs the same command through `Host.CatalogSeed().Import` ([CR-21](cr-rounds/CR-21-upg4-pin-7c982b00.md)).
 
 #### E2 · Cart line design attach — size M — **DONE** (CR-19, 2026-11-16)
 
 - **Goal:** `POST /api/customizer/designs/{id}/add-to-cart` puts an approved design the caller owns onto the session cart as one line for a custom-tee size. The line carries `metaldogs.design_id` (public read, plugin-only write, snapshot storage). The route does not accept or return a cart id. The same design on the same variant again changes nothing. A different design on that variant, or a custom-tee line that already exists with no design id, is `409`. `cart.validate` blocks a custom-tee line whose design is missing, unknown, expired, or no longer approved. It does not check ownership. A design that does not match the custom tee is reserved (`metaldogs.design_mismatch`) and is not emitted until X2.
 - **Tests:** Feature tests call the route and the public cart API on an isolated database ([CR-19](cr-rounds/CR-19-e2-cart-design-attach.md)).
-- **Safe delivery:** The plugin master switch. The field, the route, and the hook exist only when the plugin is enabled. The hook does nothing for products that are not the custom tee. A custom-tee line with no `design_id` blocks that line. "Inert without design id" applies to non-tee products only.
-- **Docs:** [`architecture/api.md`](architecture/api.md); [`architecture/flows/design-to-order.md`](architecture/flows/design-to-order.md); [CR-19](cr-rounds/CR-19-e2-cart-design-attach.md). Cart and catalog reads go through `pkg/pluginsdk` ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)).
+- **Safe delivery:** The plugin master switch. The field, the route, and the hook exist only when the plugin is enabled. The hook skips a loaded product with a different slug. A parent outside the catalog read scope is a blocking issue, not a skip. A custom-tee line with no `design_id` blocks that line. "Inert without design id" applies to other loaded products only.
+- **Docs:** [`architecture/api.md`](architecture/api.md); [`architecture/flows/design-to-order.md`](architecture/flows/design-to-order.md); [CR-19](cr-rounds/CR-19-e2-cart-design-attach.md). Cart and catalog reads go through `pkg/pluginsdk` ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `pending_line`, `ClassifyProductSlug`, and `DiscardEmptyGuestCart` ([CR-21](cr-rounds/CR-21-upg4-pin-7c982b00.md) ticket 04).
 
 #### E3 · Checkout validation — size S
 

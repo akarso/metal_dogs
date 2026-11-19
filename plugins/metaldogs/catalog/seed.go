@@ -1,9 +1,7 @@
 package catalog
 
 import (
-	"bytes"
 	"context"
-	"database/sql"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -12,22 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/akarso/shopanda/internal/application/importer"
 	domcat "github.com/akarso/shopanda/internal/domain/catalog"
-	"github.com/akarso/shopanda/internal/domain/inventory"
-	"github.com/akarso/shopanda/internal/domain/pricing"
 	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
-
-// Repos are the core catalog ports Seed writes through. DB begins importer transactions.
-type Repos struct {
-	Products domcat.ProductRepository
-	Variants domcat.VariantRepository
-	Prices   pricing.PriceRepository
-	History  pricing.PriceHistoryRepository
-	Stock    inventory.StockRepository
-	DB       *sql.DB
-}
 
 const (
 	productsFile = "products.csv"
@@ -37,310 +23,64 @@ const (
 	parentSKUAttribute = "parent_sku"
 )
 
-// Seed loads products, prices and stock from dir through the core importers.
-// Existing SKUs are skipped and status of an existing product is never changed.
-func Seed(ctx context.Context, repos Repos, dir string) error {
-	if err := repos.ready(); err != nil {
+// Seed loads the catalog CSVs and applies them with one CatalogSeedPort.Import.
+// Files are validated before that call. Product Status is left empty: create
+// becomes draft, and an existing active product is not a status mismatch.
+func Seed(ctx context.Context, seed pluginsdk.CatalogSeedPort, dir string) error {
+	if seed == nil {
+		return fmt.Errorf("metaldogs:catalog-seed: catalog seed port is not configured")
+	}
+	batch, err := loadBatch(dir)
+	if err != nil {
 		return err
 	}
+	if _, err := seed.Import(ctx, batch); err != nil {
+		return fmt.Errorf("metaldogs:catalog-seed: %w", err)
+	}
+	return nil
+}
+
+func loadBatch(dir string) (pluginsdk.CatalogSeedBatch, error) {
 	products, prices, stocks, err := loadDir(dir)
 	if err != nil {
-		return err
+		return pluginsdk.CatalogSeedBatch{}, err
 	}
-
-	productRepo := repos.Products
-	variantRepo := repos.Variants
-	priceRepo := repos.Prices
-	historyRepo := repos.History
-	stockRepo := repos.Stock
-	db := repos.DB
-
-	skus := make([]string, len(products))
-	for i, row := range products {
-		skus[i] = row.sku
-	}
-	existing, err := variantRepo.FindBySKUs(ctx, skus)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: find sku: %w", err)
-	}
-	if existing == nil {
-		existing = map[string]*domcat.Variant{}
-	}
-
-	bySlug := map[string][]productRow{}
-	var slugOrder []string
+	var batch pluginsdk.CatalogSeedBatch
+	seenSlug := map[string]struct{}{}
 	for _, row := range products {
-		if _, ok := bySlug[row.slug]; !ok {
-			slugOrder = append(slugOrder, row.slug)
+		if _, ok := seenSlug[row.slug]; !ok {
+			seenSlug[row.slug] = struct{}{}
+			batch.Products = append(batch.Products, pluginsdk.CatalogProductSeed{
+				Name: row.name,
+				Slug: row.slug,
+				Type: row.productType,
+				Attributes: map[string]any{
+					parentSKUAttribute: row.parentSKU,
+				},
+			})
 		}
-		bySlug[row.slug] = append(bySlug[row.slug], row)
+		batch.Variants = append(batch.Variants, pluginsdk.CatalogVariantSeed{
+			ProductSlug: row.slug,
+			SKU:         row.sku,
+			Name:        row.variantName,
+			Attributes:  map[string]any{"size": row.size},
+		})
 	}
-
-	opCtx := domcat.WithOperatorProductReadScope(ctx)
-	for _, slug := range slugOrder {
-		rows := bySlug[slug]
-		var fresh []productRow
-		for _, row := range rows {
-			if existing[row.sku] == nil {
-				fresh = append(fresh, row)
-			}
-		}
-		if len(fresh) == 0 {
-			if err := ensureParentSKU(opCtx, productRepo, slug, rows[0].parentSKU); err != nil {
-				return err
-			}
-			continue
-		}
-		stored, err := productRepo.FindBySlug(opCtx, slug)
-		if err != nil {
-			return fmt.Errorf("metaldogs:catalog-seed: find product %q: %w", slug, err)
-		}
-		if stored != nil {
-			if err := ensureParentSKU(opCtx, productRepo, slug, rows[0].parentSKU); err != nil {
-				return err
-			}
-		}
-		body, err := productCSV(fresh, stored == nil)
-		if err != nil {
-			return err
-		}
-		productWriter, err := productsWithParentSKU(productRepo, map[string]string{slug: rows[0].parentSKU})
-		if err != nil {
-			return err
-		}
-		result, err := importer.NewProductImporter(productWriter, variantRepo, db).Import(ctx, bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("metaldogs:catalog-seed: products: %w", err)
-		}
-		if err := resultErrors("products", result.Errors); err != nil {
-			return err
-		}
-		if stored == nil {
-			if err := ensureParentSKU(opCtx, productRepo, slug, rows[0].parentSKU); err != nil {
-				return err
-			}
-		}
+	for _, row := range prices {
+		batch.Prices = append(batch.Prices, pluginsdk.CatalogPriceSeed{
+			VariantSKU: row.sku,
+			Amount:     row.minor,
+			Currency:   row.currency,
+			Update:     true,
+		})
 	}
-
-	known, err := variantRepo.FindBySKUs(ctx, skus)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: find sku: %w", err)
+	for _, row := range stocks {
+		batch.Stock = append(batch.Stock, pluginsdk.CatalogStockSeed{
+			VariantSKU: row.sku,
+			Qty:        row.qty,
+		})
 	}
-	priceBody, err := priceCSV(ctx, priceRepo, known, prices)
-	if err != nil {
-		return err
-	}
-	if priceBody != nil {
-		result, err := importer.NewPriceImporter(variantRepo, priceRepo, historyRepo, db, nil).
-			WithProducts(productRepo).
-			Import(ctx, bytes.NewReader(priceBody))
-		if err != nil {
-			return fmt.Errorf("metaldogs:catalog-seed: prices: %w", err)
-		}
-		if err := resultErrors("prices", result.Errors); err != nil {
-			return err
-		}
-	}
-
-	stockBody, err := stockCSV(ctx, stockRepo, known, stocks)
-	if err != nil {
-		return err
-	}
-	if stockBody != nil {
-		result, err := importer.NewStockImporter(variantRepo, stockRepo).
-			WithProducts(productRepo).
-			WithTxStarter(db).
-			Import(ctx, bytes.NewReader(stockBody))
-		if err != nil {
-			return fmt.Errorf("metaldogs:catalog-seed: stock: %w", err)
-		}
-		if err := resultErrors("stock", result.Errors); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r Repos) ready() error {
-	if r.DB == nil {
-		return fmt.Errorf("metaldogs:catalog-seed: database required")
-	}
-	if r.Products == nil || r.Variants == nil || r.Prices == nil || r.History == nil || r.Stock == nil {
-		return fmt.Errorf("metaldogs:catalog-seed: catalog repositories required")
-	}
-	return nil
-}
-
-func resultErrors(kind string, errs []string) error {
-	if len(errs) == 0 {
-		return nil
-	}
-	return fmt.Errorf("metaldogs:catalog-seed: %s: %s", kind, strings.Join(errs, "; "))
-}
-
-type productTxBinder interface {
-	domcat.ProductRepository
-	WithTx(tx *sql.Tx) domcat.ProductRepository
-}
-
-// parentSKUProducts puts parent_sku on the product insert. The core importer commits that transaction itself.
-type parentSKUProducts struct {
-	domcat.ProductRepository
-	bind   func(*sql.Tx) domcat.ProductRepository
-	bySlug map[string]string
-}
-
-func productsWithParentSKU(inner domcat.ProductRepository, bySlug map[string]string) (domcat.ProductRepository, error) {
-	binder, ok := inner.(productTxBinder)
-	if !ok {
-		return nil, fmt.Errorf("metaldogs:catalog-seed: product repository does not support WithTx")
-	}
-	return parentSKUProducts{ProductRepository: inner, bind: binder.WithTx, bySlug: bySlug}, nil
-}
-
-func (p parentSKUProducts) WithTx(tx *sql.Tx) domcat.ProductRepository {
-	return parentSKUProducts{ProductRepository: p.bind(tx), bind: p.bind, bySlug: p.bySlug}
-}
-
-func (p parentSKUProducts) Create(ctx context.Context, product *domcat.Product) error {
-	if product != nil {
-		if sku, ok := p.bySlug[product.Slug]; ok {
-			if product.Attributes == nil {
-				product.Attributes = map[string]interface{}{}
-			}
-			product.Attributes[parentSKUAttribute] = sku
-		}
-	}
-	return p.ProductRepository.Create(ctx, product)
-}
-
-func ensureParentSKU(ctx context.Context, products domcat.ProductRepository, slug, parentSKU string) error {
-	product, err := products.FindBySlug(ctx, slug)
-	if err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: find product %q: %w", slug, err)
-	}
-	if product == nil {
-		return fmt.Errorf("metaldogs:catalog-seed: product %q not found", slug)
-	}
-	if product.Attributes == nil {
-		product.Attributes = map[string]interface{}{}
-	}
-	raw, exists := product.Attributes[parentSKUAttribute]
-	if exists && raw != nil {
-		got, ok := raw.(string)
-		if ok && got == parentSKU {
-			return nil
-		}
-		shown := got
-		if !ok {
-			shown = fmt.Sprint(raw)
-		}
-		return fmt.Errorf("metaldogs:catalog-seed: product %q parent_sku is %q, catalog file has %q", slug, shown, parentSKU)
-	}
-	product.Attributes[parentSKUAttribute] = parentSKU
-	if err := products.Update(ctx, product); err != nil {
-		return fmt.Errorf("metaldogs:catalog-seed: parent sku: %w", err)
-	}
-	return nil
-}
-
-func productCSV(rows []productRow, includeStatus bool) ([]byte, error) {
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	header := []string{"name", "slug", "sku", "type", "variant_name", "size"}
-	if includeStatus {
-		header = []string{"name", "slug", "sku", "type", "status", "variant_name", "size"}
-	}
-	if err := w.Write(header); err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		rec := []string{row.name, row.slug, row.sku, row.productType, row.variantName, row.size}
-		if includeStatus {
-			rec = []string{row.name, row.slug, row.sku, row.productType, row.status, row.variantName, row.size}
-		}
-		if err := w.Write(rec); err != nil {
-			return nil, err
-		}
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return nil, fmt.Errorf("metaldogs:catalog-seed: products csv: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-func priceCSV(ctx context.Context, prices pricing.PriceRepository, variants map[string]*domcat.Variant, rows []priceRow) ([]byte, error) {
-	var pending []priceRow
-	for _, row := range rows {
-		variant := variants[row.sku]
-		if variant == nil {
-			return nil, fmt.Errorf("metaldogs:catalog-seed: prices: unknown sku %q", row.sku)
-		}
-		stored, err := prices.FindByVariantCurrencyAndStore(ctx, variant.ID, row.currency, "")
-		if err != nil {
-			return nil, fmt.Errorf("metaldogs:catalog-seed: prices: %w", err)
-		}
-		if stored != nil && stored.Amount.Amount() == row.minor && stored.Amount.Currency() == row.currency {
-			continue
-		}
-		pending = append(pending, row)
-	}
-	if len(pending) == 0 {
-		return nil, nil
-	}
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	if err := w.Write([]string{"sku", "currency", "amount"}); err != nil {
-		return nil, err
-	}
-	for _, row := range pending {
-		if err := w.Write([]string{row.sku, row.currency, strconv.FormatInt(row.minor, 10)}); err != nil {
-			return nil, err
-		}
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return nil, fmt.Errorf("metaldogs:catalog-seed: prices csv: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-func stockCSV(ctx context.Context, stocks inventory.StockRepository, variants map[string]*domcat.Variant, rows []stockRow) ([]byte, error) {
-	var pending []stockRow
-	for _, row := range rows {
-		variant := variants[row.sku]
-		if variant == nil {
-			return nil, fmt.Errorf("metaldogs:catalog-seed: stock: unknown sku %q", row.sku)
-		}
-		entry, err := stocks.GetStock(ctx, variant.ID)
-		if err != nil {
-			return nil, fmt.Errorf("metaldogs:catalog-seed: stock: %w", err)
-		}
-		// A missing stock row is also quantity 0; UpdatedAt stays zero only then.
-		if !entry.UpdatedAt.IsZero() && entry.Quantity == row.qty {
-			continue
-		}
-		pending = append(pending, row)
-	}
-	if len(pending) == 0 {
-		return nil, nil
-	}
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	if err := w.Write([]string{"sku", "quantity"}); err != nil {
-		return nil, err
-	}
-	for _, row := range pending {
-		if err := w.Write([]string{row.sku, strconv.Itoa(row.qty)}); err != nil {
-			return nil, err
-		}
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return nil, fmt.Errorf("metaldogs:catalog-seed: stock csv: %w", err)
-	}
-	return buf.Bytes(), nil
+	return batch, nil
 }
 
 type productRow struct {

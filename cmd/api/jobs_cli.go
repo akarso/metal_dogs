@@ -10,13 +10,14 @@ import (
 	"strings"
 
 	adminApp "github.com/akarso/shopanda/internal/application/admin"
+	extensionApp "github.com/akarso/shopanda/internal/application/extension"
 	jobsApp "github.com/akarso/shopanda/internal/application/jobs"
 	domainjobs "github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/logger"
-	"github.com/akarso/shopanda/plugins/metaldogs"
+	"github.com/akarso/shopanda/internal/platform/plugin"
 )
 
 // jobsListDefaultLimit/jobsListMaxLimit mirror jobsApp.Service's own
@@ -44,29 +45,19 @@ func validJobStatusesList() string {
 	return "pending, processing, done, failed, cancelled"
 }
 
-// newJobsService opens a standalone DB connection and constructs the same
-// jobsApp.Service the HTTP admin API (job_admin.go) calls — CLI and API
-// never diverge in retry/cancel/list decision logic.
-//
-// Postgres-queue-only, by construction: job introspection (jobs.Reader/
-// jobs.Admin) has no equivalent on a broker-backed queue (Redis/RabbitMQ/
-// Kafka/SQS) at all — see internal/domain/jobs/reader.go's own doc
-// comment — the same reason wireServeRuntime hard-fails serve's startup
-// if the configured queue driver doesn't implement those ports. This
-// function can't call the plugin-override-aware resolveJobQueue used
-// there (would require a full plugin bootstrap this command doesn't
-// otherwise need), so instead it checks cfg.Queue.Driver directly and
-// fails clearly when it isn't "postgres" — rather than silently
-// constructing a fresh Postgres job queue that has nothing to do with
-// whatever the real worker is actually configured to consume, which
-// would let jobs:list/show/retry/cancel appear to work while inspecting
-// or mutating a completely unrelated, unused jobs table.
-//
-// Returns the open conn too (not just a closer) so mutating commands can
-// build an audit-log repository off the same connection.
-func newJobsService(cfg *config.Config) (svc *jobsApp.Service, conn *sql.DB, err error) {
+// jobsCLIRuntime is the bound queue (OnQueueBound-wrapped) used by
+// retry/cancel/requeue so mutate paths share one fenced instance.
+type jobsCLIRuntime struct {
+	svc   *jobsApp.Service
+	conn  *sql.DB
+	queue domainjobs.Queue
+}
+
+// newJobsIntrospection opens postgres Reader/Admin only — no plugin init.
+// Used by list/show so read paths stay cheap.
+func newJobsIntrospection(cfg *config.Config) (svc *jobsApp.Service, conn *sql.DB, err error) {
 	if cfg.Queue.Driver != "postgres" {
-		return nil, nil, fmt.Errorf("jobs:* commands require queue.driver=postgres — job introspection/retry/cancel has no equivalent for %q (Postgres-queue-only; see internal/domain/jobs/reader.go)", cfg.Queue.Driver)
+		return nil, nil, fmt.Errorf("jobs:* commands require queue.driver=postgres — job introspection has no equivalent for %q (Postgres-queue-only; see internal/domain/jobs/reader.go)", cfg.Queue.Driver)
 	}
 	dsn := config.DatabaseDSN(cfg)
 	conn, err = db.Open(dsn)
@@ -78,12 +69,6 @@ func newJobsService(cfg *config.Config) (svc *jobsApp.Service, conn *sql.DB, err
 		conn.Close()
 		return nil, nil, fmt.Errorf("job queue: %w", err)
 	}
-	if cfg.Plugins.MetalDogs.Enabled {
-		if err := metaldogs.InstallGenerateJobFence(jobQueue); err != nil {
-			conn.Close()
-			return nil, nil, fmt.Errorf("metaldogs generate job fence: %w", err)
-		}
-	}
 	svc, err = jobsApp.NewService(jobQueue, jobQueue)
 	if err != nil {
 		conn.Close()
@@ -92,8 +77,80 @@ func newJobsService(cfg *config.Config) (svc *jobsApp.Service, conn *sql.DB, err
 	return svc, conn, nil
 }
 
+// newJobsRuntime boots plugins and resolveAndBindJobQueue so OnQueueBound
+// fences apply. retry/cancel/requeue must use this bound value — never a
+// second raw JobQueue when a plugin RegisterQueue'd a different backend.
+func newJobsRuntime(cfg *config.Config, log logger.Logger) (*jobsCLIRuntime, error) {
+	if cfg.Queue.Driver != "postgres" {
+		return nil, fmt.Errorf("jobs:* commands require queue.driver=postgres — job introspection/retry/cancel/requeue has no equivalent for %q (Postgres-queue-only; see internal/domain/jobs/reader.go)", cfg.Queue.Driver)
+	}
+	dsn := config.DatabaseDSN(cfg)
+	conn, err := db.Open(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("database: %w", err)
+	}
+	registry := plugin.NewRegistry(log)
+	registerPlugins(registry, cfg)
+	boot, err := newPluginBootstrap(conn)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	pluginApp := &plugin.App{
+		Logger:            log,
+		Config:            cfg,
+		Bootstrap:         boot,
+		PluginMigrateMode: plugin.PluginMigrateVerify,
+	}
+	pluginApp.SetExtensionRegistry(extensionApp.NewRegistry())
+	// Same pre-InitAll wiring as serve / worker / schedule:run — plugins that
+	// Require(CapIntegrationStock) (e.g. warehousedemo) fail Init on a nil syncer.
+	if _, err := wireIntegrationStockSyncerFromDB(conn, pluginApp); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if err := bindProductPorts(pluginApp, boot); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	preparePermissionRegistry(pluginApp)
+	summary := registry.InitAll(pluginApp)
+	if err := plugin.InitSummaryError(summary); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if summary.Failed > 0 {
+		conn.Close()
+		return nil, fmt.Errorf("plugin init failed: %d plugin(s) failed to initialize", summary.Failed)
+	}
+	if err := assertWorkerNeedsMet(pluginApp); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	freezePermissionRegistry(pluginApp)
+
+	bound, err := resolveAndBindJobQueue(pluginApp, conn, cfg)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	reader, okR := bound.(domainjobs.Reader)
+	admin, okA := bound.(domainjobs.Admin)
+	if !okR || !okA {
+		conn.Close()
+		return nil, fmt.Errorf("jobs:*: bound queue (%T) does not implement jobs.Reader/Admin — OnQueueBound wrappers must forward those ports (refusing a second JobQueue that would bypass the fence)", bound)
+	}
+	svc, err := jobsApp.NewService(reader, admin)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("jobs service: %w", err)
+	}
+	return &jobsCLIRuntime{svc: svc, conn: conn, queue: bound}, nil
+}
+
 // runJobsList handles `app jobs:list [--type=X] [--status=Y] [--limit=N] [--offset=N] [--json]`.
-func runJobsList(w io.Writer, cfg *config.Config, _ logger.Logger, args []string) error {
+func runJobsList(w io.Writer, cfg *config.Config, log logger.Logger, args []string) error {
 	filter := domainjobs.ListFilter{Limit: jobsListDefaultLimit}
 	jsonOut := false
 	for _, arg := range args {
@@ -128,11 +185,12 @@ func runJobsList(w io.Writer, cfg *config.Config, _ logger.Logger, args []string
 		filter.Limit = jobsListMaxLimit
 	}
 
-	svc, conn, err := newJobsService(cfg)
+	svc, conn, err := newJobsIntrospection(cfg)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	_ = log
 
 	jobList, err := svc.List(context.Background(), filter)
 	if err != nil {
@@ -191,19 +249,26 @@ func jobSummaryToJSON(j domainjobs.Summary) map[string]interface{} {
 }
 
 // runJobsShow handles `app jobs:show <id> [--json]`.
-func runJobsShow(w io.Writer, cfg *config.Config, _ logger.Logger, args []string) error {
+func runJobsShow(w io.Writer, cfg *config.Config, log logger.Logger, args []string) error {
 	id, jsonOut, err := parseSingleIDArgs("jobs:show", args)
 	if err != nil {
 		return err
 	}
 
-	svc, conn, err := newJobsService(cfg)
+	svc, conn, err := newJobsIntrospection(cfg)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	_ = log
 
-	job, err := svc.Get(context.Background(), id)
+	return runJobsShowGet(w, id, jsonOut, svc.Get)
+}
+
+// runJobsShowGet is the post-parse show path; tests inject a Get that returns
+// (nil, nil) for bad ids (same miss shape as postgres.JobQueue.Get).
+func runJobsShowGet(w io.Writer, id string, jsonOut bool, get func(context.Context, string) (*domainjobs.Detail, error)) error {
+	job, err := get(context.Background(), id)
 	if err != nil {
 		return fmt.Errorf("jobs:show: %w", err)
 	}
@@ -247,19 +312,89 @@ func runJobsRetry(w io.Writer, cfg *config.Config, log logger.Logger, args []str
 		return err
 	}
 
-	svc, conn, err := newJobsService(cfg)
+	rt, err := newJobsRuntime(cfg, log)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer rt.conn.Close()
 
 	ctx := context.Background()
-	retryErr := svc.Retry(ctx, id)
-	auditCLIAction(ctx, conn, log, adminApp.AuditJobRetry, "job", id, retryErr)
+	retryErr := rt.svc.Retry(ctx, id)
+	auditCLIAction(ctx, rt.conn, log, adminApp.AuditJobRetry, "job", id, retryErr)
 	if retryErr != nil {
 		return fmt.Errorf("jobs:retry: %w", retryErr)
 	}
 	return writeSuccessLinef(w, "Job %s queued for retry.\n", id)
+}
+
+// jobsRequeuePorts is the Get + Requeue surface after arg parse. Tests inject
+// a Reader-shaped Get that returns (nil, nil) for bad ids so the operator
+// miss line is covered without DSN / plugin boot.
+type jobsRequeuePorts struct {
+	Get     func(ctx context.Context, id string) (*domainjobs.Detail, error)
+	Requeue func(ctx context.Context, id string, attempt int, opts ...domainjobs.RequeueOption) error
+	Audit   func(ctx context.Context, details map[string]interface{}, cmdErr error)
+}
+
+// runJobsRequeue handles `app jobs:requeue <id> [--min-age=5m|--terminal [--force]]`.
+// Default: processing → pending. Production failed is exhausted — prefer
+// jobs:retry or --terminal --force; bare --terminal is rare. --force also
+// covers done/cancelled (no-op when not required). API remains ungated.
+func runJobsRequeue(w io.Writer, cfg *config.Config, log logger.Logger, args []string) error {
+	parsed, err := parseJobsRequeueArgs(args)
+	if err != nil {
+		return err
+	}
+	rt, err := newJobsRuntime(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer rt.conn.Close()
+	return runJobsRequeueWith(w, parsed, jobsRequeuePorts{
+		Get:     rt.svc.Get,
+		Requeue: rt.queue.Requeue,
+		Audit: func(ctx context.Context, details map[string]interface{}, cmdErr error) {
+			auditCLIActionDetails(ctx, rt.conn, log, adminApp.AuditJobRequeue, "job", parsed.ID, details, cmdErr)
+		},
+	})
+}
+
+func runJobsRequeueWith(w io.Writer, parsed jobsRequeueArgs, ports jobsRequeuePorts) error {
+	ctx := context.Background()
+	audit := ports.Audit
+	if audit == nil {
+		audit = func(context.Context, map[string]interface{}, error) {}
+	}
+	detail, err := ports.Get(ctx, parsed.ID)
+	if err != nil {
+		details := jobsRequeueAuditDetails("", 0, 0, parsed.Terminal, parsed.Force, parsed.MinAge, false)
+		audit(ctx, details, err)
+		return fmt.Errorf("jobs:requeue: %w", err)
+	}
+	if detail == nil {
+		// Unusable / missing id (Get returns nil for non-UUID on Postgres).
+		notFound := fmt.Errorf("jobs:requeue: no job with id %q", parsed.ID)
+		details := jobsRequeueAuditDetails("", 0, 0, parsed.Terminal, parsed.Force, parsed.MinAge, false)
+		audit(ctx, details, notFound)
+		return notFound
+	}
+	details := jobsRequeueAuditDetails(detail.Status, detail.Attempts, detail.MaxRetries, parsed.Terminal, parsed.Force, parsed.MinAge, true)
+	if pre := validateJobsRequeueStatus(detail.Status, detail.Attempts, detail.MaxRetries, parsed.Terminal, parsed.Force); pre != nil {
+		audit(ctx, details, pre)
+		return pre
+	}
+	var opts []domainjobs.RequeueOption
+	if parsed.Terminal {
+		opts = append(opts, domainjobs.WithRequeueTerminal())
+	} else {
+		opts = append(opts, domainjobs.WithRequeueMinAge(parsed.MinAge))
+	}
+	requeueErr := ports.Requeue(ctx, parsed.ID, detail.Attempts, opts...)
+	audit(ctx, details, requeueErr)
+	if requeueErr != nil {
+		return formatJobsRequeueError(requeueErr, parsed.MinAge)
+	}
+	return writeSuccessLinef(w, "%s", jobsRequeueSuccessMessage(parsed.ID, detail.Status, detail.Attempts, detail.MaxRetries, parsed.Terminal, parsed.MinAge))
 }
 
 // runJobsCancel handles `app jobs:cancel <id>`.
@@ -269,15 +404,15 @@ func runJobsCancel(w io.Writer, cfg *config.Config, log logger.Logger, args []st
 		return err
 	}
 
-	svc, conn, err := newJobsService(cfg)
+	rt, err := newJobsRuntime(cfg, log)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer rt.conn.Close()
 
 	ctx := context.Background()
-	cancelErr := svc.Cancel(ctx, id)
-	auditCLIAction(ctx, conn, log, adminApp.AuditJobCancel, "job", id, cancelErr)
+	cancelErr := rt.svc.Cancel(ctx, id)
+	auditCLIAction(ctx, rt.conn, log, adminApp.AuditJobCancel, "job", id, cancelErr)
 	if cancelErr != nil {
 		return fmt.Errorf("jobs:cancel: %w", cancelErr)
 	}

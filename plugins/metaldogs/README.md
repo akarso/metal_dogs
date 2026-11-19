@@ -14,7 +14,7 @@ plugins:
 
 or `SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`.
 
-Registration: `cmd/api/register_plugins.go` (compile-time). Enabling also registers the plugin `Migrator` (`plugin:metaldogs:*` versions) for `app migrate` / boot.
+Registration: `cmd/api/register_products.go` (`registerProductPlugins`, compile-time). Enabling also registers the plugin `Migrator` (`plugin:metaldogs:*` versions) for `app migrate` / boot.
 
 ## Layout
 
@@ -64,9 +64,9 @@ plugins/metaldogs/
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).
 
-Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Platform injects `request_id` on Enqueue; MD logs also emit `correlation_id` (same value). Platform contract: [shopanda#568](https://github.com/akarso/shopanda/pull/568) at pin `a8cbcb18`, plus Metal Dogs residuals `App.BoundQueue()` and sync-handler `request_id`→ctx reinjection (see [`docs/architecture/overview.md`](../../docs/architecture/overview.md) deviations).
+Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Platform injects `request_id` on Enqueue and again in the sync handler; MD logs also emit `correlation_id` (same value). `App.BoundQueue()` is the pin API (PR-1559). The generate claim fence is `Host.OnRequeued` in `Plugin.Init`. See [`docs/UPSTREAM_PIN.md`](../../docs/UPSTREAM_PIN.md).
 
-Generation config (C4/C7): `plugins.metaldogs.generation.provider` (fake only), `max_retries`, `max_attempts_per_design`, `cooldown_seconds` (default 30).
+Generation config (C4/C7) is `Config.Extra["metaldogs"]`, read with `Host.ConfigValue`. Env names are unchanged: `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` (Extra key `generation_provider`; dotted alias `generation.provider`; fake only), `..._MAX_RETRIES`, `..._MAX_ATTEMPTS_PER_DESIGN`, `..._COOLDOWN_SECONDS` (default 30; `0` disables). A nested YAML `generation:` map (`provider`, `max_retries`, `max_attempts_per_design`, `cooldown_seconds`) loads those same fields. A non-integer is an error.
 
 ## Private assets (F4 / C2 / ADR-0004)
 
@@ -147,15 +147,15 @@ Data files in [`catalog/`](catalog/):
 | `prices.csv` | One net price per SKU, currency `PLN`, no store. Placeholder `80,49`, marked placeholder in the `note` column. |
 | `stock.csv` | Quantity `0` for every SKU. |
 
-The loader checks all three files before it writes. A bad file exits non-zero and names the file, row and column. Existing variant SKUs are not inserted again. Status of a product that already exists is left as it is, including `active` after a later publish. A price or stock row is written when the stored value differs from the file; an equal value is skipped. A second run with unchanged files writes nothing.
+The loader checks all three files before it writes. A bad file exits non-zero and names the file, row and column. The command then calls `Host.CatalogSeed().Import` once, in one transaction. Existing variant SKUs are not inserted again. Product `Status` is not sent, so a product that already exists keeps its status, including `active` after a later publish. A price is sent with `Update`: a different amount is written and a price-history row is added; the same amount is a no-op. Stock is set to the file quantity on every successful run. A second run with unchanged files does not insert products, variants, or prices and does not change status. The stock quantity stays the same when it already matches; the stock row's `updated_at` moves because `SetStock` upserts.
 
-`parent_sku` is written in the same insert when the product is created. On a product that already exists, a missing `parent_sku` is written before any new variants, as its own update (not in the variant transaction). A stored value that differs from the CSV is an error and is left unchanged.
+`parent_sku` is stored on the product in that same insert. Attributes are create-only. A later run does not add a missing `parent_sku` and does not change a different stored value. Either case fails the run and rolls the batch back. The error includes the stored value and the requested value (`stored=<missing>` when the attribute is absent).
 
 Shopanda assigns the tax class from the product type. `configurable` maps to the standard class (`catalog.TaxClassCode`). This command writes no tax setting. The shop seed's standard rate for PL is 2300 basis points (23%).
 
 ### Price format
 
-The CSV holds a human decimal. The command converts it to minor units (PLN grosz) with no rounding, then the core price importer stores that integer.
+The CSV holds a human decimal. The command converts it to minor units (PLN grosz) with no rounding, then `CatalogSeedPort` stores that integer.
 
 Accepted:
 
@@ -185,12 +185,12 @@ Placeholder `8049` at rate `2300` → tax `1851` → gross `9900` (99,00 PLN).
 
 Draft status and zero stock are two independent protections. The storefront hides a `draft` product. Stock `0` makes `in_stock` false, so the tee stays unbuyable if it is published by mistake. Launch removes both.
 
-1. Replace the placeholder in `prices.csv` with the real net amount and run `metaldogs:catalog-seed`. Rows that already match the file are skipped; a different amount is updated.
-2. Set the launch quantity in `stock.csv` (real stock, or a high reservable quantity) and run the command again. The same skip-if-equal rule applies.
+1. Replace the placeholder in `prices.csv` with the real net amount and run `metaldogs:catalog-seed`. Rows that already match the file are skipped; a different amount is updated and a price-history row is written.
+2. Set the launch quantity in `stock.csv` (real stock, or a high reservable quantity) and run the command again. The stock row is set to that quantity.
 3. Set the Shopanda product `mdogs-tee` to status `active` in the admin catalog. Leave `products.csv` as `draft`. The loader rejects any other status, and it does not change the status of a product that already exists.
 
 ### Limits
 
-- Product, price and stock writes use separate transactions. A failure after the product write can leave a product without the matching price or stock. Validation of the files still happens before any write.
+- Product, variant, price, and stock writes share one `Import` transaction. A failure after validation rolls the batch back. Validation of the files still happens before any write.
 - CSV row numbers assume one record per line.
 - Leading zeros in a price are accepted (`080,49` → `8049`).

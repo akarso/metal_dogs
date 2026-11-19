@@ -2,6 +2,7 @@ package metaldogs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -30,12 +31,10 @@ func registerGenerate(app *plugin.App, worker *application.GenerateWorker, maxRe
 	return sdk.Integration(PluginName).RegisterManual(generateJobName, generateHandler(worker), opts...)
 }
 
-// enqueueGenerateIdempotent enqueues integration.sync.metaldogs.generate using the
-// product generation_job_id as the platform job primary key. On Conflict it loads
-// the existing row (Postgres Reader/Admin) and re-pends failed/done/cancelled or
-// processing older than the stage lease; pending / young processing are left alone.
-// Product claim fencing runs inside JobQueue.Requeue's transaction via OnRequeued
-// (not a second post-commit InvalidateClaim).
+// enqueueGenerateIdempotent enqueues integration.sync.metaldogs.generate using
+// generation_job_id as the platform job id. On conflict it re-pends through
+// Queue.Requeue (WithRequeueMinAge for a stale processing claim, WithRequeueTerminal
+// for failed, done, or cancelled); the product fence runs in Host.OnRequeued.
 func enqueueGenerateIdempotent(app *plugin.App, ctx context.Context, generationJobID, designID string) error {
 	if app == nil {
 		return fmt.Errorf("metaldogs generate enqueue: app required")
@@ -87,16 +86,73 @@ func enqueueGenerateIdempotent(app *plugin.App, ctx context.Context, generationJ
 }
 
 func resolveGenerateEnqueueConflict(queue jobs.Queue, ctx context.Context, generationJobID string) error {
-	admin, ok := queue.(jobs.Admin)
+	reader, ok := queue.(jobs.Reader)
 	if !ok {
 		return fmt.Errorf("metaldogs generate enqueue: job %s already exists but queue does not support Requeue (require queue.driver=postgres)", generationJobID)
 	}
-	_, err := admin.Requeue(ctx, generationJobID, domain.DefaultClaimLease)
+	detail, err := reader.Get(ctx, generationJobID)
 	if err != nil {
 		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
 	}
-	// Claim fencing is owned by JobQueue.OnRequeued inside the re-pend transaction.
-	return nil
+	if detail == nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", generationJobID)
+	}
+	err = queue.Requeue(ctx, generationJobID, detail.Attempts, jobs.WithRequeueMinAge(domain.DefaultClaimLease))
+	if err == nil || errors.Is(err, jobs.ErrRequeueTooFresh) {
+		return nil
+	}
+	if errors.Is(err, jobs.ErrRequeueNotProcessing) {
+		return requeueTerminalGenerateJob(queue, reader, ctx, generationJobID, detail.Attempts)
+	}
+	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+}
+
+// A wrong attempt is a raced completion: reload once and retry with the live count.
+func requeueTerminalGenerateJob(queue jobs.Queue, reader jobs.Reader, ctx context.Context, id string, attempt int) error {
+	err := requeueTerminalGenerateOnce(queue, reader, ctx, id, attempt)
+	if err == nil || !errors.Is(err, jobs.ErrRequeueWrongAttempt) {
+		return err
+	}
+	again, getErr := reader.Get(ctx, id)
+	if getErr != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", getErr)
+	}
+	if again == nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", id)
+	}
+	if again.Attempts == attempt {
+		return err
+	}
+	return requeueTerminalGenerateOnce(queue, reader, ctx, id, again.Attempts)
+}
+
+func requeueTerminalGenerateOnce(queue jobs.Queue, reader jobs.Reader, ctx context.Context, id string, attempt int) error {
+	err := queue.Requeue(ctx, id, attempt, jobs.WithRequeueTerminal())
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, jobs.ErrRequeueNotTerminal) {
+		return leaveNonTerminalGenerateJob(reader, ctx, id)
+	}
+	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+}
+
+// leaveNonTerminalGenerateJob accepts pending and processing. Any other
+// non-terminal status (for example reclaiming) is still an error.
+func leaveNonTerminalGenerateJob(reader jobs.Reader, ctx context.Context, id string) error {
+	again, err := reader.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+	}
+	if again == nil {
+		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", id)
+	}
+	switch again.Status {
+	case jobs.StatusPending, jobs.StatusProcessing:
+		return nil
+	default:
+		return fmt.Errorf("metaldogs generate enqueue: requeue terminal job %s is %s", id, again.Status)
+	}
 }
 
 func generateHandler(worker *application.GenerateWorker) extapi.SyncJobHandler {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func (f *fakeSigned) SignedURL(_ context.Context, path string, _ media.SignURLOp
 	}
 	return "https://signed.example/" + path, nil
 }
-func (f *fakeSigned) Read(path string) ([]byte, error) {
+func (f *fakeSigned) Read(_ context.Context, path string) ([]byte, error) {
 	b, ok := f.objects[path]
 	if !ok {
 		return nil, os.ErrNotExist
@@ -70,17 +71,27 @@ func (f *fakeSigned) Read(path string) ([]byte, error) {
 var _ media.SignedURLStorage = (*fakeSigned)(nil)
 var _ media.ReadableStorage = (*fakeSigned)(nil)
 
+func metalDogsPlugins(enabled bool, extra map[string]string) config.PluginsConfig {
+	if !enabled && len(extra) == 0 {
+		return config.PluginsConfig{}
+	}
+	kv := map[string]string{}
+	for k, v := range extra {
+		kv[k] = v
+	}
+	if enabled {
+		kv["enabled"] = "true"
+	}
+	return config.PluginsConfig{Extra: map[string]map[string]string{"metaldogs": kv}}
+}
+
 func testApp(t *testing.T, enabled bool) *plugin.App {
 	t.Helper()
 	log := logger.NewWithWriter(io.Discard, "error")
 	app := &plugin.App{
 		Logger: log,
 		Bus:    event.NewBus(log),
-		Config: &config.Config{
-			Plugins: config.PluginsConfig{
-				MetalDogs: config.MetalDogsPluginConfig{Enabled: enabled},
-			},
-		},
+		Config: &config.Config{Plugins: metalDogsPlugins(enabled, nil)},
 	}
 	if enabled {
 		app.RegisterMediaStorage(&fakeSigned{})
@@ -118,6 +129,16 @@ func TestPlugin_Migration_ImplementsMigrator(t *testing.T) {
 	}
 }
 
+func TestPlugin_Init_NonPostgresQueue(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	app.Config.Queue.Driver = "rabbitmq"
+	err := metaldogs.New().Init(app)
+	if err == nil || !strings.Contains(err.Error(), `queue.driver="rabbitmq"`) {
+		t.Fatalf("Init: %v", err)
+	}
+}
+
 func TestPlugin_Init_Disabled(t *testing.T) {
 	t.Parallel()
 	if err := metaldogs.New().Init(testApp(t, false)); err == nil {
@@ -143,15 +164,9 @@ func TestPlugin_Init_CooldownSecondsBounds(t *testing.T) {
 			Logger: log,
 			Bus:    event.NewBus(log),
 			Config: &config.Config{
-				Plugins: config.PluginsConfig{
-					MetalDogs: config.MetalDogsPluginConfig{
-						Enabled: true,
-						Generation: config.MetalDogsGenerationConfig{
-							Provider:        "fake",
-							CooldownSeconds: tc.secs,
-						},
-					},
-				},
+				Plugins: metalDogsPlugins(true, map[string]string{
+					"generation_cooldown_seconds": strconv.Itoa(tc.secs),
+				}),
 			},
 		}
 		if tc.wantErr != "" {
@@ -180,11 +195,7 @@ func TestPlugin_Init_WithoutMedia_EvalOnly_NoHTTP(t *testing.T) {
 	app := &plugin.App{
 		Logger: log,
 		Bus:    event.NewBus(log),
-		Config: &config.Config{
-			Plugins: config.PluginsConfig{
-				MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
-			},
-		},
+		Config: &config.Config{Plugins: metalDogsPlugins(true, nil)},
 	}
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
@@ -400,11 +411,7 @@ func TestPlugin_Init_Enabled_RegistersDesignIDField(t *testing.T) {
 		app := &plugin.App{
 			Logger: log,
 			Bus:    event.NewBus(log),
-			Config: &config.Config{
-				Plugins: config.PluginsConfig{
-					MetalDogs: config.MetalDogsPluginConfig{Enabled: true},
-				},
-			},
+			Config: &config.Config{Plugins: metalDogsPlugins(true, nil)},
 		}
 		if withMedia {
 			app.RegisterMediaStorage(&fakeSigned{})

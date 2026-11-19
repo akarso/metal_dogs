@@ -68,6 +68,8 @@ Enable the plugin (optional for local customizer work):
 ```bash
 set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # or YAML: plugins.metaldogs.enabled: true
+# SHOPANDA_PLUGINS_METALDOGS_ENABLED= (empty) disables the plugin even when that YAML is true.
+# Leave the variable unset to keep the YAML value.
 ./app dev
 # GET /api/customizer/enabled → 200 when enabled; 404 when disabled
 # GET /api/customizer/health → coarse ok|degraded (F3; 503 when degraded; no depths)
@@ -85,7 +87,7 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 #   (--out: no non-dot entries; outputs photo.ext.png + report.json)
 ```
 
-For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/a411c970bbc869d54d44852bc30f7427be9b2745/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
+For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
 
 ### Why stock `.env.example` alone fails
 

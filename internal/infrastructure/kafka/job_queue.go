@@ -245,40 +245,43 @@ func (q *JobQueue) Dequeue(ctx context.Context) (*jobs.Job, error) {
 	return &job, nil
 }
 
-func (q *JobQueue) inflightEntry(id string) (inflightEntry, error) {
+// takeInflight removes and returns the inflight entry when attempt matches.
+// Missing/mismatched claims return ErrOutcomeNotApplied (not a hard error).
+func (q *JobQueue) takeInflight(id string, attempt int) (inflightEntry, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	entry, ok := q.inflight[id]
-	if !ok {
-		return inflightEntry{}, fmt.Errorf("job_queue: job %s not found or not processing", id)
+	if !ok || entry.job.Attempts != attempt {
+		return inflightEntry{}, fmt.Errorf("job_queue: %s attempt %d: %w", id, attempt, jobs.ErrOutcomeNotApplied)
 	}
+	delete(q.inflight, id)
 	return entry, nil
 }
 
-func (q *JobQueue) removeInflight(id string) {
+func (q *JobQueue) restoreInflight(id string, entry inflightEntry) {
 	q.mu.Lock()
-	delete(q.inflight, id)
-	q.mu.Unlock()
+	defer q.mu.Unlock()
+	if _, exists := q.inflight[id]; !exists {
+		q.inflight[id] = entry
+	}
 }
 
 // Complete marks a job as done.
-func (q *JobQueue) Complete(ctx context.Context, id string, attempts int) error {
-	_ = attempts
-	entry, err := q.inflightEntry(id)
+func (q *JobQueue) Complete(ctx context.Context, id string, attempt int) error {
+	entry, err := q.takeInflight(id, attempt)
 	if err != nil {
 		return err
 	}
 	if err := q.mainReader.CommitMessages(ctx, entry.msg); err != nil {
+		q.restoreInflight(id, entry)
 		return fmt.Errorf("job_queue: complete commit: %w", err)
 	}
-	q.removeInflight(id)
 	return nil
 }
 
 // Fail re-queues a job for retry or marks it as permanently failed.
-func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr error) error {
-	_ = attempts
-	entry, err := q.inflightEntry(id)
+func (q *JobQueue) Fail(ctx context.Context, id string, attempt int, jobErr error) error {
+	entry, err := q.takeInflight(id, attempt)
 	if err != nil {
 		return err
 	}
@@ -301,12 +304,19 @@ func (q *JobQueue) Fail(ctx context.Context, id string, attempts int, jobErr err
 		publishErr = q.publish(ctx, q.delayWriter, msg)
 	}
 	if publishErr != nil {
+		q.restoreInflight(id, entry)
 		return publishErr
 	}
 
 	if err := q.mainReader.CommitMessages(ctx, entry.msg); err != nil {
+		q.restoreInflight(id, entry)
 		return fmt.Errorf("job_queue: fail commit: %w", err)
 	}
-	q.removeInflight(id)
 	return nil
 }
+
+// Requeue is unsupported on this broker-backed queue (no queryable processing row).
+func (q *JobQueue) Requeue(context.Context, string, int, ...jobs.RequeueOption) error {
+	return jobs.ErrRequeueUnsupported
+}
+

@@ -13,6 +13,7 @@ type Capability string
 const (
 	CapCart                Capability = "cart"
 	CapCatalog             Capability = "catalog"
+	CapCatalogSeed         Capability = "catalog.seed"
 	CapOrders              Capability = "orders"
 	CapCustomers           Capability = "customers"
 	CapDB                  Capability = "db"
@@ -29,10 +30,11 @@ type NeedsDeclarer interface {
 type servicePorts struct {
 	mu sync.RWMutex
 
-	catalog   any
-	orders    any
-	cart      any
-	customers any
+	catalog     any
+	catalogSeed any
+	orders      any
+	cart        any
+	customers   any
 
 	required    map[Capability]struct{}
 	satisfied   map[Capability]struct{}
@@ -145,6 +147,27 @@ func (a *App) BindCatalogPort(port any) error {
 	return nil
 }
 
+// BindCatalogSeedPort wires the Host-visible catalog seed/write port
+// (pkg/pluginsdk.CatalogSeedPort). Satisfies CapCatalogSeed only — does not
+// widen CapCatalog. Call from CLI seed composition roots only (not serve/worker).
+func (a *App) BindCatalogSeedPort(port any) error {
+	if a == nil {
+		return fmt.Errorf("plugin: BindCatalogSeedPort: app is nil")
+	}
+	if port == nil {
+		return fmt.Errorf("plugin: BindCatalogSeedPort: port must not be nil")
+	}
+	st := a.portsState()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.catalogSeed != nil {
+		return fmt.Errorf("plugin: BindCatalogSeedPort: already bound")
+	}
+	st.catalogSeed = port
+	st.satisfied[CapCatalogSeed] = struct{}{}
+	return nil
+}
+
 // BindOrdersPort wires the Host-visible order read port.
 func (a *App) BindOrdersPort(port any) error {
 	if a == nil {
@@ -230,6 +253,20 @@ func (a *App) CatalogPort() (any, bool) {
 	return st.catalog, true
 }
 
+// CatalogSeedPort returns the bound catalog seed port, if any.
+func (a *App) CatalogSeedPort() (any, bool) {
+	if a == nil {
+		return nil, false
+	}
+	st := a.portsState()
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	if st.catalogSeed == nil {
+		return nil, false
+	}
+	return st.catalogSeed, true
+}
+
 // OrdersPort returns the bound order port, if any.
 func (a *App) OrdersPort() (any, bool) {
 	if a == nil {
@@ -269,8 +306,10 @@ func (a *App) AssertNeedsMet() error {
 // binding CartPort — serve is the only process that constructs cart.Service
 // and calls BindCartPort — so they must skip CapCart here instead of
 // refusing to boot whenever any registered plugin declares Needs(CapCart)
-// (e.g. plugins/extref). Serve itself keeps calling the strict AssertNeedsMet
-// after BindCartPort.
+// (e.g. plugins/extref). CapCatalogSeed is CLI-seed-only (not bound on
+// serve/worker); those processes skip CapCatalogSeed the same way. Serve
+// calls AssertNeedsMetExcept(CapCatalogSeed) after BindCartPort; a CLI seed
+// root that calls BindCatalogSeedPort keeps CapCatalogSeed off the skip list.
 func (a *App) AssertNeedsMetExcept(skip ...Capability) error {
 	return a.assertNeedsMet(skip)
 }
@@ -305,6 +344,21 @@ func (a *App) assertNeedsMet(skip []Capability) error {
 		return fmt.Errorf("plugin: required capability %q not bound", cap)
 	}
 	return nil
+}
+
+// CapabilityNeeded reports whether any plugin recorded cap as a Need
+// (NeedsDeclarer or Host.Require). Diagnostic / composition-root helper —
+// e.g. plugin CLI fails closed when RequiresDB has an empty Plugin owner
+// while CapCatalogSeed is Needed somewhere.
+func (a *App) CapabilityNeeded(cap Capability) bool {
+	if a == nil || cap == "" {
+		return false
+	}
+	st := a.portsState()
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	_, ok := st.required[cap]
+	return ok
 }
 
 // CapabilityDeclaredBy reports whether pluginName has recorded cap as a Need

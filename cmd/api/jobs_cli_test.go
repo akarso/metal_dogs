@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -19,21 +22,111 @@ import (
 // the same jobsApp.Service — this file doesn't re-test that, only the
 // CLI-specific plumbing (arg parsing, output formatting).
 
-// TestNewJobsService_NonPostgresDriverFailsFast pins the fix for jobs:*
+// TestNewJobsIntrospection_NonPostgresDriverFailsFast pins the fix for jobs:*
 // commands silently querying an unrelated Postgres jobs table when a
 // broker queue driver (redis/rabbitmq/kafka/sqs) is actually configured:
-// newJobsService must fail clearly, before even opening a DB connection,
+// newJobsIntrospection must fail clearly, before even opening a DB connection,
 // rather than construct a Postgres queue nothing else is using.
-func TestNewJobsService_NonPostgresDriverFailsFast(t *testing.T) {
+func TestNewJobsIntrospection_NonPostgresDriverFailsFast(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Queue.Driver = "redis"
 
-	_, _, err := newJobsService(cfg)
+	_, _, err := newJobsIntrospection(cfg)
 	if err == nil {
 		t.Fatal("expected an error for a non-postgres queue driver")
 	}
 	if !strings.Contains(err.Error(), "queue.driver=postgres") {
 		t.Fatalf("err = %v, want it to name the postgres-only requirement", err)
+	}
+}
+
+func TestNewJobsRuntime_NonPostgresDriverFailsFast(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Queue.Driver = "redis"
+	_, err := newJobsRuntime(cfg, logger.New("error"))
+	if err == nil {
+		t.Fatal("expected an error for a non-postgres queue driver")
+	}
+	if !strings.Contains(err.Error(), "queue.driver=postgres") {
+		t.Fatalf("err = %v, want it to name the postgres-only requirement", err)
+	}
+}
+
+// TestNewJobsRuntime_WarehousedemoReachesBind pins CapIntegrationStock
+// wiring before InitAll — without wireIntegrationStockSyncerFromDB,
+// warehousedemo Init fails and jobs:retry|cancel|requeue abort.
+func TestNewJobsRuntime_WarehousedemoReachesBind(t *testing.T) {
+	dsn := os.Getenv("SHOPANDA_TEST_DSN")
+	if dsn == "" {
+		t.Skip("SHOPANDA_TEST_DSN not set")
+	}
+	t.Setenv("DATABASE_URL", dsn)
+	// Empty media.storage still loads core/storage-local; give it a usable
+	// local root so Init does not fail on empty base_path (and hide under
+	// io.Discard). Dev mode allows empty sign_secret (ephemeral key).
+	t.Setenv("SHOPANDA_DEV_MODE", "true")
+	cfg := &config.Config{}
+	cfg.Queue.Driver = "postgres"
+	cfg.Media.Local.BasePath = t.TempDir()
+	cfg.Media.Local.BaseURL = "http://127.0.0.1/media"
+	cfg.Plugins.WarehouseDemo.Enabled = true
+	cfg.Plugins.WarehouseDemo.WarehouseBaseURL = "http://127.0.0.1:9/warehouse"
+	var logBuf bytes.Buffer
+	rt, err := newJobsRuntime(cfg, logger.NewWithWriter(&logBuf, "error"))
+	if err != nil {
+		t.Fatalf("newJobsRuntime with warehousedemo: %v\ninit logs:\n%s", err, logBuf.String())
+	}
+	defer rt.conn.Close()
+	if rt.queue == nil || rt.svc == nil {
+		t.Fatal("expected bound queue and jobs service")
+	}
+}
+
+// Operator path without DSN: inject Get that returns (nil, nil) for a bad id
+// (same miss shape as postgres.JobQueue.Get after UUID reject).
+func TestRunJobsRequeue_GetMissFriendlyNotFound(t *testing.T) {
+	parsed, err := parseJobsRequeueArgs([]string{"missing-id"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	requeueCalled := false
+	err = runJobsRequeueWith(io.Discard, parsed, jobsRequeuePorts{
+		Get: func(context.Context, string) (*domainjobs.Detail, error) {
+			return nil, nil
+		},
+		Requeue: func(context.Context, string, int, ...domainjobs.RequeueOption) error {
+			requeueCalled = true
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected not found")
+	}
+	if requeueCalled {
+		t.Fatal("Requeue must not run when Get misses")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `no job with id "missing-id"`) {
+		t.Fatalf("err = %v, want friendly not-found", err)
+	}
+	if strings.Contains(msg, "22P02") || strings.Contains(msg, "invalid input syntax") {
+		t.Fatalf("err leaked SQL: %v", err)
+	}
+}
+
+func TestRunJobsShow_GetMissFriendlyNotFound(t *testing.T) {
+	err := runJobsShowGet(io.Discard, "missing-id", false, func(context.Context, string) (*domainjobs.Detail, error) {
+		return nil, nil
+	})
+	if err == nil {
+		t.Fatal("expected not found")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `no job with id "missing-id"`) {
+		t.Fatalf("err = %v, want friendly not-found", err)
+	}
+	if strings.Contains(msg, "22P02") || strings.Contains(msg, "invalid input syntax") {
+		t.Fatalf("err leaked SQL: %v", err)
 	}
 }
 
@@ -90,6 +183,164 @@ func TestRunJobsCancel_RequiresID(t *testing.T) {
 	err := runJobsCancel(io.Discard, &config.Config{}, logger.New("error"), nil)
 	if err == nil || !strings.Contains(err.Error(), "usage:") {
 		t.Fatalf("err = %v, want usage error", err)
+	}
+}
+
+func TestParseJobsRequeueArgs(t *testing.T) {
+	got, err := parseJobsRequeueArgs([]string{"job-1"})
+	if err != nil || got.ID != "job-1" || got.MinAge != domainjobs.DefaultRequeueMinAge || got.Terminal || got.Force {
+		t.Fatalf("default: %+v err=%v", got, err)
+	}
+	got, err = parseJobsRequeueArgs([]string{"job-2", "--min-age=90s"})
+	if err != nil || got.ID != "job-2" || got.MinAge != 90*time.Second || got.Terminal {
+		t.Fatalf("flag: %+v err=%v", got, err)
+	}
+	got, err = parseJobsRequeueArgs([]string{"job-3", "--terminal"})
+	if err != nil || got.ID != "job-3" || !got.Terminal || got.Force {
+		t.Fatalf("terminal: %+v err=%v", got, err)
+	}
+	got, err = parseJobsRequeueArgs([]string{"job-4", "--terminal", "--force"})
+	if err != nil || !got.Terminal || !got.Force {
+		t.Fatalf("force: %+v err=%v", got, err)
+	}
+	if _, err := parseJobsRequeueArgs([]string{"job-5", "--force"}); err == nil {
+		t.Fatal("expected --force without --terminal error")
+	}
+	if _, err := parseJobsRequeueArgs([]string{"job-6", "--terminal", "--min-age=90s"}); err == nil {
+		t.Fatal("expected error combining --terminal and --min-age")
+	}
+	if _, err := parseJobsRequeueArgs([]string{"--min-age=1ns", "x"}); err == nil {
+		t.Fatal("expected invalid min-age below 1s")
+	}
+	if _, err := parseJobsRequeueArgs(nil); err == nil {
+		t.Fatal("expected usage error")
+	}
+}
+
+func TestValidateJobsRequeueStatus(t *testing.T) {
+	if err := validateJobsRequeueStatus(domainjobs.StatusFailed, 1, 5, true, false); err != nil {
+		t.Fatalf("failed+terminal: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusFailed, 1, 5, true, true); err != nil {
+		t.Fatalf("force on non-exhausted failed is a no-op: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusCancelled, 1, 5, true, false); err == nil {
+		t.Fatal("cancelled without --force must fail")
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusDone, 1, 5, true, false); err == nil {
+		t.Fatal("done without --force must fail")
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusDone, 1, 5, true, true); err != nil {
+		t.Fatalf("done+force: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusCancelled, 1, 5, true, true); err != nil {
+		t.Fatalf("cancelled+force: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusProcessing, 1, 5, true, false); err == nil {
+		t.Fatal("processing+terminal must fail")
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusPending, 0, 5, true, false); err == nil {
+		t.Fatal("pending+terminal must fail")
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusFailed, 3, 3, true, false); err == nil || !strings.Contains(err.Error(), "jobs:retry") {
+		t.Fatalf("exhausted without force: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusFailed, 3, 3, true, true); err != nil {
+		t.Fatalf("exhausted+force: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusFailed, 0, 0, true, false); err == nil {
+		t.Fatal("max_retries=0 with attempts=0 counts as exhausted (matches Fail predicate)")
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusFailed, 0, 0, true, true); err != nil {
+		t.Fatalf("max_retries=0 + --force must allow: %v", err)
+	}
+	if err := validateJobsRequeueStatus(domainjobs.StatusProcessing, 1, 5, false, false); err != nil {
+		t.Fatalf("processing: %v", err)
+	}
+}
+
+func TestJobsRequeueSuccessMessage_ExhaustedWarns(t *testing.T) {
+	msg := jobsRequeueSuccessMessage("j1", domainjobs.StatusFailed, 3, 3, true, 0)
+	if !strings.Contains(msg, "attempts>=max_retries") || !strings.Contains(msg, "jobs:retry") {
+		t.Fatalf("msg=%q, want exhausted warning + jobs:retry", msg)
+	}
+	msg = jobsRequeueSuccessMessage("j1", domainjobs.StatusFailed, 0, 0, true, 0)
+	if !strings.Contains(msg, "attempts>=max_retries") || !strings.Contains(msg, "jobs:retry") {
+		t.Fatalf("max_retries=0 msg=%q, want exhausted warning + jobs:retry", msg)
+	}
+	msg = jobsRequeueSuccessMessage("j1", domainjobs.StatusDone, 1, 5, true, 0)
+	if !strings.Contains(msg, "resurrected") {
+		t.Fatalf("msg=%q, want done resurrection warning", msg)
+	}
+}
+
+func TestFormatJobsRequeueError_Mapping(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{domainjobs.ErrRequeueNotFound, "disappeared"},
+		{domainjobs.ErrRequeueConflict, "reclaim race"},
+		{domainjobs.ErrRequeueNotProcessing, "no longer processing"},
+		{domainjobs.ErrRequeueNotTerminal, "no longer terminal"},
+		{domainjobs.ErrRequeueWrongAttempt, "TOCTOU"},
+	}
+	for _, tc := range cases {
+		got := formatJobsRequeueError(tc.err, domainjobs.DefaultRequeueMinAge)
+		if got == nil || !errors.Is(got, tc.err) || !strings.Contains(got.Error(), tc.want) {
+			t.Fatalf("err=%v got=%v want substring %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestJobsRequeueAuditDetails_ForceFlagAndRequired(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		status               domainjobs.Status
+		attempts, maxRetries int
+		forceFlag            bool
+		wantRequired         bool
+	}{
+		{"non-exhausted failed + force", domainjobs.StatusFailed, 1, 5, true, false},
+		{"done + force", domainjobs.StatusDone, 1, 5, true, true},
+		{"exhausted failed", domainjobs.StatusFailed, 3, 3, false, true},
+		{"max_retries=0 exhausted", domainjobs.StatusFailed, 0, 0, true, true},
+	} {
+		d := jobsRequeueAuditDetails(tc.status, tc.attempts, tc.maxRetries, true, tc.forceFlag, 0, true)
+		if d["snapshot"] != "pre_lock_get" {
+			t.Fatalf("%s: snapshot = %v, want pre_lock_get", tc.name, d["snapshot"])
+		}
+		if d["force_flag"] != tc.forceFlag {
+			t.Fatalf("%s: force_flag = %v, want %v", tc.name, d["force_flag"], tc.forceFlag)
+		}
+		if d["force_required"] != tc.wantRequired {
+			t.Fatalf("%s: force_required = %v, want %v", tc.name, d["force_required"], tc.wantRequired)
+		}
+	}
+	d := jobsRequeueAuditDetails("", 0, 0, true, true, 0, false)
+	if d["force_flag"] != true || d["force_required"] != false {
+		t.Fatalf("pre-Get: %+v", d)
+	}
+	if d["snapshot"] != "pre_get" {
+		t.Fatalf("pre-Get snapshot = %v, want pre_get", d["snapshot"])
+	}
+	if _, ok := d["prior_status"]; ok {
+		t.Fatal("pre-Get must omit prior_status")
+	}
+}
+
+func TestValidateJobsRequeueStatus_NonProcessingHints(t *testing.T) {
+	err := validateJobsRequeueStatus(domainjobs.StatusFailed, 3, 3, false, false)
+	if err == nil || !strings.Contains(err.Error(), "jobs:retry") || !strings.Contains(err.Error(), "--terminal --force") {
+		t.Fatalf("failed hint: %v", err)
+	}
+	err = validateJobsRequeueStatus(domainjobs.StatusDone, 1, 5, false, false)
+	if err == nil || !strings.Contains(err.Error(), "--terminal --force") || strings.Contains(err.Error(), "jobs:retry") {
+		t.Fatalf("done hint: %v", err)
+	}
+	err = validateJobsRequeueStatus(domainjobs.StatusPending, 0, 5, false, false)
+	if err == nil || !strings.Contains(err.Error(), "stale processing") {
+		t.Fatalf("pending hint: %v", err)
 	}
 }
 

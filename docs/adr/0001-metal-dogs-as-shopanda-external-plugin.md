@@ -47,5 +47,5 @@ Therefore a separate Go module cannot be a Shopanda plugin without either Shopan
 
 ## Compliance
 
-- `go test ./plugins/ -run ImportBoundary` passes on the pinned commit.
+- `go test ./plugins/ -run ImportBoundary` fails on pin `fd4dd577`: 30 `disallowed` violations in `plugins/metaldogs` (pkg-only allowlist, PR-1552) and 0 `forbidden`. `job_fence.go` is not among them. Follow-up is in `docs/cr-rounds/CR-21-upg4-pin-7c982b00.md`.
 - Deviations outside `plugins/metaldogs/`, `storefront/`, `docs/`, and allowlisted upstream files are listed in `docs/architecture/overview.md` and reviewed on every upstream upgrade.

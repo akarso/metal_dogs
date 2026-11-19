@@ -46,6 +46,52 @@ func TestCacheControlMiddleware_NoCachePrefixGET(t *testing.T) {
 	}
 }
 
+func TestCacheControlMiddleware_PluginNoCachePrefix(t *testing.T) {
+	// Mirrors wire_routes merging plugin.NoCachePathPrefixes into the denylist.
+	noCachePrefixes := []string{"/api/customizer/session"}
+	mw := shared.CacheControlMiddleware(noCachePrefixes)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/customizer/session/abc", nil)
+	handler.ServeHTTP(rr, req)
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("NoCache path Cache-Control = %q, want no-store", got)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/customizer/catalog", nil)
+	handler.ServeHTTP(rr, req)
+	if got := rr.Header().Get("Cache-Control"); got != "public, max-age=300" {
+		t.Fatalf("sibling path Cache-Control = %q, want public max-age", got)
+	}
+}
+
+func TestCacheControlMiddleware_PluginNoCachePrefixAfterParamCut(t *testing.T) {
+	// pathPrefixFromPattern("GET /api/x/{id}") → "/api/x"; real request /api/x/123.
+	noCachePrefixes := []string{"/api/x"}
+	mw := shared.CacheControlMiddleware(noCachePrefixes)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/x/123", nil)
+	handler.ServeHTTP(rr, req)
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("/api/x/123 Cache-Control = %q, want no-store", got)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/y/123", nil)
+	handler.ServeHTTP(rr, req)
+	if got := rr.Header().Get("Cache-Control"); got != "public, max-age=300" {
+		t.Fatalf("/api/y/123 Cache-Control = %q, want public max-age", got)
+	}
+}
+
 func TestCacheControlMiddleware_POSTAlwaysNoStore(t *testing.T) {
 	mw := shared.CacheControlMiddleware(nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

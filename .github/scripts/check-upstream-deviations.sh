@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Absorb canary: platform paths that differ from the pinned upstream SHA must be
-# allowlisted here (keep in sync with docs/architecture/overview.md).
+# Paths that differ from the pinned upstream SHA must be allowlisted here
+# (keep in sync with docs/architecture/overview.md).
+# Product-owned trees are excluded: plugins/metaldogs, docs, markdown,
+# .github/workflows, .scratch.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -12,43 +14,35 @@ if [[ ! "${PIN}" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-# Paths under these roots may differ from the pin only if listed below.
+# Every path git reports outside the product-owned trees above.
+# Reasons match docs/architecture/overview.md. '#' comments are not part of the path.
 ALLOWLIST=(
-  cmd/api/bind_queue_test.go
-  cmd/api/cache_control_prefixes.go
-  cmd/api/cache_control_prefixes_test.go
-  cmd/api/job_queue_bind.go
-  cmd/api/jobs_cli.go
-  cmd/api/main.go
-  cmd/api/metaldogs_catalog.go
-  cmd/api/migrate_plugins_test.go
-  cmd/api/register_plugins.go
-  cmd/api/register_plugins_metaldogs_test.go
-  cmd/api/wire_routes.go
-  internal/application/integration/sync_manual_roundtrip_test.go
-  internal/application/integration/sync_runtime.go
-  internal/application/integration/sync_runtime_test.go
-  internal/domain/jobs/admin.go
-  internal/domain/jobs/job.go
-  internal/domain/jobs/worker.go
-  internal/domain/jobs/worker_test.go
-  internal/platform/config/config.go
-  internal/platform/config/config_test.go
-  internal/platform/plugin/providers.go
-  internal/platform/plugin/providers_test.go
-  internal/platform/plugin/sync_job_test.go
-  internal/platform/runtime/scheduler_test.go
-  pkg/pluginsdk/harness/harness_test.go
-  pkg/pluginsdk/sdk_test.go
+  .cursor/rules/pr-documentation-checklist.mdc # Metal Dogs main-only / CR-round checklist
+  .env.example # private media path, METALDOGS_ENABLED, compose DSN
+  .github/scripts/check-product-docs-links.sh # product docs links; previous-pin SHA guard
+  .github/scripts/check-upstream-deviations.sh # this allowlist
+  .github/scripts/run-integration-tests.sh # Shopanda DSN suite; Metal Dogs canaries are separate
+  .github/scripts/run-metaldogs-integration-tests.sh # Metal Dogs DSN suite and canaries
+  .gitignore # /app, .idea/, .vscode/
+  Makefile # docs-policy runs the product link checker and this script
+  cmd/api/register_plugins_metaldogs_test.go # registration, NoCache, boot, catalog-seed CLI, opaque bearer, migrator collect
+  cmd/api/register_products.go # registerMetalDogs when enabled or the flag does not parse
+  configs/config.example.yaml # commented plugins.metaldogs block
+  docker-compose.yml # Postgres on 127.0.0.1 and SHOPANDA_DATABASE_HOST_PORT
+  scripts/ci/docs-policy.sh # product link checker; skip promote fixture unless SHOPANDA_PLATFORM=1
+  scripts/product-init/product-init_test.sh # --force refuses slug metaldogs
+  scripts/product-init/reserved-slugs.txt # metaldogs reserved so --force cannot clobber it
+  scripts/product-init/seed/scripts-ci/docs-policy.sh # seed copy of the product docs-policy.sh
+  storefront/.gitkeep # empty storefront dir; product app is not the upstream theme tree
 )
 
 mapfile -t dirty < <(
-  git diff --name-only "${PIN}" HEAD -- \
-    internal/platform \
-    internal/application/integration \
-    internal/domain/jobs \
-    cmd/api \
-    pkg/pluginsdk \
+  git diff --name-only "${PIN}" HEAD -- . \
+    ':!plugins/metaldogs' \
+    ':!docs' \
+    ':!.github/workflows' \
+    ':!.scratch' \
+    ':!*.md' \
     | sort -u
 )
 
@@ -67,11 +61,31 @@ for path in "${dirty[@]}"; do
   fi
 done
 
-if [[ "${#unlisted[@]}" -gt 0 ]]; then
-  echo "ERROR: platform paths differ from pin ${PIN} but are not on the absorb allowlist:" >&2
-  printf '  %s\n' "${unlisted[@]}" >&2
+stale=()
+for a in "${ALLOWLIST[@]}"; do
+  found=0
+  for path in "${dirty[@]}"; do
+    if [[ "${path}" == "${a}" ]]; then
+      found=1
+      break
+    fi
+  done
+  if [[ "${found}" -eq 0 ]]; then
+    stale+=("${a}")
+  fi
+done
+
+if [[ "${#unlisted[@]}" -gt 0 || "${#stale[@]}" -gt 0 ]]; then
+  if [[ "${#unlisted[@]}" -gt 0 ]]; then
+    echo "ERROR: paths differ from pin ${PIN} but are not on the absorb allowlist:" >&2
+    printf '  %s\n' "${unlisted[@]}" >&2
+  fi
+  if [[ "${#stale[@]}" -gt 0 ]]; then
+    echo "ERROR: allowlist entries do not differ from pin ${PIN}:" >&2
+    printf '  %s\n' "${stale[@]}" >&2
+  fi
   echo "Update docs/architecture/overview.md and this script together." >&2
   exit 1
 fi
 
-echo "upstream-deviations OK (pin ${PIN:0:12}, ${#dirty[@]} allowlisted path(s))"
+echo "upstream-deviations OK (pin ${PIN:0:12}, ${#ALLOWLIST[@]} allowlisted path(s))"

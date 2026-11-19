@@ -234,6 +234,81 @@ func TestCartValidation_DesignLines(t *testing.T) {
 	})
 }
 
+func TestCartValidation_DraftOtherLineDoesNotBlockSiblingMutation(t *testing.T) {
+	srv, db := newDesignCartServer(t)
+	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	other := insertPublishedOtherVariant(t, db)
+	design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 42)
+	cartID := createPLNCart(t, srv)
+	status, body := cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+cartID+"/items", map[string]any{
+		"variant_id": other,
+		"quantity":   2,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("other add: status=%d body=%s", status, body)
+	}
+	if _, err := db.ExecContext(context.Background(), `UPDATE products SET status = 'draft' WHERE slug = 'other-shirt'`); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body, _ = addDesignToCart(t, srv, design.ID, token, variantM, &http.Cookie{Name: sessionCartCookie, Value: cartID})
+	if status != http.StatusOK {
+		t.Fatalf("tee add: status=%d body=%s", status, body)
+	}
+	items := cartItems(t, srv, cartID)
+	if len(items) != 2 || lineByVariant(t, items, other).Quantity != 2 || extensionValue(t, lineByVariant(t, items, variantM)) != design.ID {
+		t.Fatalf("after tee add items=%+v", items)
+	}
+
+	status, body = cartDo(t, srv, http.MethodPut, "/api/v1/carts/"+cartID+"/items/"+variantM, map[string]any{"quantity": 2})
+	if status != http.StatusOK {
+		t.Fatalf("tee qty: status=%d body=%s", status, body)
+	}
+	items = cartItems(t, srv, cartID)
+	if lineByVariant(t, items, variantM).Quantity != 2 || lineByVariant(t, items, other).Quantity != 2 {
+		t.Fatalf("after tee qty items=%+v", items)
+	}
+	issues := cartValidationIssues(t, srv, cartID)
+	if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.ProductUnavailableCode, "product is not available", other) {
+		t.Fatalf("read issues=%+v", issues)
+	}
+
+	status, body = cartDo(t, srv, http.MethodDelete, "/api/v1/carts/"+cartID+"/items/"+variantM, nil)
+	if status != http.StatusOK {
+		t.Fatalf("delete tee: status=%d body=%s", status, body)
+	}
+	items = cartItems(t, srv, cartID)
+	if len(items) != 1 || items[0].VariantID != other || items[0].Quantity != 2 {
+		t.Fatalf("after delete items=%+v", items)
+	}
+
+	status, body = cartDo(t, srv, http.MethodPut, "/api/v1/carts/"+cartID+"/items/"+other, map[string]any{"quantity": 1})
+	if status != http.StatusUnprocessableEntity || cartErrorCode(t, body) != "cart_validation_failed" {
+		t.Fatalf("draft qty: status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
+	}
+	issues = validationIssuesFrom(t, body)
+	if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.ProductUnavailableCode, "product is not available", other) {
+		t.Fatalf("draft qty issues=%+v", issues)
+	}
+	if lineByVariant(t, cartItems(t, srv, cartID), other).Quantity != 2 {
+		t.Fatal("rejected draft quantity write stuck")
+	}
+}
+
+func TestCartValidation_DraftTeeBlocks(t *testing.T) {
+	srv, db := newDesignCartServer(t)
+	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
+	design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 30)
+	cartID := addDesignLine(t, srv, design.ID, token, variantM)
+	if _, err := db.ExecContext(context.Background(), `UPDATE products SET status = 'draft' WHERE slug = 'mdogs-tee'`); err != nil {
+		t.Fatal(err)
+	}
+	issues := cartValidationIssues(t, srv, cartID)
+	if len(issues) != 1 || !blockingDesignIssue(issues[0], ports.ProductUnavailableCode, "product is not available", variantM) {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
 func TestAddToCart_ConcurrentSameDesignKeepsDesignID(t *testing.T) {
 	srv, db := newDesignCartServer(t)
 	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")

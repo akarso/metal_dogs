@@ -88,21 +88,18 @@ func (p *Plugin) runCatalogSeed(ctx cli.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if ctx.DB == nil {
-		return fmt.Errorf("%s: database required", CommandCatalogSeed)
-	}
 	c := ctx.Ctx
 	if c == nil {
 		c = context.Background()
 	}
-	if p == nil || p.catalogRepos == nil {
-		return fmt.Errorf("%s: catalog repositories are not configured", CommandCatalogSeed)
+	if p == nil || p.host == nil {
+		return fmt.Errorf("%s: catalog seed port is not configured", CommandCatalogSeed)
 	}
-	repos, err := p.catalogRepos(ctx.DB)
-	if err != nil {
-		return err
+	seed, ok := p.host.CatalogSeed()
+	if !ok || seed == nil {
+		return fmt.Errorf("%s: catalog seed port is not configured", CommandCatalogSeed)
 	}
-	if err := catalog.Seed(c, repos, *dir); err != nil {
+	if err := catalog.Seed(c, seed, *dir); err != nil {
 		return err
 	}
 	fmt.Println("metaldogs:catalog-seed: ok")

@@ -199,7 +199,8 @@ type stubQueue struct{}
 func (stubQueue) Enqueue(context.Context, jobs.Job) error    { return nil }
 func (stubQueue) Dequeue(context.Context) (*jobs.Job, error) { return nil, nil }
 func (stubQueue) Complete(context.Context, string, int) error     { return nil }
-func (stubQueue) Fail(context.Context, string, int, error) error  { return nil }
+func (stubQueue) Fail(context.Context, string, int, error) error { return nil }
+func (stubQueue) Requeue(context.Context, string, int, ...jobs.RequeueOption) error { return nil }
 
 var _ jobs.Queue = stubQueue{}
 
@@ -210,29 +211,6 @@ func TestApp_RegisterQueue(t *testing.T) {
 	got, ok := app.Queue()
 	if !ok || got != q {
 		t.Fatalf("Queue() = (%v, %v)", got, ok)
-	}
-}
-
-func TestApp_BoundQueue_PrefersBindThenRegister(t *testing.T) {
-	boundOnly := &plugin.App{}
-	bq := stubQueue{}
-	if err := boundOnly.BindQueue(bq); err != nil {
-		t.Fatal(err)
-	}
-	got, ok := boundOnly.BoundQueue()
-	if !ok || got != bq {
-		t.Fatalf("Bound-only BoundQueue() = (%v, %v)", got, ok)
-	}
-	if _, ok := boundOnly.Queue(); ok {
-		t.Fatal("Queue() should be empty when only BindQueue ran")
-	}
-
-	registered := &plugin.App{}
-	rq := stubQueue{}
-	registered.RegisterQueue(rq)
-	got, ok = registered.BoundQueue()
-	if !ok || got != rq {
-		t.Fatalf("register-only BoundQueue() = (%v, %v)", got, ok)
 	}
 }
 

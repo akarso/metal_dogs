@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
@@ -147,14 +148,10 @@ func (h *syncJobHandler) Handle(ctx context.Context, job jobs.Job) error {
 	pluginSlug, _ := job.Payload["plugin"].(string)
 	name, _ := job.Payload["name"].(string)
 
-	// Re-inject payload request_id into ctx so handlers that call
-	// requestctx.RequestID / product CorrelationID(ctx) see the same value
-	// Enqueue stored (worker poll ctx has no HTTP middleware). Skip when ctx
-	// already has an ID — do not clobber a future worker-scoped ID even if it
-	// differs from the payload.
-	if rid, _ := payload["request_id"].(string); rid != "" && requestctx.RequestID(ctx) == "" {
-		ctx = requestctx.WithRequestID(ctx, rid)
-	}
+	// Reinject request_id from the sync envelope onto ctx so handlers that
+	// use requestctx.RequestID(ctx) match HTTP/worker correlation (payload
+	// already carries it from InjectRequestID on enqueue).
+	ctx = withPayloadRequestID(ctx, job.Payload, payload)
 
 	req := extapi.SyncJobContext{
 		JobID:    job.ID,
@@ -167,6 +164,32 @@ func (h *syncJobHandler) Handle(ctx context.Context, job jobs.Job) error {
 		Logger:   h.log,
 	}
 	return h.handler(ctx, req)
+}
+
+// withPayloadRequestID sets requestctx from the job envelope when ctx has no
+// request ID yet. Prefers top-level request_id, then inner payload.request_id
+// (same order as jobs.mergeJobRequestID).
+func withPayloadRequestID(ctx context.Context, envelope, inner map[string]interface{}) context.Context {
+	if requestctx.RequestID(ctx) != "" {
+		return ctx
+	}
+	rid := requestIDFromMaps(envelope, inner)
+	if rid == "" {
+		return ctx
+	}
+	return requestctx.WithRequestID(ctx, rid)
+}
+
+func requestIDFromMaps(envelope, inner map[string]interface{}) string {
+	if rid, _ := envelope["request_id"].(string); strings.TrimSpace(rid) != "" {
+		return strings.TrimSpace(rid)
+	}
+	if inner != nil {
+		if rid, _ := inner["request_id"].(string); strings.TrimSpace(rid) != "" {
+			return strings.TrimSpace(rid)
+		}
+	}
+	return ""
 }
 
 func eventPayload(data interface{}) map[string]interface{} {

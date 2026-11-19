@@ -4,6 +4,8 @@ Public surface under `/api/customizer/*` (plugin flag `plugins.metaldogs.enabled
 
 ## Enablement & health
 
+Exact `/api/customizer` is not a route. The platform answers with a plain 404, which may be cached. Every registered `/api/customizer/*` route is `Cache-Control: no-store` on guest GET and HEAD.
+
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | `GET` | `/api/customizer/enabled` | public | `{"status":"ok","plugin":"metaldogs"}` |
@@ -64,7 +66,7 @@ Published catalog only. Drafts and retired versions never appear. Responses omit
 
 ### Cache
 
-Handlers do not set public `max-age`. Platform middleware forces `Cache-Control: no-store` on `/api/customizer/*`.
+Handlers do not set public `max-age`. Platform middleware forces `Cache-Control: no-store` on each registered `/api/customizer/*` route. Exact `/api/customizer` is not on that denylist.
 
 ## Uploads (C2)
 
@@ -241,10 +243,11 @@ Allowed when design status is `draft`, `generation_failed`, or `preview_ready`, 
 
 ### Config
 
-- `plugins.metaldogs.generation.provider` — C4 accepts only `fake` (default)
-- `plugins.metaldogs.generation.max_retries` — queue retries (default 3)
-- `plugins.metaldogs.generation.max_attempts_per_design` — customer regenerations (default 3)
-- `plugins.metaldogs.generation.cooldown_seconds` — minimum gap between distinct attempts (default 30; `0` disables; max 86400)
+- `plugins.metaldogs.generation.provider` — C4 accepts only `fake` (default). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` (Extra key `generation_provider`, dotted alias `generation.provider`)
+- `plugins.metaldogs.generation.max_retries` — queue retries (default 3; `<=0` becomes 3). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_RETRIES`. A non-integer fails Init
+- `plugins.metaldogs.generation.max_attempts_per_design` — customer regenerations (default 3; `<=0` becomes 3). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_MAX_ATTEMPTS_PER_DESIGN`
+- `plugins.metaldogs.generation.cooldown_seconds` — minimum gap between distinct attempts (default 30; `0` disables; max 86400). Env `SHOPANDA_PLUGINS_METALDOGS_GENERATION_COOLDOWN_SECONDS`
+- Nested YAML `generation:` (`provider`, `max_retries`, `max_attempts_per_design`, `cooldown_seconds`) loads the same fields. `plugins.metaldogs.enabled` stays `SHOPANDA_PLUGINS_METALDOGS_ENABLED` (default false; `1`/`true`/`yes`)
 
 ## Approve and clone (C6)
 
@@ -333,16 +336,16 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 | `422` | `unprocessable` | Malformed JSON, unknown fields, trailing data after the object, `variant_id` missing or not a UUID, variant is not part of the custom tee |
 | `503` | `unavailable` | Design service or session-cart port is not configured |
 
-`cart.validate` (plugin enabled) fails the mutation when the `cart` payload is present and is not a cart view (logged as `metaldogs.cart.validate.payload`). It blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is no longer `approved` (`metaldogs.design_not_approved`, "design is not approved"). The cart API surfaces that as `422` `cart_validation_failed`. The hook does not check ownership. It does nothing for every other product. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
+`cart.validate` (plugin enabled) fails the mutation when the `cart` payload is present and is not a cart view (logged as `metaldogs.cart.validate.payload`). It blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is no longer `approved` (`metaldogs.design_not_approved`, "design is not approved"). A variant whose parent is outside the catalog read scope, or whose loaded slug is blank, is `metaldogs.product_unavailable` ("product is not available") — not a skip. That issue uses the same line scope as the design checks: a new or changed line, and every such line when the cart snapshot is unchanged (cart read and checkout). Changing, adding, or removing a different line does not raise it for an unchanged line. The cart API surfaces a blocking issue as `422` `cart_validation_failed`. The hook does not check ownership. A loaded product with a different slug is left alone. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
 
 ### Limits
 
 - Guest cart merge into a customer cart copies `metaldogs.design_id` without the add path or the hook. E3 re-validates at checkout.
 - A dotless owner token is a guest (`AuthMiddleware` + `ValidatingTokenParser`). `EnsureStorefrontCart` then uses the guest cookie. A signed-in customer id on the request (PR-1554) takes `EnsureActive` and does not write that cart id into the guest cookie. This route's bearer is the owner token, so the supported call is still the guest cart.
 - Rate limiting for this route is O4.
-- `cart.validate` reads stored extensions. Core `AddItem` saves the line, runs that hook, then upserts extensions (pin `a411c970`). The route does not write `metaldogs.design_id` before `AddItem`. The `cart.add_item.before` hook stores the design id on the AddItem goroutine (the hook payload has no call token). `Place` drops that slot only when it still belongs to the same call, so one return does not clear the other in-flight add. `cart.validate` uses it only when the line has no stored design id. `UpdatedBy` on the write is the cart's customer id when that id is set, otherwise `guest` (`cartExtensionUpdatedBy` keeps a non-empty explicit actor). Two concurrent adds of different designs on the same cart and size can still both pass. E3 re-validates at checkout.
-- `CartPort` has no `DiscardEmptyGuestCart`. A failed add after `EnsureStorefrontCart` can leave an empty guest cart and its cookie.
-- Variant-to-product checks use one `CatalogPort.FindVariants` call. An empty `ProductSlug` is not the custom tee.
+- `cart.validate` reads the design id of the line being added from the `pending_line` hook key (plugin-only fields are already redacted to the registrant). Stored line extensions cover later reads, when `pending_line` is absent. The route does not write `metaldogs.design_id` before `AddItem`. `UpdatedBy` on the write is the cart's customer id when that id is set, otherwise `guest`. Two concurrent adds of different designs on the same cart and size can still both pass. E3 re-validates at checkout.
+- A failed `AddItem` after `EnsureStorefrontCart` calls `DiscardEmptyGuestCart` with that cart id only when the Ensure snapshot had no lines and no customer id. The cookie set for a new empty guest cart is cleared. A failed add on a cart that already has lines, or on an empty customer cart, leaves that cart in place. Invalid design and an unreadable variant are refused before `EnsureStorefrontCart`, so they do not create a cart.
+- Variant-to-product checks use one `CatalogPort.FindVariants` call and `extapi.ClassifyProductSlug`. Match runs the design checks. A different loaded slug is skipped. Unknown (parent outside read scope, or a blank loaded slug) is a blocking issue on the same lines as those design checks.
 
 ## Safe delivery
 

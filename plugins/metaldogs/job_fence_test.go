@@ -2,47 +2,56 @@ package metaldogs_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
-	infraPostgres "github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
-type fenceQueueStub struct {
-	required []string
-	hookSet  bool
+type fenceHookStub struct{}
+
+func (f *fenceHookStub) Enqueue(context.Context, jobs.Job) error        { return nil }
+func (f *fenceHookStub) Dequeue(context.Context) (*jobs.Job, error)     { return nil, nil }
+func (f *fenceHookStub) Complete(context.Context, string, int) error    { return nil }
+func (f *fenceHookStub) Fail(context.Context, string, int, error) error { return nil }
+func (f *fenceHookStub) Requeue(context.Context, string, int, ...jobs.RequeueOption) error {
+	return nil
+}
+func (f *fenceHookStub) RequeueWithBeforeCommit(ctx context.Context, id string, attempt int, before jobs.RequeueBeforeCommit, _ ...jobs.RequeueOption) error {
+	if before == nil {
+		return nil
+	}
+	return before(ctx, id, attempt)
 }
 
-func (f *fenceQueueStub) Enqueue(context.Context, jobs.Job) error             { return nil }
-func (f *fenceQueueStub) Dequeue(context.Context) (*jobs.Job, error)           { return nil, nil }
-func (f *fenceQueueStub) Complete(context.Context, string, int) error          { return nil }
-func (f *fenceQueueStub) Fail(context.Context, string, int, error) error       { return nil }
-func (f *fenceQueueStub) RequireOnRequeued(jobTypes ...string)                 { f.required = append(f.required, jobTypes...) }
-func (f *fenceQueueStub) SetOnRequeued(func(context.Context, infraPostgres.RequeueExec, string, string) error) {
-	f.hookSet = true
-}
-
-func TestInstallGenerateJobFence(t *testing.T) {
+func TestInstallGenerateJobFence_DoesNotWrapQueue(t *testing.T) {
 	t.Parallel()
-	q := &fenceQueueStub{}
-	if err := metaldogs.InstallGenerateJobFence(q); err != nil {
+	app := &plugin.App{}
+	h := pluginsdk.AsHostFor(app, metaldogs.PluginName)
+	if err := metaldogs.InstallGenerateJobFence(h); err != nil {
 		t.Fatal(err)
 	}
-	if !q.hookSet {
-		t.Fatal("expected SetOnRequeued")
+	inner := &fenceHookStub{}
+	got, err := app.ApplyQueueBoundHooks(inner)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(q.required) != 1 || q.required[0] != infraPostgres.MetalDogsGenerateJobType {
-		t.Fatalf("required=%v", q.required)
+	if got != inner {
+		t.Fatal("fence must not wrap the queue")
+	}
+	bound := app.WrapRequeueNotify(got)
+	err = bound.Requeue(context.Background(), "job-1", 1)
+	if err == nil || !strings.Contains(err.Error(), "database required") {
+		t.Fatalf("requeue without database: %v", err)
 	}
 }
 
-func TestInstallGenerateJobFence_RejectsUnsupportedQueue(t *testing.T) {
+func TestInstallGenerateJobFence_RejectsNilHost(t *testing.T) {
 	t.Parallel()
-	err := metaldogs.InstallGenerateJobFence(&struct {
-		jobs.Queue
-	}{})
-	if err == nil {
+	if err := metaldogs.InstallGenerateJobFence(nil); err == nil {
 		t.Fatal("want error")
 	}
 }

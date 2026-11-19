@@ -2,38 +2,62 @@ package metaldogs
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
-	"github.com/akarso/shopanda/internal/domain/jobs"
-	infraPostgres "github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 )
 
-// generateJobFenceQueue is the Postgres job queue surface needed to install the
-// generate claim fence for Retry/Requeue (including jobs:retry and admin retry).
-type generateJobFenceQueue interface {
-	SetOnRequeued(fn func(ctx context.Context, exec infraPostgres.RequeueExec, jobID, jobType string) error)
-	RequireOnRequeued(jobTypes ...string)
-}
-
-// InstallGenerateJobFence registers OnRequeued + RequireOnRequeued so every
-// re-pend of integration.sync.metaldogs.generate invalidates the product claim
-// inside the same transaction. Safe to call more than once.
-func InstallGenerateJobFence(queue jobs.Queue) error {
-	if queue == nil {
-		return fmt.Errorf("metaldogs: install generate job fence: queue required")
+// InstallGenerateJobFence registers Host.OnRequeued so the claim bump commits with the re-pend (pluginsdk.RequeueTx).
+// A missing transaction fails the requeue for a generation-job row; no database handle fails closed.
+func InstallGenerateJobFence(h pluginsdk.Host) error {
+	if h == nil {
+		return fmt.Errorf("metaldogs: install generate job fence: host required")
 	}
-	q, ok := queue.(generateJobFenceQueue)
-	if !ok {
-		return fmt.Errorf("metaldogs: install generate job fence: queue does not support OnRequeued (require queue.driver=postgres)")
+	var db *sql.DB
+	if opened, ok := h.BootstrapDB(); ok {
+		db = opened
 	}
-	jobType := infraPostgres.MetalDogsGenerateJobType
-	q.RequireOnRequeued(jobType)
-	q.SetOnRequeued(func(ctx context.Context, exec infraPostgres.RequeueExec, jobID, jt string) error {
-		if jt != jobType {
+	h.OnRequeued(func(ctx context.Context, jobID string, _ int) error {
+		tx, ok := pluginsdk.RequeueTx(ctx)
+		if ok && tx != nil {
+			return postgres.InvalidateClaimExec(ctx, tx, jobID)
+		}
+		owned, err := generationJobRow(ctx, db, jobID)
+		if err != nil {
+			return err
+		}
+		if !owned {
 			return nil
 		}
-		return postgres.InvalidateClaimExec(ctx, exec, jobID)
+		return fmt.Errorf("metaldogs generate fence: requeue transaction missing")
 	})
 	return nil
+}
+
+func generationJobRow(ctx context.Context, db *sql.DB, id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	if db == nil {
+		return false, fmt.Errorf("metaldogs generate fence: database required")
+	}
+	var one int
+	err := db.QueryRowContext(ctx, `SELECT 1 FROM metaldogs_generation_jobs WHERE id = $1`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		var pgErr *pgconn.PgError
+		// 22P02: id is not a uuid, so it is not a generation-job row.
+		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+			return false, nil
+		}
+		return false, fmt.Errorf("metaldogs generate fence: generation job lookup: %w", err)
+	}
+	return true, nil
 }

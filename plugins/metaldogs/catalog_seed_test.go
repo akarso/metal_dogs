@@ -27,8 +27,8 @@ import (
 	"github.com/akarso/shopanda/internal/platform/id"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
-	mdcatalog "github.com/akarso/shopanda/plugins/metaldogs/catalog"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
 )
 
@@ -113,7 +113,7 @@ func TestCatalogSeed_ParentSKUMismatch(t *testing.T) {
 	}
 
 	err = runCatalogSeedErr(t, db, dir)
-	if err == nil || !strings.Contains(err.Error(), "mdogs-tee") || !strings.Contains(err.Error(), "OTHER") || !strings.Contains(err.Error(), "MDOGS-TEE") {
+	if err == nil || !strings.Contains(err.Error(), "mdogs-tee") || !strings.Contains(err.Error(), "parent_sku") || !strings.Contains(err.Error(), "OTHER") || !strings.Contains(err.Error(), "MDOGS-TEE") {
 		t.Fatalf("err = %v", err)
 	}
 
@@ -150,17 +150,10 @@ func TestCatalogSeed_DotDecimal(t *testing.T) {
 	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 8049)
 }
 
-func TestCatalogSeed_ProductRepoWithoutWithTxWritesNothing(t *testing.T) {
+func TestCatalogSeed_UnboundPortWritesNothing(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_notx")
-	err := runCatalogSeedErrRepos(t, db, repoCatalogDir(t), func(db *sql.DB) (mdcatalog.Repos, error) {
-		repos, err := openCatalogRepos(db)
-		if err != nil {
-			return mdcatalog.Repos{}, err
-		}
-		repos.Products = productRepoNoTx{ProductRepository: repos.Products}
-		return repos, nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "does not support WithTx") {
+	err := runCatalogSeedBound(t, db, repoCatalogDir(t), false)
+	if err == nil || !strings.Contains(err.Error(), "catalog seed port is not configured") {
 		t.Fatalf("err = %v", err)
 	}
 
@@ -174,7 +167,7 @@ func TestCatalogSeed_ProductRepoWithoutWithTxWritesNothing(t *testing.T) {
 	}
 }
 
-func TestCatalogSeed_ExistingProductMissingParentSKU(t *testing.T) {
+func TestCatalogSeed_MissingParentSKUDoesNotBackfill(t *testing.T) {
 	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_parent_existing")
 	dir := repoCatalogDir(t)
 	runCatalogSeed(t, db, dir)
@@ -199,18 +192,78 @@ func TestCatalogSeed_ExistingProductMissingParentSKU(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runCatalogSeed(t, db, dir)
-	activateCatalogProduct(t, db)
+	err = runCatalogSeedErr(t, db, dir)
+	if err == nil || !strings.Contains(err.Error(), "mdogs-tee") || !strings.Contains(err.Error(), "parent_sku") || !strings.Contains(err.Error(), "stored=<missing>") || !strings.Contains(err.Error(), "MDOGS-TEE") {
+		t.Fatalf("err = %v", err)
+	}
 
-	srv := newCatalogStorefront(t, db)
-	products := listCatalogProducts(t, srv)
-	if len(products) != 1 || products[0].Attributes["parent_sku"] != "MDOGS-TEE" {
-		t.Fatalf("product = %+v", products)
+	product, err = repo.FindBySlug(ctx, "mdogs-tee")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if products[0].CreatedAt == "" || products[0].CreatedAt == products[0].UpdatedAt {
-		t.Fatalf("existing product was recreated: created %s updated %s", products[0].CreatedAt, products[0].UpdatedAt)
+	if product == nil || product.Attributes["parent_sku"] != nil {
+		t.Fatalf("parent_sku = %#v", product.Attributes)
 	}
-	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 8049)
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM variants WHERE sku = $1`, "MDOGS-TEE-XXL").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("XXL variants = %d, want 0", n)
+	}
+}
+
+func TestCatalogSeed_LateVariantConflictRollsBack(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_rollback")
+	products, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := catalog.WithOperatorProductReadScope(context.Background())
+	other, err := catalog.NewProduct(id.New(), "Other tee", "other-tee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := products.Create(ctx, &other); err != nil {
+		t.Fatal(err)
+	}
+	// XXL is the last products.csv row, so earlier sizes are inserted in this Import before the SKU conflict.
+	held, err := catalog.NewVariant(id.New(), other.ID, "MDOGS-TEE-XXL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := variants.Create(ctx, &held); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runCatalogSeedErr(t, db, repoCatalogDir(t))
+	if err == nil || !strings.Contains(err.Error(), "MDOGS-TEE-XXL") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM products WHERE slug = 'mdogs-tee'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("mdogs-tee products = %d, want 0", n)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM variants WHERE sku IN ('MDOGS-TEE-S', 'MDOGS-TEE-M', 'MDOGS-TEE-L', 'MDOGS-TEE-XL')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("variants written before the XXL conflict = %d, want 0", n)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM variants WHERE sku = 'MDOGS-TEE-XXL' AND product_id = $1`, other.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pre-existing XXL variants = %d, want 1", n)
+	}
 }
 
 func TestCatalogSeed_ParentSKUWrittenWithProduct(t *testing.T) {
@@ -352,6 +405,62 @@ func TestCatalogSeed_BadPriceOnEmptyDBWritesNothing(t *testing.T) {
 	assertTeeVariants(t, listCatalogVariants(t, srv, products[0].ID), 9000)
 }
 
+func TestCatalogSeed_PriceUpdateWritesHistory(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "catalog_seed_price_update")
+	dir := copyCatalogDir(t, repoCatalogDir(t))
+	setCatalogAmounts(t, dir, func(string) (string, bool) { return "90,00", true })
+	runCatalogSeed(t, db, dir)
+	before := priceHistoryCount(t, db)
+
+	setCatalogAmounts(t, dir, func(sku string) (string, bool) {
+		if sku == "MDOGS-TEE-L" {
+			return "100,00", true
+		}
+		return "", false
+	})
+	runCatalogSeed(t, db, dir)
+	after := priceHistoryCount(t, db)
+	if after != before+1 {
+		t.Fatalf("price_history = %d, want %d", after, before+1)
+	}
+
+	publishCatalogProduct(t, db)
+	srv := newCatalogStorefront(t, db)
+	products := listCatalogProducts(t, srv)
+	if len(products) != 1 || products[0].Status != "active" {
+		t.Fatalf("product = %+v", products)
+	}
+	page := listCatalogVariants(t, srv, products[0].ID)
+	for id, variant := range page.byID {
+		want := int64(9000)
+		if variant.SKU == "MDOGS-TEE-L" {
+			want = 10000
+		}
+		if page.offers[id].Amount != want {
+			t.Fatalf("sku %s amount = %d, want %d", variant.SKU, page.offers[id].Amount, want)
+		}
+	}
+
+	runCatalogSeed(t, db, dir)
+	same := priceHistoryCount(t, db)
+	if same != after {
+		t.Fatalf("same amount wrote history: %d, want %d", same, after)
+	}
+	again := listCatalogProducts(t, srv)
+	if len(again) != 1 || again[0].Status != "active" || again[0].UpdatedAt != products[0].UpdatedAt {
+		t.Fatalf("active product changed: %+v", again)
+	}
+}
+
+func priceHistoryCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), `SELECT count(*) FROM price_history`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 	t.Helper()
 	if err := runCatalogSeedErr(t, db, dir); err != nil {
@@ -361,15 +470,18 @@ func runCatalogSeed(t *testing.T, db *sql.DB, dir string) {
 
 func runCatalogSeedErr(t *testing.T, db *sql.DB, dir string) error {
 	t.Helper()
-	return runCatalogSeedErrRepos(t, db, dir, openCatalogRepos)
+	return runCatalogSeedBound(t, db, dir, true)
 }
 
-func runCatalogSeedErrRepos(t *testing.T, db *sql.DB, dir string, open func(*sql.DB) (mdcatalog.Repos, error)) error {
+func runCatalogSeedBound(t *testing.T, db *sql.DB, dir string, bind bool) error {
 	t.Helper()
 	app := testApp(t, true)
+	imports := 0
+	if bind {
+		bindTestCatalogSeed(t, app, db, &imports)
+	}
 	reg := plugin.NewRegistry(app.Logger)
 	plug := metaldogs.New()
-	plug.UseCatalogRepos(open)
 	reg.Register(plug)
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
@@ -381,12 +493,60 @@ func runCatalogSeedErrRepos(t *testing.T, db *sql.DB, dir string, open func(*sql
 	if !cmd.RequiresDB {
 		t.Fatal("metaldogs:catalog-seed must require a database")
 	}
-	return cmd.Run(cli.Context{
+	err := cmd.Run(cli.Context{
 		Ctx:    context.Background(),
 		DB:     db,
 		Logger: app.Logger,
 		Config: app.Config,
 	}, []string{"-dir", dir})
+	if bind && err == nil && imports != 1 {
+		t.Fatalf("Import calls = %d, want 1", imports)
+	}
+	if bind && err != nil && imports > 1 {
+		t.Fatalf("Import calls = %d, want at most 1", imports)
+	}
+	return err
+}
+
+type countingSeed struct {
+	pluginsdk.CatalogSeedPort
+	imports *int
+}
+
+func (c countingSeed) Import(ctx context.Context, batch pluginsdk.CatalogSeedBatch) (*pluginsdk.CatalogSeedResult, error) {
+	*c.imports++
+	return c.CatalogSeedPort.Import(ctx, batch)
+}
+
+func bindTestCatalogSeed(t *testing.T, app *plugin.App, db *sql.DB, imports *int) {
+	t.Helper()
+	products, err := postgres.NewProductRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variants, err := postgres.NewVariantRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prices, err := postgres.NewPriceRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := postgres.NewPriceHistoryRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stock, err := postgres.NewStockRepo(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := pluginsdk.NewCatalogSeedPort(products, variants, prices, history, stock, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.BindCatalogSeedPort(countingSeed{CatalogSeedPort: port, imports: imports}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // ProductRepo.Update rewrites updated_at, which would hide a later parent_sku write.
@@ -476,42 +636,6 @@ func seedPLNStore(t *testing.T, stores *postgres.StoreRepo) {
 	if err := stores.Create(context.Background(), &s); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// Embedding the interface drops ProductRepo.WithTx from the method set.
-type productRepoNoTx struct {
-	catalog.ProductRepository
-}
-
-func openCatalogRepos(db *sql.DB) (mdcatalog.Repos, error) {
-	products, err := postgres.NewProductRepo(db)
-	if err != nil {
-		return mdcatalog.Repos{}, err
-	}
-	variants, err := postgres.NewVariantRepo(db)
-	if err != nil {
-		return mdcatalog.Repos{}, err
-	}
-	prices, err := postgres.NewPriceRepo(db)
-	if err != nil {
-		return mdcatalog.Repos{}, err
-	}
-	history, err := postgres.NewPriceHistoryRepo(db)
-	if err != nil {
-		return mdcatalog.Repos{}, err
-	}
-	stock, err := postgres.NewStockRepo(db)
-	if err != nil {
-		return mdcatalog.Repos{}, err
-	}
-	return mdcatalog.Repos{
-		Products: products,
-		Variants: variants,
-		Prices:   prices,
-		History:  history,
-		Stock:    stock,
-		DB:       db,
-	}, nil
 }
 
 type catalogProduct struct {

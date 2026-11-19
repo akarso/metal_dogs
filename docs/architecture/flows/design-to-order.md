@@ -140,7 +140,7 @@ sequenceDiagram
     API-->>UI: 200 {cart_url: "/cart"} and Set-Cookie
     UI->>Shop: redirect to /cart (guest session cart)
     Cust->>Shop: checkout (guest), pay via Stripe
-    Shop->>Shop: cart.validate blocks a custom tee with a missing, unknown, expired, or unapproved design. Other products are untouched. Ownership is not re-checked
+    Shop->>Shop: cart.validate blocks a custom tee with a missing, unknown, expired, or unapproved design. A parent outside read scope blocks. A loaded other product is untouched. Ownership is not re-checked
     Shop->>Shop: checkout copies snapshot-mode metaldogs.design_id onto the order line
     Shop->>API: checkout step (E3): designs still approved?
     API-->>Shop: ok

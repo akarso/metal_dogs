@@ -6,9 +6,9 @@
 | Origin (this product) | `origin` → `git@github.com:akarso/metal_dogs.git` (HTTPS clone URL: `https://github.com/akarso/metal_dogs.git`) |
 | Branch policy | **main-only** (no Metal Dogs `dev` branch; do not run upstream `scripts/promote-dev-to-main.sh` here) |
 | Pinned ref | commit SHA (Shopanda has no release tags yet) |
-| Pinned commit | `a411c970bbc869d54d44852bc30f7427be9b2745` |
-| Pinned subject | Merge pull request #588 from akarso/pr-1554-1555-product-consumer-followups |
-| Verified locally | 2026-11-16 (explicit SHA). Fetched `upstream/main` tip `9a8d2b7c` (PR #589) has the same tree |
+| Pinned commit | `fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75` |
+| Pinned subject | Merge pull request #629 from akarso/dev |
+| Verified locally | 2026-11-19 (explicit SHA from `upstream/main`) |
 
 Upgrade procedure: [`runbooks/shopanda-upgrade.md`](runbooks/shopanda-upgrade.md).
 
@@ -35,5 +35,35 @@ Before merging a newer `upstream` tip: ensure this clone is not shallow (`test !
 - [shopanda#584](https://github.com/akarso/shopanda/pull/584) — public extension SDK, PR-1540–1552 (`4f9de269`)
 - [shopanda#586](https://github.com/akarso/shopanda/pull/586) — `CartPort` consumer follow-ups, PR-1553 (`cec3e492`)
 - [shopanda#588](https://github.com/akarso/shopanda/pull/588) — optional customer identity and `CatalogPort` slug, PR-1554/1555 (`a411c970`)
+- [shopanda#590](https://github.com/akarso/shopanda/pull/590) — `pending_line`, `DiscardEmptyGuestCart`, `ProductVisible` / `ClassifyProductSlug`, PR-1556–1558 (`1f500783`)
+- [shopanda#592](https://github.com/akarso/shopanda/pull/592) — `App.BoundQueue()` and sync `request_id` reinjection, PR-1559 (`e2b418b8`)
+- [shopanda#593](https://github.com/akarso/shopanda/pull/593) — `registerProductPlugins`, PR-1560 (`4e90b492`)
+- [shopanda#594](https://github.com/akarso/shopanda/pull/594) — `pluginsdk.NoCache`, PR-1561 (`4cdb0caa`)
+- [shopanda#595](https://github.com/akarso/shopanda/pull/595) — product-owned `merge=ours` / `Makefile.product` docs, PR-1562 (`5874ee36`)
+- [shopanda#597](https://github.com/akarso/shopanda/pull/597) — `plugins.<slug>` Extra config, PR-1563 (`39f104ca`)
+- [shopanda#598](https://github.com/akarso/shopanda/pull/598) — `CatalogSeedPort`, PR-1564 (`246b5bde`)
+- [shopanda#599](https://github.com/akarso/shopanda/pull/599) — attempt-aware `Complete`/`Fail`, `ErrSkipOutcome`, PR-1565a (`28b6695b`)
+- [shopanda#602](https://github.com/akarso/shopanda/pull/602) — `OnQueueBound`, `OnRequeued`, `Queue.Requeue`, PR-1565b (`f94f0894`)
+- [shopanda#605](https://github.com/akarso/shopanda/pull/605) — catalog seed Status/Type/Attributes, PR-1566 (`b026d581`)
+- [shopanda#606](https://github.com/akarso/shopanda/pull/606) — promote that `dev` tip onto `main` (`7c982b00`)
+- [shopanda#608](https://github.com/akarso/shopanda/pull/608) — `CatalogPriceSeed.Update`, PR-1567 (`850e3a3f`)
+- [shopanda#610](https://github.com/akarso/shopanda/pull/610) — NoCache path-param prefixes and `Config.Extra` nested flatten, PR-1568/1569 (`c17f407a`, follow-ups through `9d3ef379`)
+- [shopanda#611](https://github.com/akarso/shopanda/pull/611) — promote that `dev` tip onto `main` (`ab35e965`)
+- [shopanda#612](https://github.com/akarso/shopanda/pull/612) — MetalDogs config via Extra and skip empty Extra env, PR-1570/1571 (`852e15a1`)
+- [shopanda#614](https://github.com/akarso/shopanda/pull/614) — `CapCatalogSeed` CLI-only and attribute mismatch values, PR-1572/1573 (`1b39989f`, harden `73348d5e`)
+- [shopanda#615](https://github.com/akarso/shopanda/pull/615) — promote that `dev` tip onto `main` (`7bd34bef`)
+- [shopanda#616](https://github.com/akarso/shopanda/pull/616) — plugin CLI auto-binds `CapCatalogSeed` for the owning plugin, PR-1574 (`8032b225`, harden through `dd277dd4`)
+- [shopanda#617](https://github.com/akarso/shopanda/pull/617) — promote that `dev` tip onto `main` (`565dde5a`)
+- [shopanda#618](https://github.com/akarso/shopanda/pull/618) — shared process boot helpers `bootServePlugins` / `bootWorkerPlugins`, PR-1575 (`0bed9b1f`, harden `2e029ac4`)
+- [shopanda#620](https://github.com/akarso/shopanda/pull/620) — `TestNewJobsRuntime_WarehousedemoReachesBind` fixture, PR-1578 (`6d253b50`)
+- [shopanda#621](https://github.com/akarso/shopanda/pull/621) — `Host.PlatformConfig`, `pluginsdk.RequireQueueDriver`, PR-1577 (`58b87ea7`)
+- [shopanda#622](https://github.com/akarso/shopanda/pull/622) — `jobs.WithRequeueTerminal()` for failed/done/cancelled, PR-1576 (`a2fc61f1`, harden through `2fbee1fa`)
+- [shopanda#623](https://github.com/akarso/shopanda/pull/623) — promote that `dev` tip onto `main` (`de29a0c1`)
+- [shopanda#624](https://github.com/akarso/shopanda/pull/624) — non-UUID job ids are not-found, PR-1579 (`50fd03b4`, harden through `a7da3d84`)
+- [shopanda#625](https://github.com/akarso/shopanda/pull/625) — promote that `dev` tip onto `main` (`58aa6987`)
+- [shopanda#626](https://github.com/akarso/shopanda/pull/626) — context-aware `ReadableStorage.Read`, PR-1580 (`32c937c6`, harden `52964e1d`)
+- [shopanda#627](https://github.com/akarso/shopanda/pull/627) — promote that `dev` tip onto `main` (`abc82f51`)
+- [shopanda#628](https://github.com/akarso/shopanda/pull/628) — cart extension fake is race-free; `scripts/ci/unit.sh` runs `./internal/application/cart/` with `-race`, PR-1581 (`b021817b`, harden `93aef832`)
+- [shopanda#629](https://github.com/akarso/shopanda/pull/629) — promote that `dev` tip onto `main` (`fd4dd577`)
 
-**Still Metal Dogs–only** (do not claim full F3 absorb): `App.BoundQueue()`, sync-handler `request_id`→ctx reinjection, plus registration/cache-control wiring — listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. Two `pkg/pluginsdk` test files differ from this pin for the same reason: `sdk_test.go` (`Complete`/`Fail` attempt argument) and `harness/harness_test.go` (upstream `TestAdaptInit_CartPortBound` does not compile against `CartPort` and expects `AddItem` where `Host.Cart()` fail-closes). `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` is removed.
+**Still Metal Dogs–only** (do not claim the deviations are gone): product registration, the Metal Dogs plugin, and storefront docs. UPG4 ticket 03 deleted the kept copies of `BoundQueue`, sync `request_id` reinjection, the jobs attempt fence, and `Admin.RequeueLease`; those match this pin. The generate claim fence is `Host.OnRequeued` in `Plugin.Init` (`pluginsdk.RequeueTx` in the re-pend transaction). Non-postgres `queue.driver` fails Init via `pluginsdk.RequireQueueDriver` (`Host.PlatformConfig`; empty counts as postgres). Terminal re-pend is `Queue.Requeue(..., WithRequeueTerminal())` on the bound queue; `OnRequeued` runs in that transaction ([overview](architecture/overview.md)). Typed MetalDogs config and empty `SHOPANDA_PLUGINS_*` overlays are fixed upstream (PR-1570/1571). `CapCatalogSeed` is CLI-only (PR-1572) and auto-bound on `RequiresDB` commands whose plugin declared the Need (PR-1574). `cmd/api/cli_plugins.go` matches this pin. `internal/infrastructure/postgres/job_queue.go` matches this pin (non-UUID requeue ids are `ErrRequeueNotFound`, PR-1579). `internal/infrastructure/localfs/storage.go` matches this pin (`ReadableStorage.Read(ctx, path)`, PR-1580); the product `ReadContext` patch is gone. `plugins/metaldogs/adapters/mediastore` calls that `Read`. Listed under [`architecture/overview.md`](architecture/overview.md) and checked by `.github/scripts/check-upstream-deviations.sh`. `pkg/pluginsdk` matches this pin. `pluginsdk.Host` `Cart()` and `Catalog()` are what Metal Dogs add-to-cart uses ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). `cmd/api/metaldogs_cart.go` and `cmd/api/metaldogs_catalog.go` are removed. `metaldogs:catalog-seed` calls `Host.CatalogSeed().Import` once, with `CatalogPriceSeed.Update`. Attribute mismatch errors include the stored and requested values (PR-1573).

@@ -284,12 +284,28 @@ queue:
 #   extref:
 #     enabled: false   # public SDK reference (pluginsdk.Adapt); GET /extref/health
 #   promodemo:
-#     enabled: false
+#     enabled: false   # custom catalog promotion rule types (min_line_total, line_bonus_percent)
+#
+# Product (fork) plugins: use an unknown slug map — no typed field in core
+# (metaldogs and other product slugs land in Extra; read via Host.Config*).
+# Nested YAML maps flatten to dotted keys (generation.provider). Env uses
+# underscores (SHOPANDA_PLUGINS_MYPRODUCT_GENERATION_PROVIDER); empty env is
+# unset (does not override YAML). Host.Config* accepts either notation. Lists
+# under plugins.<slug> are rejected.
+# plugins:
+#   myproduct:
+#     enabled: true
+#     api_key: "..."
 #   b2b:                         # commercial; see docs/COMMERCIAL.md
 #     enabled: false
 #     license_key: "DEV-local"
-#   metaldogs:                   # Metal Dogs product plugin (dark by default)
+#   metaldogs:                   # Metal Dogs product plugin (dark by default; Extra slug)
 #     enabled: false             # or SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
+#     generation:                # or generation_provider / generation.provider; env SHOPANDA_PLUGINS_METALDOGS_GENERATION_*
+#       provider: fake
+#       max_retries: 3
+#       max_attempts_per_design: 3
+#       cooldown_seconds: 30
 #   graphql:
 #     enabled: false
 
