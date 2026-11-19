@@ -122,7 +122,8 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, contentType st
 	return nil
 }
 
-// Read returns object bytes via media.ReadableStorage.Read.
+// Read returns the backend bytes when Read succeeds. ctx.Err wins only when
+// Read fails and the context is already done; a finished read is kept.
 func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

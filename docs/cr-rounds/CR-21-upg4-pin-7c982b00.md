@@ -354,7 +354,7 @@ Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_t
 | `internal/infrastructure/localfs/storage.go` | Upstream. `git diff abc82f51` empty for `internal/infrastructure/localfs/` |
 | `internal/interfaces/http/admin/search_admin_test.go` | Already identical to the pin (no conflict). `git diff abc82f51` empty |
 
-`plugins/metaldogs/adapters/mediastore.Store.Read` calls `ReadableStorage.Read(ctx, key)`. The optional `ReadContext` interface and the non-context fallback are gone. A cancelled context still returns `context.Canceled`.
+`plugins/metaldogs/adapters/mediastore.Store.Read` calls `ReadableStorage.Read(ctx, key)`. The optional `ReadContext` interface and the non-context fallback are gone. When `Read` returns an error and `ctx` is done, `Store` returns that context error. A `Read` that returns bytes is kept, including when `ctx` ends during the last chunk. The old post-success `ctx.Err` check ran only on the non-context fallback; localfs never used it (`ReadContext` already returned the finished buffer on EOF). Between-chunk cancellation stays in the backend (PR-1580).
 
 ### Upstream range `58aa6987..abc82f51` touching files we use
 

@@ -173,6 +173,60 @@ func (b *blockingCtxReadable) Read(ctx context.Context, path string) ([]byte, er
 	}
 }
 
+// finishDespiteCancel matches localfs: EOF returns the buffer with no trailing ctx.Err check.
+type finishDespiteCancel struct {
+	fakeSigned
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *finishDespiteCancel) Read(ctx context.Context, path string) ([]byte, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return b.fakeSigned.Read(ctx, path)
+}
+
+func TestStore_ReadKeepsFinishedBytesAfterCancel(t *testing.T) {
+	t.Parallel()
+	const key = "private/blobs/metaldogs/source/2026/11/a1.jpg"
+	inner := &finishDespiteCancel{
+		fakeSigned: fakeSigned{objects: map[string][]byte{key: []byte("abc")}},
+		started:    make(chan struct{}, 1),
+		release:    make(chan struct{}),
+	}
+	store, err := mediastore.New(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		b   []byte
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		b, err := store.Read(ctx, key)
+		ch <- result{b, err}
+	}()
+	<-inner.started
+	cancel()
+	close(inner.release)
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("err = %v, want finished bytes", got.err)
+		}
+		if string(got.b) != "abc" {
+			t.Fatalf("got %q", got.b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not return")
+	}
+}
+
 func TestStore_ReadRespectsCancel(t *testing.T) {
 	t.Parallel()
 	inner := &blockingCtxReadable{
