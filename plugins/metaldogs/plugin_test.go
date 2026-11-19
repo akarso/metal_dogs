@@ -134,7 +134,7 @@ func TestPlugin_Init_NonPostgresQueue(t *testing.T) {
 	app := testApp(t, true)
 	app.Config.Queue.Driver = "rabbitmq"
 	err := metaldogs.New().Init(app)
-	if err == nil || !strings.Contains(err.Error(), "queue.driver=rabbitmq") {
+	if err == nil || !strings.Contains(err.Error(), `queue.driver="rabbitmq"`) {
 		t.Fatalf("Init: %v", err)
 	}
 }

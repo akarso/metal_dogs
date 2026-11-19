@@ -236,7 +236,7 @@ The `prepareProductCLI` / `wireCatalogSeedCLI` hooks and the `cli_plugins.go` de
 
 `metaldogs:catalog-seed` declares `RequiresDB` and `Need(CapCatalogSeed)`. The write test calls `runPluginCLICommandWithDeps` with `bindPluginCLIPorts` and an injected `OpenDB`. The command does not read `cli.Context.DB`: this root never sets it. Writes go through `Host.CatalogSeed()`. Serve and worker still skip the seed port. A `parent_sku` mismatch error names `parent_sku` next to the stored and requested values.
 
-`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` calls `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream has no shared serve/worker function for that sequence. `runWorker`, the scheduler, and search reindex inline the dual skip; serve inlines `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. A later change to those skip lists is not caught by this test.
+`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` calls `bindProductPorts`, then `AssertNeedsMetExcept(CapCart, CapCatalogSeed)` and, after `BindCartPort`, `AssertNeedsMetExcept(CapCatalogSeed)`. Upstream has no shared serve/worker function for that sequence. `runWorker`, the scheduler, and search reindex inline the dual skip; serve inlines `AssertNeedsMetExcept(CapCatalogSeed)` in `wireServeRuntime` after `BindCartPort`. A later change to those skip lists is not caught by this test. **Fixed in ticket 03b** (PR-1575 `bootServePlugins` / `bootWorkerPlugins`, shopanda#618). The Metal Dogs test calls those helpers. A plugin that `Need`s `CapCatalogSeed` and a seed CLI that did not bind the port are already covered by `plugin_boot_test.go`.
 
 ## Ticket 03 — job delivery fence on SDK hooks
 
@@ -259,11 +259,11 @@ Jobs core and cmd/api job wiring match the pin again: `internal/domain/jobs/*`, 
 
 `plugins/metaldogs/job_fence.go` does not import `internal/*`. There is no queue wrap. `TestImportBoundary` has no `job_fence.go` or `generate_fence_queue.go` line.
 
-`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that. The write is listed in `docs/architecture/overview.md`. `sync_generate_repend_test.go` is the schema contract.
+`rependTerminalGenerateJob` sets `status`, `run_at`, and `updated_at` — the same columns as `Queue.Requeue`. It does not reset `attempts` (`Admin.Retry` does, and does not run `OnRequeued`). `jobs` has no completion timestamp. `Queue.Requeue` and `Admin.Retry` also leave `last_error` in place (`Fail` writes it). The terminal UPDATE matches that. The write is listed in `docs/architecture/overview.md` (row removed in ticket 03b). `sync_generate_repend_test.go` is the schema contract.
 
 ### Shopanda gaps (ticket 03)
 
-- No queue API re-pends `failed` / `done` / `cancelled`, keeps `attempts`, and runs `OnRequeued` in the same transaction. `Queue.Requeue` is processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` is failed-only, resets `attempts`, and does not run the hook. The plugin updates `jobs` itself for that case. Follow-up: a terminal requeue that keeps attempts and runs `OnRequeued` in the same transaction. `Host.ConfigValue` on a scoped host cannot read `queue.driver`, so Init reads `App.Config.Queue.Driver`.
+- No queue API re-pends `failed` / `done` / `cancelled`, keeps `attempts`, and runs `OnRequeued` in the same transaction. `Queue.Requeue` is processing-only (`ErrRequeueNotProcessing`). `Admin.Retry` is failed-only, resets `attempts`, and does not run the hook. The plugin updates `jobs` itself for that case. Follow-up: a terminal requeue that keeps attempts and runs `OnRequeued` in the same transaction. `Host.ConfigValue` on a scoped host cannot read `queue.driver`, so Init reads `App.Config.Queue.Driver`. **Fixed in ticket 03b** (PR-1576 `WithRequeueTerminal`, shopanda#622; PR-1577 `RequireQueueDriver`, shopanda#621).
 
 ### Known red on the pin (not Metal Dogs wiring)
 
@@ -302,7 +302,7 @@ Merge only. The plugin still calls `rependTerminalGenerateJob` and reads `App.Co
 - `pkg/pluginsdk` `Host.PlatformConfig` and `RequireQueueDriver`: allowlist is `queue.driver`, `search.engine`, `cache.driver`, `media.storage`. Empty `queue.driver` counts as `postgres`. Other keys, including `plugins.*` and secrets, return empty. Scoped `ConfigValue` still does not see core keys (PR-1577, `58b87ea7`).
 - `cmd/api/jobs_cli_test.go`: `TestNewJobsRuntime_WarehousedemoReachesBind` sets `SHOPANDA_DEV_MODE` and `Media.Local.BasePath` so `core/storage-local` Init does not fail on an empty base path (PR-1578, `6d253b50`).
 
-`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`.
+`TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` still calls `bindProductPorts` and `AssertNeedsMetExcept` itself. The skip lists it locks are the ones in `plugin_boot.go`. The test file was not switched to `bootServePlugins`. **Fixed in ticket 03b.**
 
 `TestNewJobsRuntime_WarehousedemoReachesBind` passes. `TestJobQueue_Requeue_MissingID` is red on pin `de29a0c1` and on this tree. The test passes `"missing-id"` into UUID column `jobs.id`. The lock query returns `22P02` (`invalid input syntax for type uuid`) instead of `ErrNoRows`, so `RequeueWithBeforeCommit` does not return `ErrRequeueNotFound`. `internal/infrastructure/postgres/job_queue.go` matches the pin. Not patched (see Shopanda gaps).
 
@@ -364,4 +364,25 @@ Allowlist stays `cmd/api/migrate_plugins_test.go`, `register_plugins_metaldogs_t
 - `search_admin_test.go`: `jobs` import alias is `domainjobs` (same diff was already on this branch from ticket 00f).
 
 Allowlist unchanged. `localfs` is outside `check-upstream-deviations.sh` and now matches the pin.
+
+## Ticket 03b — adopt terminal requeue, PlatformConfig, and boot helpers
+
+- Date: 2026-11-19
+- Pin: unchanged `abc82f51…`
+
+Three Metal Dogs workarounds are gone. Customer-visible behaviour is the same.
+
+| Removed | Upstream |
+| --- | --- |
+| `rependTerminalGenerateJob` (`UPDATE jobs` for `failed`/`done`/`cancelled`, attempts kept, claim bump in that transaction) | `Queue.Requeue(ctx, id, attempt, jobs.WithRequeueTerminal())` on the bound queue. `OnRequeued` runs before `pending` in that transaction. A hook error rolls the re-pend back. PR-1576, shopanda#622 (`a2fc61f1`, harden through `2fbee1fa`) |
+| `Plugin.Init` read `App.Config.Queue.Driver` | `pluginsdk.RequireQueueDriver(host, "postgres")` via `Host.PlatformConfig`. Empty driver counts as postgres. PR-1577, shopanda#621 (`58b87ea7`) |
+| `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` hand-copied `AssertNeedsMetExcept` skip lists | `bootServePlugins` / `bootWorkerPlugins` in `cmd/api/plugin_boot.go`. PR-1575, shopanda#618 (`0bed9b1f`, harden `2e029ac4`). `plugin_boot_test.go` already boots a `Need(CapCatalogSeed)` plugin on serve and worker, and fails a seed CLI that did not bind the port |
+
+The direct-write row is gone from `docs/architecture/overview.md`. Operator path for a terminal platform row: `jobs:requeue --terminal [--force]` (`docs/runbooks/generation-job-stuck-or-failed.md`).
+
+### Shopanda gaps marked fixed
+
+- Ticket 03: no terminal requeue that keeps attempts and runs `OnRequeued`; Init could not read `queue.driver` through the scoped host. Fixed (PR-1576, PR-1577).
+- Ticket 00d: no shared serve/worker boot helper, so the Metal Dogs test copied the skip lists. Fixed (PR-1575). The test calls the helpers.
+- Ticket 00e note that the test was not switched to `bootServePlugins`. Fixed in this ticket.
 

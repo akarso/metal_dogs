@@ -81,13 +81,25 @@ func (q *queueWithAdmin) Requeue(_ context.Context, _ string, attempt int, opts 
 	a := q.conflictAdmin
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.status != jobs.StatusProcessing {
-		return jobs.ErrRequeueNotProcessing
-	}
 	if a.attempts != 0 && attempt != a.attempts {
 		return jobs.ErrRequeueWrongAttempt
 	}
-	if time.Since(a.updatedAt) < jobs.ApplyRequeueOptions(opts) {
+	settings := jobs.ResolveRequeueOptions(opts)
+	if settings.Terminal {
+		switch a.status {
+		case jobs.StatusFailed, jobs.StatusDone, jobs.StatusCancelled:
+			a.status = jobs.StatusPending
+			a.requeued = true
+			a.hookCalls++
+			return nil
+		default:
+			return jobs.ErrRequeueNotTerminal
+		}
+	}
+	if a.status != jobs.StatusProcessing {
+		return jobs.ErrRequeueNotProcessing
+	}
+	if time.Since(a.updatedAt) < settings.MinAge {
 		return jobs.ErrRequeueTooFresh
 	}
 	a.status = jobs.StatusPending
@@ -100,7 +112,7 @@ func TestResolveGenerateEnqueueConflict_LiveClaimNoOp(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(nil, q, context.Background(), "job-1"); err != nil {
+	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.requeued || admin.hookCalls != 0 {
@@ -115,7 +127,7 @@ func TestResolveGenerateEnqueueConflict_ReliesOnRequeueHookOnly(t *testing.T) {
 		updatedAt: time.Now().Add(-10 * time.Minute),
 	}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(nil, q, context.Background(), "job-1"); err != nil {
+	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
 		t.Fatal(err)
 	}
 	if !admin.requeued {

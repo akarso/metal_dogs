@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +39,7 @@ func TestEnqueueGenerate_RependTerminalKeepsAttemptsAndBumpsClaim(t *testing.T) 
 	if svc == nil || svc.Enqueue == nil {
 		t.Fatal("generate enqueue not wired")
 	}
-	if err := app.BindQueue(queue); err != nil {
+	if err := app.BindQueue(app.WrapRequeueNotify(queue)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,6 +103,66 @@ func TestEnqueueGenerate_RependTerminalKeepsAttemptsAndBumpsClaim(t *testing.T) 
 				t.Fatalf("status=%s claim %d→%d started_valid=%v", status, claimBefore, claimAfter, startedAfter.Valid)
 			}
 		})
+	}
+}
+
+func TestEnqueueGenerate_RependTerminalHookErrorRollsBack(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "repend-hook")
+	ctx := context.Background()
+	queue, err := infraPostgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := testApp(t, true)
+	app.Bootstrap = &plugin.Bootstrap{DB: db}
+	reg := plugin.NewRegistry(app.Logger)
+	p := metaldogs.New()
+	reg.Register(p)
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll %+v", summary)
+	}
+	app.OnRequeued(func(context.Context, string, int) error {
+		return errors.New("hook failed")
+	})
+	if err := app.BindQueue(app.WrapRequeueNotify(queue)); err != nil {
+		t.Fatal(err)
+	}
+	svc := p.GenerateService()
+	if svc == nil || svc.Enqueue == nil {
+		t.Fatal("generate enqueue not wired")
+	}
+	jobID, designID := seedRunningGenerate(t, db, 1)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO jobs (id, type, payload, status, attempts, max_retries, last_error)
+		VALUES ($1, 'integration.sync.metaldogs.generate', '{}'::jsonb, 'failed', 4, 3, 'boom')`,
+		jobID); err != nil {
+		t.Fatal(err)
+	}
+	var claimBefore int
+	if err := db.QueryRowContext(ctx, `
+		SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimBefore); err != nil {
+		t.Fatal(err)
+	}
+	err = svc.Enqueue(ctx, jobID, designID)
+	if err == nil || !strings.Contains(err.Error(), "hook failed") {
+		t.Fatalf("enqueue: %v", err)
+	}
+	var status string
+	var attempts int
+	var lastError sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT status, attempts, last_error FROM jobs WHERE id = $1`, jobID).
+		Scan(&status, &attempts, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	var claimAfter int
+	if err := db.QueryRowContext(ctx, `
+		SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimAfter); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || attempts != 4 || !lastError.Valid || lastError.String != "boom" || claimAfter != claimBefore {
+		t.Fatalf("status=%s attempts=%d last_error=%v claim %d→%d", status, attempts, lastError, claimBefore, claimAfter)
 	}
 }
 

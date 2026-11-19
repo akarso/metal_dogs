@@ -293,6 +293,20 @@ func concreteCustomizerPath(pattern string) string {
 }
 
 func TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed(t *testing.T) {
+	workerReg, workerApp, workerBoot := metalDogsBootFixture()
+	if err := bootWorkerPlugins(workerReg, workerApp, workerBoot); err != nil {
+		t.Fatalf("worker boot: %v", err)
+	}
+	assertMetalDogsBootsWithoutCatalogSeed(t, workerReg, workerApp)
+
+	serveReg, serveApp, serveBoot := metalDogsBootFixture()
+	if err := bootServePlugins(serveReg, serveApp, serveBoot, struct{}{}); err != nil {
+		t.Fatalf("serve boot: %v", err)
+	}
+	assertMetalDogsBootsWithoutCatalogSeed(t, serveReg, serveApp)
+}
+
+func metalDogsBootFixture() (*plugin.Registry, *plugin.App, *plugin.Bootstrap) {
 	cfg := metalDogsEnabledConfig()
 	log := logger.NewWithWriter(io.Discard, "error")
 	reg := plugin.NewRegistry(log)
@@ -302,31 +316,17 @@ func TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed(t *testing.T) {
 		Products: seedBootProducts{},
 		Variants: seedBootVariants{},
 	}
-	if err := bindProductPorts(app, boot); err != nil {
-		t.Fatal(err)
-	}
-	summary := reg.InitAll(app)
-	if summary.Failed != 0 {
-		t.Fatalf("InitAll = %+v", summary)
-	}
+	return reg, app, boot
+}
+
+func assertMetalDogsBootsWithoutCatalogSeed(t *testing.T, reg *plugin.Registry, app *plugin.App) {
+	t.Helper()
 	if !app.CapabilityDeclaredBy(plugin.CapCatalogSeed, metaldogs.PluginName) {
 		t.Fatal("metaldogs must Need CapCatalogSeed")
 	}
 	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandCatalogSeed)
 	if !ok || !cmd.RequiresDB || cmd.Plugin != metaldogs.PluginName {
 		t.Fatalf("catalog-seed cmd = %+v, want RequiresDB owned by metaldogs", cmd)
-	}
-	if _, bound := app.CatalogSeedPort(); bound {
-		t.Fatal("bindProductPorts must not bind CapCatalogSeed")
-	}
-	if err := app.AssertNeedsMetExcept(plugin.CapCart, plugin.CapCatalogSeed); err != nil {
-		t.Fatalf("worker boot: %v", err)
-	}
-	if err := app.BindCartPort(struct{}{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.AssertNeedsMetExcept(plugin.CapCatalogSeed); err != nil {
-		t.Fatalf("serve boot: %v", err)
 	}
 	if _, bound := app.CatalogSeedPort(); bound {
 		t.Fatal("serve and worker must leave CatalogSeedPort unbound")

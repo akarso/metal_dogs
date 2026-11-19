@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -57,19 +56,6 @@ func (p *Plugin) Needs() []plugin.Capability {
 // New returns the Metal Dogs plugin.
 func New() *Plugin { return &Plugin{} }
 
-// requirePostgresQueue rejects broker queues. An empty driver is the platform
-// default (postgres). Generate requeue fencing needs RequeueHookable.
-func requirePostgresQueue(app *plugin.App) error {
-	driver := ""
-	if app != nil && app.Config != nil {
-		driver = strings.TrimSpace(app.Config.Queue.Driver)
-	}
-	if driver == "" || driver == "postgres" {
-		return nil
-	}
-	return fmt.Errorf("metaldogs plugin: queue.driver=%s; generate requires postgres", driver)
-}
-
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
 
@@ -114,9 +100,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
 		h.Require(pluginsdk.CapDB)
 	}
-	// Scoped Host.ConfigValue only sees plugins.metaldogs.*; queue.driver is core config.
-	if err := requirePostgresQueue(app); err != nil {
-		return err
+	// ConfigValue is plugin-scoped; queue.driver is an allowlisted core key.
+	if err := pluginsdk.RequireQueueDriver(h, "postgres"); err != nil {
+		return fmt.Errorf("metaldogs plugin: %w", err)
 	}
 	if err := InstallGenerateJobFence(h); err != nil {
 		return fmt.Errorf("metaldogs plugin: generate job fence: %w", err)
