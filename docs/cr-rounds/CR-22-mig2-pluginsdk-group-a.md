@@ -1,6 +1,6 @@
 # CR-22: MIG2 pluginsdk group A (simple replacements)
 
-- Status: closed 2026-11-20 (group A). Items 4 and `metaldogs:eval` on the real CLI path wait for MIG3.
+- Status: closed 2026-11-20 (group A). Item 4 waits for MIG3. `metaldogs:eval` on the real CLI path is superseded by [CR-23](CR-23-upg5-pin-ad14bd3a.md): the process CLI dispatches it and does not open a DSN.
 - Slices: MIG2 (behaviour unchanged)
 
 ## What changed
@@ -26,7 +26,7 @@
 | 6, 7 | `Host.BootstrapDB` after `Require(CapDB)` during Init | `pluginsdk.CLIContext` has no `*sql.DB` and no config. The CLI root opens the pool after `InitAll` (`FreezePluginNeeds`). CapDB has to be recorded while Init still runs, including when `Bootstrap.DB` is nil. `metaldogs:templates` is `RequiresDB: true` so load/publish/retire see that pool. `validate` does not query. The shared pool is not closed. |
 | 8 | `Host.RegisterField(extapi.FieldDef)` | Same strings as the domain constants (`string`, `cart_item`, `snapshot`, `public`, `PluginOnlyWrite`, UUID regex). Owner stays `metaldogs` via `AsHostFor`. |
 
-`metaldogs:eval` stays `RequiresDB: false` (`TestPlugin_Init_Enabled_RegistersObsPing`). The real CLI path (`runPluginCLICommand`) rejects it: the plugin `Needs` `CapCatalogSeed`, and `cmd/api/cli_plugins.go` refuses any command of that plugin with `RequiresDB` false before `Run`. Eval does not read a database; setting `RequiresDB` true would open one. Direct `cmd.Run` in the plugin tests still works.
+`metaldogs:eval` stays `RequiresDB: false` (`TestPlugin_Init_Enabled_RegistersObsPing`). On pin `fd4dd577` the real CLI path (`runPluginCLICommand`) rejected it: the plugin `Needs` `CapCatalogSeed`, and `cmd/api/cli_plugins.go` refused any command of that plugin with `RequiresDB` false before `Run`. Eval does not read a database; setting `RequiresDB` true would open one. That rejection is superseded by [CR-23](CR-23-upg5-pin-ad14bd3a.md). Direct `cmd.Run` in the plugin tests still works.
 
 `metaldogs:templates` on that same path used to die on the same check. `RequiresDB: true` is what lets it run. `validate` then needs a database the process can open, and still does not query it.
 
