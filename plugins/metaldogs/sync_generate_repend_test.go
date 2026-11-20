@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	platformjobs "github.com/akarso/shopanda/internal/domain/jobs"
 	infraPostgres "github.com/akarso/shopanda/internal/infrastructure/postgres"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
@@ -30,7 +32,7 @@ func TestEnqueueGenerate_RependTerminalKeepsAttemptsAndBumpsClaim(t *testing.T) 
 	app.Bootstrap = &plugin.Bootstrap{DB: db}
 	reg := plugin.NewRegistry(app.Logger)
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll %+v", summary)
@@ -39,7 +41,7 @@ func TestEnqueueGenerate_RependTerminalKeepsAttemptsAndBumpsClaim(t *testing.T) 
 	if svc == nil || svc.Enqueue == nil {
 		t.Fatal("generate enqueue not wired")
 	}
-	if err := app.BindQueue(app.WrapRequeueNotify(queue)); err != nil {
+	if err := bindRependQueue(t, app, queue); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +119,7 @@ func TestEnqueueGenerate_RependTerminalHookErrorRollsBack(t *testing.T) {
 	app.Bootstrap = &plugin.Bootstrap{DB: db}
 	reg := plugin.NewRegistry(app.Logger)
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll %+v", summary)
@@ -125,7 +127,7 @@ func TestEnqueueGenerate_RependTerminalHookErrorRollsBack(t *testing.T) {
 	app.OnRequeued(func(context.Context, string, int) error {
 		return errors.New("hook failed")
 	})
-	if err := app.BindQueue(app.WrapRequeueNotify(queue)); err != nil {
+	if err := bindRependQueue(t, app, queue); err != nil {
 		t.Fatal(err)
 	}
 	svc := p.GenerateService()
@@ -164,6 +166,145 @@ func TestEnqueueGenerate_RependTerminalHookErrorRollsBack(t *testing.T) {
 	if status != "failed" || attempts != 4 || !lastError.Valid || lastError.String != "boom" || claimAfter != claimBefore {
 		t.Fatalf("status=%s attempts=%d last_error=%v claim %d→%d", status, attempts, lastError, claimBefore, claimAfter)
 	}
+}
+
+func bindRependQueue(t *testing.T, app *plugin.App, queue platformjobs.Queue) error {
+	t.Helper()
+	wrapped := app.WrapRequeueNotify(queue)
+	if err := app.BindQueue(wrapped); err != nil {
+		return err
+	}
+	reader, ok := wrapped.(platformjobs.Reader)
+	if !ok {
+		return fmt.Errorf("wrapped queue is not a reader")
+	}
+	port, err := pluginsdk.NewJobsPort(reader, wrapped)
+	if err != nil {
+		return err
+	}
+	return app.BindJobsPort(port)
+}
+
+func TestEnqueueGenerate_SameIDStaleAndFresh(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "enqueue-id")
+	ctx := context.Background()
+	queue, err := infraPostgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := testApp(t, true)
+	app.Bootstrap = &plugin.Bootstrap{DB: db}
+	reg := plugin.NewRegistry(app.Logger)
+	p := metaldogs.New()
+	reg.Register(pluginsdk.Adapt(p))
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll %+v", summary)
+	}
+	if err := bindRependQueue(t, app, queue); err != nil {
+		t.Fatal(err)
+	}
+	svc := p.GenerateService()
+	if svc == nil || svc.Enqueue == nil {
+		t.Fatal("generate enqueue not wired")
+	}
+
+	t.Run("twice is one job", func(t *testing.T) {
+		jobID, designID := seedRunningGenerate(t, db, 11)
+		if err := svc.Enqueue(ctx, jobID, designID); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Enqueue(ctx, jobID, designID); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		var status string
+		if err := db.QueryRowContext(ctx, `SELECT count(*), min(status) FROM jobs WHERE id = $1`, jobID).Scan(&n, &status); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 || status != "pending" {
+			t.Fatalf("jobs=%d status=%s", n, status)
+		}
+	})
+
+	t.Run("terminal requeued", func(t *testing.T) {
+		jobID, designID := seedRunningGenerate(t, db, 12)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO jobs (id, type, payload, status, attempts, max_retries, last_error)
+			VALUES ($1, 'integration.sync.metaldogs.generate', '{}'::jsonb, 'failed', 4, 3, 'boom')`,
+			jobID); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Enqueue(ctx, jobID, designID); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		var attempts int
+		if err := db.QueryRowContext(ctx, `SELECT status, attempts FROM jobs WHERE id = $1`, jobID).Scan(&status, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		if status != "pending" || attempts != 4 {
+			t.Fatalf("status=%s attempts=%d", status, attempts)
+		}
+	})
+
+	t.Run("stale processing requeued", func(t *testing.T) {
+		jobID, designID := seedRunningGenerate(t, db, 13)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO jobs (id, type, payload, status, attempts, max_retries, updated_at)
+			VALUES ($1, 'integration.sync.metaldogs.generate', '{}'::jsonb, 'processing', 2, 3, NOW() - interval '10 minutes')`,
+			jobID); err != nil {
+			t.Fatal(err)
+		}
+		var claimBefore int
+		if err := db.QueryRowContext(ctx, `SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimBefore); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Enqueue(ctx, jobID, designID); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		var attempts int
+		if err := db.QueryRowContext(ctx, `SELECT status, attempts FROM jobs WHERE id = $1`, jobID).Scan(&status, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		var claimAfter int
+		if err := db.QueryRowContext(ctx, `SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimAfter); err != nil {
+			t.Fatal(err)
+		}
+		if status != "pending" || attempts != 2 || claimAfter != claimBefore+1 {
+			t.Fatalf("status=%s attempts=%d claim %d→%d", status, attempts, claimBefore, claimAfter)
+		}
+	})
+
+	t.Run("fresh processing untouched", func(t *testing.T) {
+		jobID, designID := seedRunningGenerate(t, db, 14)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO jobs (id, type, payload, status, attempts, max_retries)
+			VALUES ($1, 'integration.sync.metaldogs.generate', '{}'::jsonb, 'processing', 2, 3)`,
+			jobID); err != nil {
+			t.Fatal(err)
+		}
+		var claimBefore int
+		if err := db.QueryRowContext(ctx, `SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimBefore); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Enqueue(ctx, jobID, designID); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		var attempts int
+		if err := db.QueryRowContext(ctx, `SELECT status, attempts FROM jobs WHERE id = $1`, jobID).Scan(&status, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		var claimAfter int
+		if err := db.QueryRowContext(ctx, `SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimAfter); err != nil {
+			t.Fatal(err)
+		}
+		if status != "processing" || attempts != 2 || claimAfter != claimBefore {
+			t.Fatalf("status=%s attempts=%d claim %d→%d", status, attempts, claimBefore, claimAfter)
+		}
+	})
 }
 
 func seedRunningGenerate(t *testing.T, db *sql.DB, n int) (jobID, designID string) {

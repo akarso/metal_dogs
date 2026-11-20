@@ -126,3 +126,21 @@ No longer present (still listed in the baseline): `assets.go` (`domain/media`, `
 ## Not in this change
 
 No `Init(Host)`, no `pluginsdk.Adapt`, no edits under `internal/*`, `pkg/*`, or core `cmd/api/*`. Baseline file not edited.
+
+## Ticket 03
+
+`Plugin.Init` takes `pluginsdk.Host`. `cmd/api/register_products.go` registers `pluginsdk.Adapt(metaldogs.New())`. `Migration` returns `pluginsdk.MigrationSpec`. `Needs` / `Require`: `CapCart`, `CapCatalog`, `CapCatalogSeed`, `CapDB`, `CapJobs`, `CapMedia`. The nil-config check is gone.
+
+`Host.Media()` is unset during `Init` (bind is after `InitAll`). The plugin always registers customizer routes and sync jobs, and stores a wrapper that calls `Host.Media()` on each use. `AsSignedURLStorage` is asserted to `ports.MediaBackend`. Unbound media fails that call. Eval stays `RequiresDB: false`.
+
+Enqueue is `SyncJobs.Enqueue(..., WithJobID)`. Generation and design-version ids are `ports.UUIDGenerator` (UUID). A non-UUID id fails closed (`TestEnqueueGenerate_RejectsNonUUIDJobID`). After a successful generate enqueue, a processing row older than `DefaultClaimLease` is requeued with `WithRequeueMinAge`. Fresh processing is left. Terminal rows are requeued by `WithJobID`. Prepare still applies its own rule when `Get` finds a row (failed and done stay, cancelled and stale processing use the SQL reclaim). `WithJobID` runs only when that row is absent. A race that loses the `Get` can let `WithJobID` requeue a terminal prepare job.
+
+Admin health types come from the names the plugin registered (`obs.ping`, `prepare_production_artwork`, `generate` when the worker exists), turned into types with `extapi.SyncJobType`. Depths use `Host.Jobs().CountsByType`. Public health is ok only when `Host.Jobs()` is bound (`CapJobs`).
+
+`pluginCLINeedsSkip` also skips `CapJobs` and `CapMedia`. Plugin CLI does not bind them; without the skip, `metaldogs:templates` and `metaldogs:catalog-seed` fail the assert. Serve and worker still bind both. New deviation: `cmd/api/plugin_boot.go`. Upstream candidate #19.
+
+Changed tests: `plugin_test.go` boots through `Adapt`; without bound media the routes and sync jobs are still registered and `AssetStore.Head` errors. Health tests bind `JobsPort` and pass the job name list (`TestHealth_UsesBoundQueueWithoutRegisterQueue` binds queue and port). Enqueue conflict tests use UUID ids and `BindJobsPort`. Repend tests bind `JobsPort` on the wrapped queue. `TestEnqueueGenerate_SameIDStaleAndFresh` is new. Cart harness still expects no design service when `Bootstrap.DB` is unset. Boot fixture binds a jobs port and media so serve assert passes.
+
+`go test ./plugins/ -run ImportBoundary` passes. Production `plugins/metaldogs` has no `internal/platform/plugin`, `internal/domain/jobs`, or `internal/domain/media` import. Baseline file not edited. Expected production violation count: 0.
+
+Real `go run ./cmd/api` on 2026-11-20, DB `shopanda_task_mig3b_flip` port 5433: `metaldogs:eval -provider fake -dog-name Burek` wrote 1 ok / 0 failed. `metaldogs:templates validate` printed `ok slug=head-front-blackmetal`. Core postgres search/cache/queue still log `database not configured` at Init; the commands exited 0. That log is from before the CLI opens the pool.

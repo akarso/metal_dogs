@@ -25,6 +25,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -109,7 +110,7 @@ func initMetalDogs(t *testing.T, app *plugin.App) *metaldogs.Plugin {
 	t.Helper()
 	reg := plugin.NewRegistry(app.Logger)
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v, want 1 initialized", summary)
@@ -137,7 +138,7 @@ func TestPlugin_Init_NonPostgresQueue(t *testing.T) {
 	t.Parallel()
 	app := testApp(t, true)
 	app.Config.Queue.Driver = "rabbitmq"
-	err := metaldogs.New().Init(app)
+	err := pluginsdk.Adapt(metaldogs.New()).Init(app)
 	if err == nil || !strings.Contains(err.Error(), `queue.driver="rabbitmq"`) {
 		t.Fatalf("Init: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestPlugin_Init_NonPostgresQueue(t *testing.T) {
 
 func TestPlugin_Init_Disabled(t *testing.T) {
 	t.Parallel()
-	if err := metaldogs.New().Init(testApp(t, false)); err == nil {
+	if err := pluginsdk.Adapt(metaldogs.New()).Init(testApp(t, false)); err == nil {
 		t.Fatal("Init() expected error when plugins.metaldogs.enabled is false")
 	}
 }
@@ -174,7 +175,7 @@ func TestPlugin_Init_CooldownSecondsBounds(t *testing.T) {
 			},
 		}
 		if tc.wantErr != "" {
-			err := metaldogs.New().Init(app)
+			err := pluginsdk.Adapt(metaldogs.New()).Init(app)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("secs=%d: want err containing %q, got %v", tc.secs, tc.wantErr, err)
 			}
@@ -182,7 +183,7 @@ func TestPlugin_Init_CooldownSecondsBounds(t *testing.T) {
 		}
 		reg := plugin.NewRegistry(log)
 		p := metaldogs.New()
-		reg.Register(p)
+		reg.Register(pluginsdk.Adapt(p))
 		summary := reg.InitAll(app)
 		if summary.Failed > 0 {
 			t.Fatalf("secs=%d: InitAll failed %+v", tc.secs, summary)
@@ -194,7 +195,7 @@ func TestPlugin_Init_WithoutMedia_EvalOnly_NoHTTP(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	log := logger.NewWithWriter(io.Discard, "warn")
 	app := &plugin.App{
 		Logger: log,
@@ -205,17 +206,20 @@ func TestPlugin_Init_WithoutMedia_EvalOnly_NoHTTP(t *testing.T) {
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
-	if p.AssetStore() != nil {
-		t.Fatal("AssetStore must stay nil without media")
+	if p.AssetStore() == nil {
+		t.Fatal("AssetStore wrapper must be set; media resolves at use")
+	}
+	if err := p.AssetStore().Head(context.Background(), "private/blobs/metaldogs/source/2026/11/x.jpg"); err == nil || !strings.Contains(err.Error(), "media storage not registered") {
+		t.Fatalf("unbound media: %v", err)
 	}
 	if _, ok := reg.CLIRegistry().Get(metaldogs.CommandEval); !ok {
 		t.Fatal("metaldogs:eval must register without media")
 	}
-	if len(app.PublicRoutes()) != 0 || len(app.AdminRoutes()) != 0 {
-		t.Fatalf("HTTP routes without media = public %#v admin %#v", app.PublicRoutes(), app.AdminRoutes())
+	if len(app.PublicRoutes()) == 0 {
+		t.Fatal("customizer routes register before BindMediaStorage")
 	}
-	if len(app.SyncJobs()) != 0 {
-		t.Fatalf("SyncJobs without media = %#v", app.SyncJobs())
+	if len(app.SyncJobs()) == 0 {
+		t.Fatal("sync jobs register before BindMediaStorage")
 	}
 }
 
@@ -224,7 +228,7 @@ func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	// InitAll wires app.cliRegistry before Init (RegisterCommand panics otherwise).
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	app := testApp(t, true)
 	if p.AssetStore() != nil {
 		t.Fatal("AssetStore before Init must be nil")
@@ -297,7 +301,7 @@ func TestPlugin_Init_Enabled_RegistersObsPing(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	app := testApp(t, true)
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
@@ -333,7 +337,7 @@ func TestPlugin_Init_Enabled_RegistersObsPing(t *testing.T) {
 func TestCLI_Eval_FakeProvider(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
-	reg.Register(metaldogs.New())
+	reg.Register(pluginsdk.Adapt(metaldogs.New()))
 	app := testApp(t, true)
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
@@ -377,7 +381,7 @@ func TestCLI_Eval_FakeProvider(t *testing.T) {
 func TestCLI_Eval_NonZeroOnSampleFailure(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
-	reg.Register(metaldogs.New())
+	reg.Register(pluginsdk.Adapt(metaldogs.New()))
 	app := testApp(t, true)
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
@@ -414,7 +418,7 @@ func TestCLI_Eval_NonZeroOnSampleFailure(t *testing.T) {
 func TestCLI_TemplatesLoad_UsesBootstrapDB(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
-	reg.Register(metaldogs.New())
+	reg.Register(pluginsdk.Adapt(metaldogs.New()))
 	app := testApp(t, true)
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
@@ -460,7 +464,7 @@ func TestPlugin_Init_Enabled_RegistersDesignIDField(t *testing.T) {
 			app.RegisterMediaStorage(&fakeSigned{})
 		}
 		reg := plugin.NewRegistry(log)
-		reg.Register(metaldogs.New())
+		reg.Register(pluginsdk.Adapt(metaldogs.New()))
 		summary := reg.InitAll(app)
 		if summary.Failed > 0 || summary.Initialized != 1 {
 			t.Fatalf("media=%v InitAll summary = %+v", withMedia, summary)
@@ -501,7 +505,7 @@ func TestPlugin_Init_Disabled_DoesNotRegisterDesignIDField(t *testing.T) {
 	t.Parallel()
 	app := testApp(t, false)
 	app.SetHookRegistry(hooks.NewRegistry(app.Logger))
-	if err := metaldogs.New().Init(app); err == nil {
+	if err := pluginsdk.Adapt(metaldogs.New()).Init(app); err == nil {
 		t.Fatal("Init() expected error when plugins.metaldogs.enabled is false")
 	}
 	if _, ok := app.ExtensionRegistry().Get("metaldogs.design_id"); ok {

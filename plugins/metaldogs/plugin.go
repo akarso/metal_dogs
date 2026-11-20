@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
@@ -26,12 +25,13 @@ const permJobsRead = "jobs.read"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets   ports.AssetStore
-	uploads  *application.UploadService
-	designs  *application.DesignService
-	generate *application.GenerateService
-	worker   *application.GenerateWorker
-	host     cartSurface
+	assets       ports.AssetStore
+	uploads      *application.UploadService
+	designs      *application.DesignService
+	generate     *application.GenerateService
+	worker       *application.GenerateWorker
+	host         cartSurface
+	syncJobNames []string
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.
@@ -45,10 +45,18 @@ type cartSurface interface {
 	Logger() pluginsdk.Logger
 }
 
-// Needs declares CapCart, CapCatalog, and CapCatalogSeed.
+// Needs declares the composition-root ports this plugin reads.
 // CapCatalogSeed stays declared so the seed CLI can read Host.CatalogSeed; serve and worker leave that port unbound.
-func (p *Plugin) Needs() []plugin.Capability {
-	return []plugin.Capability{plugin.CapCart, plugin.CapCatalog, plugin.CapCatalogSeed}
+// CapJobs and CapMedia are bound after Init on serve and worker; plugin CLI skips them.
+func (p *Plugin) Needs() []pluginsdk.Capability {
+	return []pluginsdk.Capability{
+		pluginsdk.CapCart,
+		pluginsdk.CapCatalog,
+		pluginsdk.CapCatalogSeed,
+		pluginsdk.CapDB,
+		pluginsdk.CapJobs,
+		pluginsdk.CapMedia,
+	}
 }
 
 // New returns the Metal Dogs plugin.
@@ -57,8 +65,8 @@ func New() *Plugin { return &Plugin{} }
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
 
-// AssetStore returns the private object store wired during Init (nil before Init
-// or when Init ran in eval-only mode without media).
+// AssetStore returns the private object store wired during Init (nil before Init).
+// Each call resolves Host.Media, which is bound after InitAll.
 func (p *Plugin) AssetStore() ports.AssetStore { return p.assets }
 
 // UploadService returns the upload use case wired during Init (nil before Init,
@@ -72,17 +80,12 @@ func (p *Plugin) DesignService() *application.DesignService { return p.designs }
 // GenerateService returns the generate use case wired during Init.
 func (p *Plugin) GenerateService() *application.GenerateService { return p.generate }
 
-// Init registers CLI always when enabled. HTTP routes, obs.ping, and AssetStore
-// require media SignedURLStorage (F4 fail-closed). Without media, Init still
-// succeeds so offline metaldogs:eval works, but no customizer HTTP is mounted.
-func (p *Plugin) Init(app *plugin.App) error {
-	if app == nil {
-		return fmt.Errorf("metaldogs plugin: app not configured")
+// Init registers CLI, customizer routes, and sync jobs when the plugin is enabled.
+// Media is a lazy Host.Media wrapper: the composition root binds storage after InitAll.
+func (p *Plugin) Init(h pluginsdk.Host) error {
+	if h == nil {
+		return fmt.Errorf("metaldogs plugin: host not configured")
 	}
-	if app.Config == nil {
-		return fmt.Errorf("metaldogs plugin: config not configured")
-	}
-	h := pluginsdk.AsHostFor(app, PluginName)
 	settings, err := SettingsFrom(h.ConfigValue)
 	if err != nil {
 		return err
@@ -93,10 +96,10 @@ func (p *Plugin) Init(app *plugin.App) error {
 	h.Require(pluginsdk.CapCart)
 	h.Require(pluginsdk.CapCatalog)
 	h.Require(pluginsdk.CapCatalogSeed)
-	p.host = h
-	// CLI opens the DB after InitAll freezes needs. BootstrapDB stays false
-	// unless CapDB is recorded here, including when Bootstrap.DB is still nil.
 	h.Require(pluginsdk.CapDB)
+	h.Require(pluginsdk.CapJobs)
+	h.Require(pluginsdk.CapMedia)
+	p.host = h
 	// ConfigValue is plugin-scoped; queue.driver is an allowlisted core key.
 	if err := pluginsdk.RequireQueueDriver(h, "postgres"); err != nil {
 		return fmt.Errorf("metaldogs plugin: %w", err)
@@ -113,36 +116,33 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := registerDesignIDField(h); err != nil {
 		return fmt.Errorf("metaldogs plugin: design field: %w", err)
 	}
-	if err := registerCartValidation(app.Hooks(p.Name()), p); err != nil {
+	if err := registerCartValidation(h.Hooks(p.Name()), p); err != nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
 	}
 
 	registerCLICommands(h, p)
 
-	store, err := openAssetStore(app)
-	if err != nil {
-		p.assets = nil
-		if app.Logger != nil {
-			app.Logger.Warn("metaldogs: media unavailable; eval CLI only (no customizer HTTP / AssetStore)", map[string]interface{}{
-				"error": err.Error(),
-			})
-		}
-		return nil
-	}
+	log := h.Logger()
+	store := lazyAssetStore{host: h}
 	p.assets = store
 
-	// Wire catalog/uploads/designs/generate once at Init when Bootstrap.DB is present.
 	var templates *application.TemplateCatalog
 	p.uploads = nil
 	p.designs = nil
 	p.generate = nil
 	p.worker = nil
-	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
-		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(app.Bootstrap.DB)}
-		p.uploads = newUploadService(store, app.Bootstrap.DB, app.Logger)
-		p.designs = newDesignService(store, app.Bootstrap.DB, templates, maxAttempts, cooldownSecs, app.Logger)
+	p.syncJobNames = nil
+	db, dbOK := h.BootstrapDB()
+	if dbOK && db != nil {
+		templates = &application.TemplateCatalog{Store: postgres.NewTemplateStore(db)}
+		p.uploads = newUploadService(store, db, log)
+		p.designs = newDesignService(store, db, templates, maxAttempts, cooldownSecs, log)
+	}
+
+	jobs := p.jobAccess(h)
+	if dbOK && db != nil {
 		var genErr error
-		p.generate, p.worker, genErr = newGenerateServices(app, store, app.Bootstrap.DB, providerName, maxRetries, maxAttempts, cooldownSecs, app.Logger)
+		p.generate, p.worker, genErr = newGenerateServices(jobs, store, db, providerName, maxRetries, maxAttempts, cooldownSecs, log)
 		if genErr != nil {
 			return fmt.Errorf("metaldogs plugin: generate services: %w", genErr)
 		}
@@ -151,7 +151,6 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := mountCustomizerRoute(h, "GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}
-	jobs := PlatformJobs(app)
 	if err := mountCustomizerRoute(h, "GET /api/customizer/health", httpapi.Health(jobs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: health route: %w", err)
 	}
@@ -195,26 +194,39 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := h.RegisterAdminRoute("GET /api/v1/admin/customizer/health", permJobsRead, httpapi.AdminHealth(jobs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}
-	syncAPI := pluginsdk.New(app, PluginName).Integration(PluginName)
-	if err := registerObsPing(syncAPI, app.Logger); err != nil {
+	syncAPI := pluginsdk.NewHost(h, PluginName).Integration(PluginName)
+	if err := registerObsPing(syncAPI, log); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
 	}
-	if err := registerPrepareProduction(syncAPI, app.Logger); err != nil {
+	p.noteSyncJob(obsPingJob)
+	if err := registerPrepareProduction(syncAPI, log); err != nil {
 		return fmt.Errorf("metaldogs plugin: prepare_production_artwork: %w", err)
 	}
+	p.noteSyncJob(prepareProductionJobName)
 	if p.designs != nil {
 		p.designs.EnqueuePrepare = func(ctx context.Context, versionID, designID string) error {
 			return enqueuePrepareProduction(jobs, ctx, versionID, designID)
 		}
 	}
-	// Register generate even when worker is nil (no DB) so SyncJobs list is complete;
-	// handler no-ops safely only when worker non-nil — require worker for registration.
 	if p.worker != nil {
 		if err := registerGenerate(syncAPI, p.worker, maxRetries); err != nil {
 			return fmt.Errorf("metaldogs plugin: generate: %w", err)
 		}
+		p.noteSyncJob(generateJobName)
 	}
 	return nil
+}
+
+func (p *Plugin) noteSyncJob(name string) {
+	p.syncJobNames = append(p.syncJobNames, name)
+}
+
+func (p *Plugin) jobAccess(h pluginsdk.Host) ports.JobAccess {
+	return &hostJobs{
+		host:  h,
+		sync:  pluginsdk.NewHost(h, PluginName).Integration(PluginName),
+		names: &p.syncJobNames,
+	}
 }
 
 func mountCustomizerRoute(h pluginsdk.Host, pattern string, handler http.Handler) error {
@@ -287,14 +299,14 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 }
 
 func newGenerateServices(
-	app *plugin.App,
+	access ports.JobAccess,
 	store ports.AssetStore,
 	db *sql.DB,
 	providerName string,
 	maxRetries, maxAttempts, cooldownSecs int,
 	log pluginsdk.Logger,
 ) (*application.GenerateService, *application.GenerateWorker, error) {
-	if store == nil || db == nil || app == nil {
+	if store == nil || db == nil || access == nil {
 		return nil, nil, nil
 	}
 	prov, err := generation.Lookup(providerName)
@@ -325,7 +337,6 @@ func newGenerateServices(
 			})
 		}
 	}
-	access := PlatformJobs(app)
 	enqueue := func(ctx context.Context, generationJobID, designID string) error {
 		return enqueueGenerateIdempotent(access, ctx, generationJobID, designID)
 	}
@@ -343,139 +354,103 @@ func newGenerateServices(
 	return svc, worker, nil
 }
 
-// openAssetStore uses MediaStorage, not BoundMediaStorage. Init runs before
-// BindMediaStorage; both refer to the same backend once the root binds it.
-func openAssetStore(app *plugin.App) (ports.AssetStore, error) {
-	if app == nil {
-		return nil, fmt.Errorf("metaldogs: app required")
-	}
-	st, ok := app.MediaStorage()
-	if !ok {
-		return nil, fmt.Errorf("metaldogs: media storage not registered (enable core storagelocal or storages3)")
-	}
-	signer, ok := st.(ports.MediaBackend)
-	if !ok {
-		return nil, fmt.Errorf("metaldogs: media storage %q does not implement SignedURLStorage", st.Name())
-	}
-	return resolveAssetStore(signer)
-}
-
-type appJobs struct {
-	app *plugin.App
-}
-
-// PlatformJobs returns a nil interface when app is nil.
-func PlatformJobs(app *plugin.App) ports.JobAccess {
-	if app == nil {
+// PlatformJobs adapts Host.Jobs and SyncJobs.Enqueue. names are the plugin's
+// own sync job names (extapi.SyncJobType); nil names yields no admin types.
+// A nil host returns a nil interface.
+func PlatformJobs(h pluginsdk.Host, names []string) ports.JobAccess {
+	if h == nil {
 		return nil
 	}
-	return appJobs{app: app}
+	copied := append([]string(nil), names...)
+	return &hostJobs{
+		host:  h,
+		sync:  pluginsdk.NewHost(h, PluginName).Integration(PluginName),
+		names: &copied,
+	}
 }
 
-func (a appJobs) bound() (any, bool) {
-	if a.app == nil {
-		return nil, false
-	}
-	q, ok := a.app.BoundQueue()
-	if !ok || q == nil {
-		return nil, false
-	}
-	return q, true
+type hostJobs struct {
+	host  pluginsdk.Host
+	sync  *pluginsdk.SyncJobs
+	names *[]string
 }
 
-func (a appJobs) QueueBound() bool {
-	_, ok := a.bound()
+func (j *hostJobs) port() (pluginsdk.JobsPort, bool) {
+	if j == nil || j.host == nil {
+		return nil, false
+	}
+	return j.host.Jobs()
+}
+
+func (j *hostJobs) QueueBound() bool {
+	_, ok := j.port()
 	return ok
 }
 
-type queueReaderSurface interface {
-	Get(context.Context, string) (*ports.JobDetail, error)
-	CountsByStatus(context.Context) (map[ports.JobStatus]int, error)
-	CountsByType(context.Context, string) (map[ports.JobStatus]int, error)
+func (j *hostJobs) ReaderBound() bool {
+	return j.QueueBound()
 }
 
-func (a appJobs) ReaderBound() bool {
-	q, ok := a.bound()
-	if !ok {
-		return false
-	}
-	_, ok = q.(queueReaderSurface)
-	return ok
-}
-
-func (a appJobs) JobTypes(pluginSlug string) []string {
-	if a.app == nil {
+func (j *hostJobs) JobTypes(pluginSlug string) []string {
+	if j == nil || j.names == nil || pluginSlug != PluginName {
 		return nil
 	}
 	var out []string
-	for _, reg := range a.app.SyncJobs() {
-		if reg.PluginSlug == pluginSlug {
-			out = append(out, reg.JobType)
+	for _, name := range *j.names {
+		jobType, err := extapi.SyncJobType(PluginName, name)
+		if err != nil {
+			continue
 		}
+		out = append(out, jobType)
 	}
 	return out
 }
 
-func (a appJobs) CountsByType(ctx context.Context, jobType string) (map[ports.JobStatus]int, error) {
-	q, ok := a.bound()
+func (j *hostJobs) CountsByType(ctx context.Context, jobType string) (map[ports.JobStatus]int, error) {
+	port, ok := j.port()
 	if !ok {
 		return nil, fmt.Errorf("metaldogs: queue unbound")
 	}
-	c, ok := q.(queueReaderSurface)
-	if !ok {
-		return nil, fmt.Errorf("metaldogs: queue reader unavailable")
-	}
-	return c.CountsByType(ctx, jobType)
+	return port.CountsByType(ctx, jobType)
 }
 
-func (a appJobs) Store() (ports.JobStore, bool) {
-	q, ok := a.bound()
+func (j *hostJobs) Store() (ports.JobStore, bool) {
+	port, ok := j.port()
 	if !ok {
 		return nil, false
 	}
-	s, ok := q.(ports.JobStore)
-	return s, ok
+	return jobsPortStore{port: port}, true
 }
 
-func (a appJobs) DB() *sql.DB {
-	if a.app == nil || a.app.Bootstrap == nil {
+func (j *hostJobs) DB() *sql.DB {
+	if j == nil || j.host == nil {
 		return nil
 	}
-	return a.app.Bootstrap.DB
+	db, ok := j.host.BootstrapDB()
+	if !ok {
+		return nil
+	}
+	return db
 }
 
-func (a appJobs) EnqueueManual(ctx context.Context, name, jobID string, payload map[string]interface{}) error {
-	if a.app == nil {
+func (j *hostJobs) EnqueueManual(ctx context.Context, name, jobID string, payload map[string]interface{}) error {
+	if j == nil || j.sync == nil {
 		return fmt.Errorf("metaldogs: app required")
-	}
-	queue, ok := a.app.BoundQueue()
-	if !ok || queue == nil {
-		return extapi.ErrSyncJobQueueUnbound
-	}
-	jobType, err := extapi.SyncJobType(PluginName, name)
-	if err != nil {
-		return err
-	}
-	var reg plugin.SyncJobRegistration
-	found := false
-	for _, r := range a.app.SyncJobs() {
-		if r.JobType == jobType {
-			reg = r
-			found = true
-			break
-		}
-	}
-	if !found {
-		return extapi.ErrSyncJobNotFound
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	payload = plugin.InjectRequestID(ctx, payload)
-	job, err := plugin.NewSyncJobEnvelope(reg, extapi.SyncTriggerManual, payload)
-	if err != nil {
-		return fmt.Errorf("envelope: %w", err)
-	}
-	job.ID = jobID
-	return queue.Enqueue(ctx, job)
+	return j.sync.Enqueue(ctx, name, payload, pluginsdk.WithJobID(jobID))
+}
+
+type jobsPortStore struct {
+	port pluginsdk.JobsPort
+}
+
+func (s jobsPortStore) Get(ctx context.Context, id string) (*ports.JobDetail, error) {
+	return s.port.Get(ctx, id)
+}
+
+func (s jobsPortStore) Requeue(ctx context.Context, id string, attempt int, opts ...ports.RequeueOption) error {
+	return s.port.Requeue(ctx, id, attempt, opts...)
 }

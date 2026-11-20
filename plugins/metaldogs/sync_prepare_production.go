@@ -91,6 +91,17 @@ func enqueuePrepareProduction(jobs ports.JobAccess, ctx context.Context, designV
 		"design_version_id": designVersionID,
 		"design_id":         designID,
 	}
+	// Existing rows keep the prepare rules (failed/done stay, cancelled and stale
+	// processing use the SQL reclaim). WithJobID would requeue every terminal row.
+	if store, ok := jobs.Store(); ok {
+		detail, err := store.Get(ctx, designVersionID)
+		if err != nil {
+			return fmt.Errorf("metaldogs prepare enqueue: get: %w", err)
+		}
+		if detail != nil {
+			return resolvePrepareEnqueueConflict(jobs.DB(), store, ctx, designVersionID, jobType)
+		}
+	}
 	if err := jobs.EnqueueManual(ctx, prepareProductionJobName, designVersionID, payload); err != nil {
 		if pluginsdk.IsConflict(err) {
 			store, ok := jobs.Store()

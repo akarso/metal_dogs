@@ -12,8 +12,10 @@ import (
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 type fakeReader struct {
@@ -61,6 +63,26 @@ func (plainQueue) Complete(context.Context, string, int) error                  
 func (plainQueue) Fail(context.Context, string, int, error) error                    { return nil }
 func (plainQueue) Requeue(context.Context, string, int, ...jobs.RequeueOption) error { return nil }
 
+func jobsFrom(t *testing.T, app *plugin.App, q jobs.Queue, names []string) ports.JobHealth {
+	t.Helper()
+	app.RecordNeedsFor(metaldogs.PluginName, pluginsdk.CapJobs)
+	if q != nil {
+		if err := app.BindQueue(q); err != nil {
+			t.Fatal(err)
+		}
+		if reader, ok := q.(jobs.Reader); ok {
+			port, err := pluginsdk.NewJobsPort(reader, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := app.BindJobsPort(port); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return metaldogs.PlatformJobs(pluginsdk.AsHostFor(app, metaldogs.PluginName), names)
+}
+
 func withObsPing(app *plugin.App) {
 	_ = app.Integration("metaldogs").RegisterSyncJob(extapi.SyncJob{
 		Name:    "obs.ping",
@@ -74,7 +96,7 @@ func TestHealth_DegradedWithoutQueue(t *testing.T) {
 	app := &plugin.App{Config: &config.Config{}}
 	withObsPing(app)
 	rec := httptest.NewRecorder()
-	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(jobsFrom(t, app, nil, []string{"obs.ping"})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
@@ -97,12 +119,8 @@ func TestHealth_OK_OmitsDepths(t *testing.T) {
 	q := &readerQueueFull{fakeReader: fakeReader{byType: map[string]map[jobs.Status]int{
 		"integration.sync.metaldogs.obs.ping": {jobs.StatusPending: 2},
 	}}}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
-
 	rec := httptest.NewRecorder()
-	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(jobsFrom(t, app, q, []string{"obs.ping"})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -123,11 +141,8 @@ func TestHealth_UsesBoundQueueWithoutRegisterQueue(t *testing.T) {
 	app := &plugin.App{Config: &config.Config{}}
 	withObsPing(app)
 	q := &readerQueueFull{}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
 	rec := httptest.NewRecorder()
-	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(jobsFrom(t, app, q, []string{"obs.ping"})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d — BoundQueue-only wiring must not report degraded", rec.Code)
 	}
@@ -144,12 +159,8 @@ func TestAdminHealth_ReportsDepths(t *testing.T) {
 			jobs.StatusFailed:     3,
 		},
 	}}}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
-
 	rec := httptest.NewRecorder()
-	httpapi.AdminHealth(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
+	httpapi.AdminHealth(jobsFrom(t, app, q, []string{"obs.ping"})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -182,12 +193,8 @@ func TestAdminHealth_KeepsTypeOnCountsError(t *testing.T) {
 			"integration.sync.metaldogs.obs.ping": errors.New("db down"),
 		},
 	}}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
-
 	rec := httptest.NewRecorder()
-	httpapi.AdminHealth(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
+	httpapi.AdminHealth(jobsFrom(t, app, q, []string{"obs.ping"})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
@@ -214,11 +221,8 @@ func TestHealth_DegradedWhenQueueNotReader(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{Config: &config.Config{}}
 	withObsPing(app)
-	if err := app.BindQueue(plainQueue{}); err != nil {
-		t.Fatal(err)
-	}
 	rec := httptest.NewRecorder()
-	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(jobsFrom(t, app, plainQueue{}, []string{"obs.ping"})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d", rec.Code)
 	}

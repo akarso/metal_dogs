@@ -46,7 +46,7 @@ func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	app.SetExtensionRegistry(extReg)
 	reg := plugin.NewRegistry(log)
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
@@ -54,7 +54,7 @@ func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	return newStorefrontAndCart(t, db, extReg, app), db
 }
 
-// Plugin stays enabled, but Init returns before design services when media is absent.
+// No media registration and no Bootstrap.DB, so design services stay unwired.
 func newDesignCartServerWithoutMedia(t *testing.T) (*httptest.Server, *sql.DB, *metaldogs.Plugin) {
 	t.Helper()
 	db := testutil.OpenIsolatedWithCore(t, "cart_design_nomedia")
@@ -72,13 +72,13 @@ func newDesignCartServerWithoutMedia(t *testing.T) (*httptest.Server, *sql.DB, *
 	app.SetExtensionRegistry(extReg)
 	reg := plugin.NewRegistry(log)
 	p := metaldogs.New()
-	reg.Register(p)
+	reg.Register(pluginsdk.Adapt(p))
 	summary := reg.InitAll(app)
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
 	if p.DesignService() != nil {
-		t.Fatal("design service wired without media")
+		t.Fatal("design service wired without Bootstrap.DB")
 	}
 	srv := newStorefrontAndCart(t, db, extReg, app)
 	return srv, db, p

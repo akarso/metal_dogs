@@ -58,7 +58,30 @@ func enqueueGenerateIdempotent(jobs ports.JobAccess, ctx context.Context, genera
 		}
 		return fmt.Errorf("metaldogs generate enqueue: %w", err)
 	}
-	return nil
+	store, ok := jobs.Store()
+	if !ok {
+		return nil
+	}
+	// WithJobID leaves a processing row alone. A stale claim is requeued here.
+	return requeueStaleGenerateClaim(store, ctx, generationJobID)
+}
+
+func requeueStaleGenerateClaim(store ports.JobStore, ctx context.Context, generationJobID string) error {
+	detail, err := store.Get(ctx, generationJobID)
+	if err != nil {
+		return fmt.Errorf("metaldogs generate enqueue: stale claim: %w", err)
+	}
+	if detail == nil || detail.Status != ports.JobStatusProcessing {
+		return nil
+	}
+	if !prepareJobStale(detail.UpdatedAt, domain.DefaultClaimLease) {
+		return nil
+	}
+	err = store.Requeue(ctx, generationJobID, detail.Attempts, pluginsdk.WithRequeueMinAge(domain.DefaultClaimLease))
+	if err == nil || errors.Is(err, pluginsdk.ErrRequeueTooFresh) {
+		return nil
+	}
+	return fmt.Errorf("metaldogs generate enqueue: stale claim: %w", err)
 }
 
 func resolveGenerateEnqueueConflict(store ports.JobStore, ctx context.Context, generationJobID string) error {

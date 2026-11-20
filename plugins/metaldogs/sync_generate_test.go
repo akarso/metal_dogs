@@ -15,12 +15,15 @@ import (
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 type conflictAdmin struct {
 	mu          sync.Mutex
 	requeued    bool
 	retried     bool
+	missing     bool
+	jobType     string
 	status      jobs.Status
 	updatedAt   time.Time
 	hookCalls   int
@@ -56,8 +59,11 @@ func (a *conflictAdmin) Cancel(context.Context, string) error { return nil }
 func (a *conflictAdmin) Get(_ context.Context, id string) (*jobs.Detail, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.missing {
+		return nil, nil
+	}
 	return &jobs.Detail{Summary: jobs.Summary{
-		ID: id, Status: a.status, UpdatedAt: a.updatedAt, Attempts: a.attempts,
+		ID: id, Type: a.jobType, Status: a.status, UpdatedAt: a.updatedAt, Attempts: a.attempts,
 	}}, nil
 }
 func (a *conflictAdmin) List(context.Context, jobs.ListFilter) ([]jobs.Summary, error) {
@@ -199,21 +205,53 @@ func TestResolveGenerateEnqueueConflict_ReclaimingReturnsError(t *testing.T) {
 	}
 }
 
+func hostJobsFor(t *testing.T, app *plugin.App, q jobs.Queue) ports.JobAccess {
+	t.Helper()
+	app.RecordNeedsFor(PluginName, pluginsdk.CapJobs)
+	if err := app.BindQueue(q); err != nil {
+		t.Fatal(err)
+	}
+	port, err := pluginsdk.NewJobsPort(q.(jobs.Reader), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.BindJobsPort(port); err != nil {
+		t.Fatal(err)
+	}
+	return PlatformJobs(pluginsdk.AsHostFor(app, PluginName), nil)
+}
+
+func TestEnqueueGenerate_RejectsNonUUIDJobID(t *testing.T) {
+	t.Parallel()
+	app := &plugin.App{}
+	if err := registerGenerate(pluginsdk.New(app, PluginName).Integration(PluginName), &application.GenerateWorker{}, 3); err != nil {
+		t.Fatal(err)
+	}
+	q := &queueWithAdmin{conflictAdmin: &conflictAdmin{}}
+	err := enqueueGenerateIdempotent(hostJobsFor(t, app, q), context.Background(), "job-1", "design-1")
+	if err == nil || !strings.Contains(err.Error(), "not a UUID") {
+		t.Fatalf("non-UUID id: %v", err)
+	}
+}
+
 func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
 	if err := registerGenerate(pluginsdk.New(app, PluginName).Integration(PluginName), &application.GenerateWorker{}, 3); err != nil {
 		t.Fatal(err)
 	}
-	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
+	admin := &conflictAdmin{
+		status:    jobs.StatusProcessing,
+		updatedAt: time.Now(),
+		jobType:   "integration.sync.metaldogs.generate",
+	}
 	q := &queueWithAdmin{
 		conflictAdmin: admin,
 		enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
 	}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
-	if err := enqueueGenerateIdempotent(PlatformJobs(app), context.Background(), "job-1", "design-1"); err != nil {
+	access := hostJobsFor(t, app, q)
+	const id = "11111111-1111-4111-8111-111111111111"
+	if err := enqueueGenerateIdempotent(access, context.Background(), id, "design-1"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.requeued {
@@ -221,7 +259,7 @@ func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	}
 
 	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
-	err := enqueueGenerateIdempotent(PlatformJobs(app), context.Background(), "job-1", "design-1")
+	err := enqueueGenerateIdempotent(access, context.Background(), id, "design-1")
 	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "requeue after conflict") {
 		t.Fatalf("non-conflict must not enter requeue: %v", err)
 	}

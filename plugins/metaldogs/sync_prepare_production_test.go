@@ -288,15 +288,15 @@ func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 		conflictAdmin: admin,
 		enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
 	}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
-	if err := enqueuePrepareProduction(PlatformJobs(app), context.Background(), "ver-1", "des-1"); err != nil {
+	access := hostJobsFor(t, app, q)
+	const id = "22222222-2222-4222-8222-222222222222"
+	if err := enqueuePrepareProduction(access, context.Background(), id, "des-1"); err != nil {
 		t.Fatal(err)
 	}
 
+	admin.missing = true
 	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
-	err := enqueuePrepareProduction(PlatformJobs(app), context.Background(), "ver-1", "des-1")
+	err := enqueuePrepareProduction(access, context.Background(), id, "des-1")
 	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "get after conflict") {
 		t.Fatalf("non-conflict must not enter conflict resolution: %v", err)
 	}
