@@ -21,7 +21,7 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 
 `validate` does not query. The command is `RequiresDB`, so the process must open the configured DSN. See [CR-22](../cr-rounds/CR-22-mig2-pluginsdk-group-a.md).
 
-4. Render test outputs with the fake provider to check composition and print area. `./app metaldogs:eval` is rejected on the process CLI until MIG3 (the plugin needs `CapCatalogSeed` and this command is `RequiresDB: false`; [CR-22](../cr-rounds/CR-22-mig2-pluginsdk-group-a.md), UPSTREAM-CANDIDATES #18). Plugin tests still call the runner directly.
+4. Render test outputs with the fake provider to check composition and print area. `./app metaldogs:eval` is dispatched on the process CLI and does not open a DSN (`RequiresDB: false`). The rejection in [CR-22](../cr-rounds/CR-22-mig2-pluginsdk-group-a.md) is superseded by [CR-23](../cr-rounds/CR-23-upg5-pin-ad14bd3a.md).
 
 ```bash
 ./app metaldogs:eval \

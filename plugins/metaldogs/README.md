@@ -95,7 +95,7 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
 - **With media:** full Init — `AssetStore`, customizer HTTP, obs.ping, and `metaldogs:eval`.
 - **Without media (eval-only):** Init still succeeds and registers `metaldogs:eval` only — no customizer HTTP / AssetStore (F4 fail-closed for HTTP).
 
-`./app metaldogs:eval` is rejected on the process CLI until MIG3 (the plugin needs `CapCatalogSeed` and this command is `RequiresDB: false`; [CR-22](../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md), UPSTREAM-CANDIDATES #18). Init still registers the command; plugin tests call `Run` directly.
+`./app metaldogs:eval` is dispatched on the process CLI and does not open a DSN (`RequiresDB: false`). The rejection in [CR-22](../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md) is superseded by [CR-23](../../docs/cr-rounds/CR-23-upg5-pin-ad14bd3a.md).
 
 ```bash
 ./app metaldogs:eval \

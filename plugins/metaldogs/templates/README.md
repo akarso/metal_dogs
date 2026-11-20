@@ -13,7 +13,7 @@ Spike set (G1 quality gate / eval):
 | `long-name-polish.yaml` | long Polish name typography |
 | `short-name-punk.yaml` | short name typography |
 
-`validate` does not query, but it opens the configured DSN (`RequiresDB`). `./app metaldogs:eval` is rejected on the process CLI until MIG3 ([CR-22](../../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md), UPSTREAM-CANDIDATES #18).
+`validate` does not query, but it opens the configured DSN (`RequiresDB`). `./app metaldogs:eval` is dispatched on the process CLI and does not open a DSN. The rejection in [CR-22](../../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md) is superseded by [CR-23](../../../docs/cr-rounds/CR-23-upg5-pin-ad14bd3a.md).
 
 ```bash
 ./app metaldogs:templates validate -file plugins/metaldogs/templates/head-front-blackmetal.yaml
