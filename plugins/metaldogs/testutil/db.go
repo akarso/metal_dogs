@@ -11,8 +11,8 @@ import (
 
 // OpenIsolated opens SHOPANDA_TEST_DSN into a fresh schema via harness.OpenIsolated,
 // applies Metal Dogs plugin migrations, and drops the schema on cleanup.
-// Skips when the DSN is unset. packageSlug is unused for naming; the advisory
-// lock is still per plugin name, so CI keeps -p 1.
+// Skips when the DSN is unset. packageSlug is ignored and kept for existing call sites.
+// The advisory lock is still per plugin name, so CI keeps -p 1.
 func OpenIsolated(t *testing.T, packageSlug string) *sql.DB {
 	t.Helper()
 	return openIsolated(t, packageSlug, false)
@@ -39,5 +39,7 @@ func openIsolated(t *testing.T, _ string, core bool) *sql.DB {
 			Dir: metaldogs.MigrationDir,
 		},
 	})
+	// Parallel DSN tests share one Postgres.
+	iso.DB.SetMaxOpenConns(8)
 	return iso.DB
 }

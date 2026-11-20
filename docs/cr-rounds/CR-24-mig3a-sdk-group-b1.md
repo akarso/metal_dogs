@@ -59,9 +59,9 @@ Call sites and assertions stay. These details changed inside the helper:
 
 | Topic | Before | Harness | Decision |
 | --- | --- | --- | --- |
-| Schema name | `md_<slug>_<pid>_<counter>`, truncated to 63 bytes | `h` + 16 hex digits (8 bytes from `crypto/rand`) | `packageSlug` is unused for naming. Same slug, two calls, still two schemas (`TestOpenIsolated_SameSlugDistinctSchemas`) |
+| Schema name | `md_<slug>_<pid>_<counter>`, truncated to 63 bytes | `h` + 16 hex digits (8 bytes from `crypto/rand`) | `packageSlug` is ignored and kept for existing call sites. Same slug, two calls, still two schemas (`TestOpenIsolated_SameSlugDistinctSchemas`) |
 | `search_path` | `pgx` `RuntimeParams` only | `RuntimeParams` plus `SET search_path` on every connect | still forced; a path in the DSN is overwritten |
-| Pool size | `SetMaxOpenConns(8)` | `database/sql` default (unlimited) | callers that need a cap set it (`TestOpenIsolated_PoolSeesSchema`) |
+| Pool size | `SetMaxOpenConns(8)` | harness leaves the `database/sql` default (unlimited) | `openIsolated` sets `SetMaxOpenConns(8)` on the returned pool, same cap as before |
 | Drop failure | `t.Logf` | error discarded | cleanup still `DROP SCHEMA … CASCADE` after `db.Close` |
 | Skip text | `SHOPANDA_TEST_DSN not set; skipping integration test` | `SHOPANDA_TEST_DSN not set` | still `t.Skip` |
 | Core dir | path from this source file, independent of cwd | walk up from the test process cwd (max 16) | `go test` cwd is the package dir under the module, so the walk finds repo `migrations/` |
