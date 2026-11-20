@@ -15,6 +15,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
 
@@ -22,7 +23,7 @@ func TestPrepareProductionHandler_PendingSpecFails(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	app := &plugin.App{Logger: logger.NewWithWriter(&buf, "info")}
-	h := prepareProductionHandler(app)
+	h := prepareProductionHandler(app.Logger)
 	err := h(context.Background(), extapi.SyncJobContext{
 		Payload: map[string]interface{}{
 			"design_version_id": "ver-1",
@@ -40,7 +41,7 @@ func TestPrepareProductionHandler_PendingSpecFails(t *testing.T) {
 
 func TestPrepareProductionHandler_MissingPayloadFails(t *testing.T) {
 	t.Parallel()
-	h := prepareProductionHandler(&plugin.App{Logger: logger.NewWithWriter(ioDiscard{}, "error")})
+	h := prepareProductionHandler(logger.NewWithWriter(ioDiscard{}, "error"))
 	if err := h(context.Background(), extapi.SyncJobContext{Payload: map[string]interface{}{}}); err == nil {
 		t.Fatal("missing ids must fail")
 	}
@@ -54,7 +55,7 @@ func TestResolvePrepareEnqueueConflict_FailedLeftAlone(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 1, updatedAt: time.Now().Add(-time.Hour)}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolvePrepareEnqueueConflict(&plugin.App{}, q, context.Background(), "ver-1", "integration.sync.metaldogs.prepare_production_artwork"); err != nil {
+	if err := resolvePrepareEnqueueConflict(nil, q, context.Background(), "ver-1", "integration.sync.metaldogs.prepare_production_artwork"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.retried || admin.requeued || admin.status != jobs.StatusFailed {
@@ -66,7 +67,7 @@ func TestResolvePrepareEnqueueConflict_DoneLeftAlone(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusDone, updatedAt: time.Now()}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolvePrepareEnqueueConflict(&plugin.App{}, q, context.Background(), "ver-1", "t"); err != nil {
+	if err := resolvePrepareEnqueueConflict(nil, q, context.Background(), "ver-1", "t"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.retried || admin.requeued || admin.status != jobs.StatusDone {
@@ -78,7 +79,7 @@ func TestResolvePrepareEnqueueConflict_YoungProcessingLeftAlone(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
 	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolvePrepareEnqueueConflict(&plugin.App{}, q, context.Background(), "ver-1", "t"); err != nil {
+	if err := resolvePrepareEnqueueConflict(nil, q, context.Background(), "ver-1", "t"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.retried || admin.requeued {
@@ -279,7 +280,7 @@ func (r prepareResult) RowsAffected() (int64, error) { return int64(r), nil }
 func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
-	if err := registerPrepareProduction(app); err != nil {
+	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {
 		t.Fatal(err)
 	}
 	admin := &conflictAdmin{status: jobs.StatusPending}
@@ -290,12 +291,12 @@ func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	if err := app.BindQueue(q); err != nil {
 		t.Fatal(err)
 	}
-	if err := enqueuePrepareProduction(app, context.Background(), "ver-1", "des-1"); err != nil {
+	if err := enqueuePrepareProduction(PlatformJobs(app), context.Background(), "ver-1", "des-1"); err != nil {
 		t.Fatal(err)
 	}
 
 	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
-	err := enqueuePrepareProduction(app, context.Background(), "ver-1", "des-1")
+	err := enqueuePrepareProduction(PlatformJobs(app), context.Background(), "ver-1", "des-1")
 	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "get after conflict") {
 		t.Fatalf("non-conflict must not enter conflict resolution: %v", err)
 	}

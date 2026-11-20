@@ -12,6 +12,7 @@ import (
 	"github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/internal/platform/apperror"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
@@ -201,7 +202,7 @@ func TestResolveGenerateEnqueueConflict_ReclaimingReturnsError(t *testing.T) {
 func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
-	if err := registerGenerate(app, &application.GenerateWorker{}, 3); err != nil {
+	if err := registerGenerate(pluginsdk.New(app, PluginName).Integration(PluginName), &application.GenerateWorker{}, 3); err != nil {
 		t.Fatal(err)
 	}
 	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
@@ -212,7 +213,7 @@ func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	if err := app.BindQueue(q); err != nil {
 		t.Fatal(err)
 	}
-	if err := enqueueGenerateIdempotent(app, context.Background(), "job-1", "design-1"); err != nil {
+	if err := enqueueGenerateIdempotent(PlatformJobs(app), context.Background(), "job-1", "design-1"); err != nil {
 		t.Fatal(err)
 	}
 	if admin.requeued {
@@ -220,7 +221,7 @@ func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 	}
 
 	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
-	err := enqueueGenerateIdempotent(app, context.Background(), "job-1", "design-1")
+	err := enqueueGenerateIdempotent(PlatformJobs(app), context.Background(), "job-1", "design-1")
 	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "requeue after conflict") {
 		t.Fatalf("non-conflict must not enter requeue: %v", err)
 	}

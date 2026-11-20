@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
@@ -112,13 +113,13 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := registerDesignIDField(h); err != nil {
 		return fmt.Errorf("metaldogs plugin: design field: %w", err)
 	}
-	if err := registerCartValidation(app, p); err != nil {
+	if err := registerCartValidation(app.Hooks(p.Name()), p); err != nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
 	}
 
 	registerCLICommands(h, p)
 
-	store, err := resolveAssetStore(app)
+	store, err := openAssetStore(app)
 	if err != nil {
 		p.assets = nil
 		if app.Logger != nil {
@@ -150,7 +151,8 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := mountCustomizerRoute(h, "GET /api/customizer/enabled", httpapi.Enabled()); err != nil {
 		return fmt.Errorf("metaldogs plugin: enabled route: %w", err)
 	}
-	if err := mountCustomizerRoute(h, "GET /api/customizer/health", httpapi.Health(app)); err != nil {
+	jobs := PlatformJobs(app)
+	if err := mountCustomizerRoute(h, "GET /api/customizer/health", httpapi.Health(jobs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: health route: %w", err)
 	}
 	if err := mountCustomizerRoute(h, "GET /api/customizer/templates", httpapi.ListTemplates(templates)); err != nil {
@@ -190,24 +192,25 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := mountCustomizerRoute(h, "GET /api/customizer/generation-jobs/{id}", httpapi.GetGenerationJob(p.generate)); err != nil {
 		return fmt.Errorf("metaldogs plugin: generation-jobs route: %w", err)
 	}
-	if err := h.RegisterAdminRoute("GET /api/v1/admin/customizer/health", permJobsRead, httpapi.AdminHealth(app)); err != nil {
+	if err := h.RegisterAdminRoute("GET /api/v1/admin/customizer/health", permJobsRead, httpapi.AdminHealth(jobs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}
-	if err := registerObsPing(app); err != nil {
+	syncAPI := pluginsdk.New(app, PluginName).Integration(PluginName)
+	if err := registerObsPing(syncAPI, app.Logger); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
 	}
-	if err := registerPrepareProduction(app); err != nil {
+	if err := registerPrepareProduction(syncAPI, app.Logger); err != nil {
 		return fmt.Errorf("metaldogs plugin: prepare_production_artwork: %w", err)
 	}
 	if p.designs != nil {
 		p.designs.EnqueuePrepare = func(ctx context.Context, versionID, designID string) error {
-			return enqueuePrepareProduction(app, ctx, versionID, designID)
+			return enqueuePrepareProduction(jobs, ctx, versionID, designID)
 		}
 	}
 	// Register generate even when worker is nil (no DB) so SyncJobs list is complete;
 	// handler no-ops safely only when worker non-nil — require worker for registration.
 	if p.worker != nil {
-		if err := registerGenerate(app, p.worker, maxRetries); err != nil {
+		if err := registerGenerate(syncAPI, p.worker, maxRetries); err != nil {
 			return fmt.Errorf("metaldogs plugin: generate: %w", err)
 		}
 	}
@@ -322,8 +325,9 @@ func newGenerateServices(
 			})
 		}
 	}
+	access := PlatformJobs(app)
 	enqueue := func(ctx context.Context, generationJobID, designID string) error {
-		return enqueueGenerateIdempotent(app, ctx, generationJobID, designID)
+		return enqueueGenerateIdempotent(access, ctx, generationJobID, designID)
 	}
 	svc := &application.GenerateService{
 		Designs:     designs,
@@ -337,4 +341,141 @@ func newGenerateServices(
 		Cooldown:    time.Duration(cooldownSecs) * time.Second, // 0 disables
 	}
 	return svc, worker, nil
+}
+
+// openAssetStore uses MediaStorage, not BoundMediaStorage. Init runs before
+// BindMediaStorage; both refer to the same backend once the root binds it.
+func openAssetStore(app *plugin.App) (ports.AssetStore, error) {
+	if app == nil {
+		return nil, fmt.Errorf("metaldogs: app required")
+	}
+	st, ok := app.MediaStorage()
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: media storage not registered (enable core storagelocal or storages3)")
+	}
+	signer, ok := st.(ports.MediaBackend)
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: media storage %q does not implement SignedURLStorage", st.Name())
+	}
+	return resolveAssetStore(signer)
+}
+
+type appJobs struct {
+	app *plugin.App
+}
+
+// PlatformJobs returns a nil interface when app is nil.
+func PlatformJobs(app *plugin.App) ports.JobAccess {
+	if app == nil {
+		return nil
+	}
+	return appJobs{app: app}
+}
+
+func (a appJobs) bound() (any, bool) {
+	if a.app == nil {
+		return nil, false
+	}
+	q, ok := a.app.BoundQueue()
+	if !ok || q == nil {
+		return nil, false
+	}
+	return q, true
+}
+
+func (a appJobs) QueueBound() bool {
+	_, ok := a.bound()
+	return ok
+}
+
+type queueReaderSurface interface {
+	Get(context.Context, string) (*ports.JobDetail, error)
+	CountsByStatus(context.Context) (map[ports.JobStatus]int, error)
+	CountsByType(context.Context, string) (map[ports.JobStatus]int, error)
+}
+
+func (a appJobs) ReaderBound() bool {
+	q, ok := a.bound()
+	if !ok {
+		return false
+	}
+	_, ok = q.(queueReaderSurface)
+	return ok
+}
+
+func (a appJobs) JobTypes(pluginSlug string) []string {
+	if a.app == nil {
+		return nil
+	}
+	var out []string
+	for _, reg := range a.app.SyncJobs() {
+		if reg.PluginSlug == pluginSlug {
+			out = append(out, reg.JobType)
+		}
+	}
+	return out
+}
+
+func (a appJobs) CountsByType(ctx context.Context, jobType string) (map[ports.JobStatus]int, error) {
+	q, ok := a.bound()
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: queue unbound")
+	}
+	c, ok := q.(queueReaderSurface)
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: queue reader unavailable")
+	}
+	return c.CountsByType(ctx, jobType)
+}
+
+func (a appJobs) Store() (ports.JobStore, bool) {
+	q, ok := a.bound()
+	if !ok {
+		return nil, false
+	}
+	s, ok := q.(ports.JobStore)
+	return s, ok
+}
+
+func (a appJobs) DB() *sql.DB {
+	if a.app == nil || a.app.Bootstrap == nil {
+		return nil
+	}
+	return a.app.Bootstrap.DB
+}
+
+func (a appJobs) EnqueueManual(ctx context.Context, name, jobID string, payload map[string]interface{}) error {
+	if a.app == nil {
+		return fmt.Errorf("metaldogs: app required")
+	}
+	queue, ok := a.app.BoundQueue()
+	if !ok || queue == nil {
+		return extapi.ErrSyncJobQueueUnbound
+	}
+	jobType, err := extapi.SyncJobType(PluginName, name)
+	if err != nil {
+		return err
+	}
+	var reg plugin.SyncJobRegistration
+	found := false
+	for _, r := range a.app.SyncJobs() {
+		if r.JobType == jobType {
+			reg = r
+			found = true
+			break
+		}
+	}
+	if !found {
+		return extapi.ErrSyncJobNotFound
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload = plugin.InjectRequestID(ctx, payload)
+	job, err := plugin.NewSyncJobEnvelope(reg, extapi.SyncTriggerManual, payload)
+	if err != nil {
+		return fmt.Errorf("envelope: %w", err)
+	}
+	job.ID = jobID
+	return queue.Enqueue(ctx, job)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/plugins/metaldogs"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 )
 
@@ -73,7 +74,7 @@ func TestHealth_DegradedWithoutQueue(t *testing.T) {
 	app := &plugin.App{Config: &config.Config{}}
 	withObsPing(app)
 	rec := httptest.NewRecorder()
-	httpapi.Health(app).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
@@ -101,7 +102,7 @@ func TestHealth_OK_OmitsDepths(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	httpapi.Health(app).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -126,7 +127,7 @@ func TestHealth_UsesBoundQueueWithoutRegisterQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	httpapi.Health(app).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d — BoundQueue-only wiring must not report degraded", rec.Code)
 	}
@@ -148,7 +149,7 @@ func TestAdminHealth_ReportsDepths(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	httpapi.AdminHealth(app).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
+	httpapi.AdminHealth(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -186,7 +187,7 @@ func TestAdminHealth_KeepsTypeOnCountsError(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	httpapi.AdminHealth(app).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
+	httpapi.AdminHealth(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/customizer/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
@@ -217,7 +218,7 @@ func TestHealth_DegradedWhenQueueNotReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	httpapi.Health(app).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	httpapi.Health(metaldogs.PlatformJobs(app)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d", rec.Code)
 	}

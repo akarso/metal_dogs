@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akarso/shopanda/internal/domain/jobs"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation/mockup"
@@ -84,7 +84,7 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 	if err != nil {
 		if errors.Is(err, ports.ErrGenerationJobStale) {
 			// Peer holds the claim — do not Complete/Fail this platform delivery.
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "claim_running", err)
 	}
@@ -202,7 +202,7 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 	if err != nil {
 		_ = w.Store.Delete(stageCtx, key)
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "persist_artwork", err)
 	}
@@ -242,7 +242,7 @@ func (w *GenerateWorker) Process(ctx context.Context, generationJobID, designIDH
 		cleanupMockup()
 		w.rollbackInMemorySucceed(&job)
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		if errors.Is(err, ports.ErrDesignConflict) {
 			return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "design_conflict")
@@ -345,7 +345,7 @@ func (w *GenerateWorker) ensureClaimHeld(parentCtx, stageCtx context.Context, jo
 		return w.transientOrFail(parentCtx, job, domain.TerminalStorageError, "claim_check", err, queueAttempts, maxAttempts)
 	}
 	if !ok || !cur.IsActive() || cur.ClaimToken != job.ClaimToken {
-		return jobs.ErrSkipOutcome
+		return pluginsdk.ErrSkipOutcome
 	}
 	if err := stageCtx.Err(); err != nil {
 		terminal := domain.TerminalCancelled
@@ -366,7 +366,7 @@ func (w *GenerateWorker) finishAlreadyStored(ctx context.Context, job domain.Gen
 	claimed, err := w.Jobs.ClaimForWork(ctx, job.ID, generateStageTimeout)
 	if err != nil {
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		return w.maybeLastAttempt(ctx, job, queueAttempts, maxAttempts, domain.TerminalStorageError, "claim_running", err)
 	}
@@ -440,7 +440,7 @@ func (w *GenerateWorker) finishAlreadyStored(ctx context.Context, job domain.Gen
 		cleanupMockup()
 		w.rollbackInMemorySucceed(&job)
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		if errors.Is(err, ports.ErrDesignConflict) {
 			return w.forceFailPermanent(ctx, job, domain.TerminalCancelled, "design_conflict")
@@ -485,7 +485,7 @@ func (w *GenerateWorker) transientOrFail(ctx context.Context, job domain.Generat
 	}
 	if err := w.Jobs.Update(ctx, job, expected); err != nil {
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		return fmt.Errorf("%w: requeue: %v (cause: %v)", ErrTransientGeneration, err, cause)
 	}
@@ -537,7 +537,7 @@ func (w *GenerateWorker) failPermanent(ctx context.Context, job domain.Generatio
 			ID: job.DesignID, Status: domain.DesignGenerationFailed, UpdatedAt: now,
 		}); cerr != nil {
 			if errors.Is(cerr, ports.ErrGenerationJobStale) {
-				return jobs.ErrSkipOutcome
+				return pluginsdk.ErrSkipOutcome
 			}
 			return fmt.Errorf("generate worker: complete failure after design load error: %v (design: %w)", cerr, err)
 		}
@@ -547,7 +547,7 @@ func (w *GenerateWorker) failPermanent(ctx context.Context, job domain.Generatio
 		_ = design.MarkGenerationFailed(now)
 		if err := w.Jobs.CompleteFailure(ctx, job, design); err != nil {
 			if errors.Is(err, ports.ErrGenerationJobStale) {
-				return jobs.ErrSkipOutcome
+				return pluginsdk.ErrSkipOutcome
 			}
 			return fmt.Errorf("generate worker: complete failure: %w", err)
 		}
@@ -555,7 +555,7 @@ func (w *GenerateWorker) failPermanent(ctx context.Context, job domain.Generatio
 	}
 	if err := w.Jobs.Update(ctx, job, expected); err != nil {
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		return err
 	}
@@ -574,7 +574,7 @@ func (w *GenerateWorker) forceFailPermanent(ctx context.Context, job domain.Gene
 			ID: job.DesignID, Status: domain.DesignGenerationFailed, UpdatedAt: now,
 		})
 		if errors.Is(err, ports.ErrGenerationJobStale) {
-			return jobs.ErrSkipOutcome
+			return pluginsdk.ErrSkipOutcome
 		}
 		return err
 	}
@@ -583,7 +583,7 @@ func (w *GenerateWorker) forceFailPermanent(ctx context.Context, job domain.Gene
 	}
 	err = w.Jobs.CompleteFailure(ctx, job, design)
 	if errors.Is(err, ports.ErrGenerationJobStale) {
-		return jobs.ErrSkipOutcome
+		return pluginsdk.ErrSkipOutcome
 	}
 	return err
 }
