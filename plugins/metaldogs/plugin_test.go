@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -425,23 +426,24 @@ func TestCLI_TemplatesLoad_UsesBootstrapDB(t *testing.T) {
 	if !ok || !cmd.RequiresDB {
 		t.Fatalf("templates cmd = %+v", cmd)
 	}
-	path := filepath.Join(t.TempDir(), "t.json")
-	if err := os.WriteFile(path, []byte(`{"id":"cli","prompt":"p","prompt_version":"v1"}`), 0o640); err != nil {
-		t.Fatal(err)
+	_, src, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate plugin_test.go")
 	}
+	path := filepath.Join(filepath.Dir(src), "templates", "head-front-blackmetal.yaml")
 	err := cmd.Run(cli.Context{Ctx: context.Background()}, []string{"load", "-file", path})
 	if err == nil || !strings.Contains(err.Error(), "database is not configured") {
 		t.Fatalf("load without DB: %v", err)
 	}
-	conn, err := sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable")
+	conn, err := sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	app.Bootstrap = &plugin.Bootstrap{DB: conn}
 	err = cmd.Run(cli.Context{Ctx: context.Background()}, []string{"load", "-file", path})
-	if err == nil || strings.Contains(err.Error(), "database is not configured") || strings.Contains(err.Error(), "sql: database is closed") {
-		t.Fatalf("load with Bootstrap.DB: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "metaldogs templates scan:") || !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("load with Bootstrap.DB: %v, want a store scan of that pool", err)
 	}
 }
 

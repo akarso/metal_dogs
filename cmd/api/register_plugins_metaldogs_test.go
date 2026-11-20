@@ -23,6 +23,7 @@ import (
 	"github.com/akarso/shopanda/internal/interfaces/http/shared"
 	storefront "github.com/akarso/shopanda/internal/interfaces/http/storefront"
 	"github.com/akarso/shopanda/internal/platform/auth"
+	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/event"
@@ -405,6 +406,14 @@ func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
 	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
 		return sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
 	}
+	var bound bool
+	deps.Bind = func(app *plugin.App, conn *sql.DB, cmd cli.Command) error {
+		bound = true
+		if conn == nil {
+			t.Fatal("Bind received a nil pool")
+		}
+		return bindPluginCLIPorts(app, conn, cmd)
+	}
 	registry := func() (*pluginCLIRuntime, error) {
 		return bootstrapPluginCLIRegistry(cfg, log)
 	}
@@ -418,19 +427,16 @@ func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
 		t.Fatal("metaldogs:templates was not found")
 	}
 
+	bound = false
 	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandTemplates, []string{"load", "-file", file}, deps)
 	if !ran {
 		t.Fatal("metaldogs:templates load was not found")
 	}
-	if err == nil {
-		t.Fatal("load against an unreachable DSN must fail")
+	if !bound {
+		t.Fatal("load returned before Bind")
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "database is not configured") {
-		t.Fatalf("load did not see the bound pool: %v", err)
-	}
-	if strings.Contains(msg, "RequiresDB is false") || strings.Contains(msg, "Needs CapCatalogSeed") {
-		t.Fatalf("load rejected before Run: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "metaldogs templates scan:") || !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("load error = %v, want a store scan of the bound pool", err)
 	}
 
 	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandEval, nil, deps)
