@@ -2,6 +2,7 @@ package metaldogs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -266,6 +267,7 @@ func (h quietHost) Catalog() (pluginsdk.CatalogPort, bool) {
 	return h.catalog, h.catalog != nil
 }
 func (quietHost) CatalogSeed() (pluginsdk.CatalogSeedPort, bool) { return nil, false }
+func (quietHost) BootstrapDB() (*sql.DB, bool)                   { return nil, false }
 func (quietHost) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
 	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)
 }

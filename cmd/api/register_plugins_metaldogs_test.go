@@ -340,6 +340,9 @@ func metalDogsBootFixture() (*plugin.Registry, *plugin.App, *plugin.Bootstrap) {
 	reg := plugin.NewRegistry(log)
 	reg.Register(metaldogs.New())
 	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
+	// Fixture has no DB. CapDB is still declared at Init; satisfy it so this
+	// test keeps asserting the catalog-seed skip, not a missing database.
+	app.MarkCapabilitySatisfied(plugin.CapDB)
 	boot := &plugin.Bootstrap{
 		Products: seedBootProducts{},
 		Variants: seedBootVariants{},

@@ -8,10 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/akarso/shopanda/internal/platform/cli"
-	"github.com/akarso/shopanda/internal/platform/config"
-	"github.com/akarso/shopanda/internal/platform/db"
-	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/catalog"
@@ -26,12 +23,13 @@ const (
 	CommandCatalogSeed = "metaldogs:catalog-seed"
 )
 
-func registerCLICommands(app *plugin.App, p *Plugin) {
-	app.RegisterCommand(cli.Command{
+func registerCLICommands(h pluginsdk.Host, p *Plugin) {
+	reg := pluginsdk.NewHost(h, PluginName).CLI()
+	reg.RegisterCommand(pluginsdk.CLICommand{
 		Name:        CommandEval,
 		Description: "Offline generation eval (template + photos → PNGs + report.json); providers fake|openai",
 		RequiresDB:  false,
-		Run: func(ctx cli.Context, args []string) error {
+		Run: func(ctx pluginsdk.CLIContext, args []string) error {
 			opts, err := eval.ParseArgs(args)
 			if err != nil {
 				return err
@@ -65,15 +63,18 @@ func registerCLICommands(app *plugin.App, p *Plugin) {
 		},
 	})
 
-	// RequiresDB false so `validate` works offline; load/publish/retire open DB themselves.
-	app.RegisterCommand(cli.Command{
+	// RequiresDB so the composition root opens the pool before Run. validate
+	// ignores it; load/publish/retire read Host.BootstrapDB (CapDB).
+	reg.RegisterCommand(pluginsdk.CLICommand{
 		Name:        CommandTemplates,
 		Description: "Template catalog: validate | load | publish | retire",
-		RequiresDB:  false,
-		Run:         runTemplates,
+		RequiresDB:  true,
+		Run: func(ctx pluginsdk.CLIContext, args []string) error {
+			return runTemplates(p, ctx, args)
+		},
 	})
 
-	app.RegisterCommand(cli.Command{
+	reg.RegisterCommand(pluginsdk.CLICommand{
 		Name:        CommandCatalogSeed,
 		Description: "Load the Metal Dogs catalog CSV (draft product, idempotent by SKU)",
 		RequiresDB:  true,
@@ -81,7 +82,7 @@ func registerCLICommands(app *plugin.App, p *Plugin) {
 	})
 }
 
-func (p *Plugin) runCatalogSeed(ctx cli.Context, args []string) error {
+func (p *Plugin) runCatalogSeed(ctx pluginsdk.CLIContext, args []string) error {
 	fs := flag.NewFlagSet(CommandCatalogSeed, flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 	dir := fs.String("dir", "plugins/metaldogs/catalog", "directory with products.csv, prices.csv, and stock.csv")
@@ -106,40 +107,37 @@ func (p *Plugin) runCatalogSeed(ctx cli.Context, args []string) error {
 	return nil
 }
 
-func openCLIDatabase(ctx cli.Context) (*sql.DB, func(), error) {
-	if ctx.DB != nil {
-		return ctx.DB, func() {}, nil
+func openCLIDatabase(p *Plugin) (*sql.DB, error) {
+	if p == nil || p.host == nil {
+		return nil, fmt.Errorf("metaldogs:templates: database is not configured")
 	}
-	if ctx.Config == nil {
-		return nil, nil, fmt.Errorf("metaldogs:templates: config required for database commands")
+	conn, ok := p.host.BootstrapDB()
+	if !ok || conn == nil {
+		return nil, fmt.Errorf("metaldogs:templates: database is not configured")
 	}
-	conn, err := db.Open(config.DatabaseDSN(ctx.Config))
-	if err != nil {
-		return nil, nil, fmt.Errorf("metaldogs:templates: database: %w", err)
-	}
-	return conn, func() { _ = conn.Close() }, nil
+	return conn, nil
 }
 
-func runTemplates(ctx cli.Context, args []string) error {
+func runTemplates(p *Plugin, ctx pluginsdk.CLIContext, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("metaldogs:templates: subcommand required (validate|load|publish|retire)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "validate":
-		return runTemplatesValidate(ctx, rest)
+		return runTemplatesValidate(rest)
 	case "load":
-		return runTemplatesLoad(ctx, rest)
+		return runTemplatesLoad(p, ctx, rest)
 	case "publish":
-		return runTemplatesPublish(ctx, rest)
+		return runTemplatesPublish(p, ctx, rest)
 	case "retire":
-		return runTemplatesRetire(ctx, rest)
+		return runTemplatesRetire(p, ctx, rest)
 	default:
 		return fmt.Errorf("metaldogs:templates: unknown subcommand %q (want validate|load|publish|retire)", sub)
 	}
 }
 
-func runTemplatesValidate(_ cli.Context, args []string) error {
+func runTemplatesValidate(args []string) error {
 	path, err := parseFileFlag("metaldogs:templates validate", args)
 	if err != nil {
 		return err
@@ -152,16 +150,15 @@ func runTemplatesValidate(_ cli.Context, args []string) error {
 	return nil
 }
 
-func runTemplatesLoad(ctx cli.Context, args []string) error {
+func runTemplatesLoad(p *Plugin, ctx pluginsdk.CLIContext, args []string) error {
 	path, err := parseFileFlag("metaldogs:templates load", args)
 	if err != nil {
 		return err
 	}
-	conn, closeFn, err := openCLIDatabase(ctx)
+	conn, err := openCLIDatabase(p)
 	if err != nil {
 		return err
 	}
-	defer closeFn()
 	cat := &application.TemplateCatalog{
 		Store: postgres.NewTemplateStore(conn),
 		IDs:   ports.UUIDGenerator{},
@@ -179,16 +176,15 @@ func runTemplatesLoad(ctx cli.Context, args []string) error {
 	return nil
 }
 
-func runTemplatesPublish(ctx cli.Context, args []string) error {
+func runTemplatesPublish(p *Plugin, ctx pluginsdk.CLIContext, args []string) error {
 	slug, version, err := parseSlugVersion("metaldogs:templates publish", args)
 	if err != nil {
 		return err
 	}
-	conn, closeFn, err := openCLIDatabase(ctx)
+	conn, err := openCLIDatabase(p)
 	if err != nil {
 		return err
 	}
-	defer closeFn()
 	cat := &application.TemplateCatalog{Store: postgres.NewTemplateStore(conn)}
 	t, err := cat.Publish(ctx.Ctx, slug, version)
 	if err != nil {
@@ -198,7 +194,7 @@ func runTemplatesPublish(ctx cli.Context, args []string) error {
 	return nil
 }
 
-func runTemplatesRetire(ctx cli.Context, args []string) error {
+func runTemplatesRetire(p *Plugin, ctx pluginsdk.CLIContext, args []string) error {
 	fs := flag.NewFlagSet("metaldogs:templates retire", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 	var slug string
@@ -212,11 +208,10 @@ func runTemplatesRetire(ctx cli.Context, args []string) error {
 	if strings.TrimSpace(slug) == "" {
 		return fmt.Errorf("metaldogs:templates retire: -slug is required")
 	}
-	conn, closeFn, err := openCLIDatabase(ctx)
+	conn, err := openCLIDatabase(p)
 	if err != nil {
 		return err
 	}
-	defer closeFn()
 	cat := &application.TemplateCatalog{Store: postgres.NewTemplateStore(conn)}
 	t, err := cat.Retire(ctx.Ctx, slug)
 	if err != nil {

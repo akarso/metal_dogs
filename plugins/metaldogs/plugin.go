@@ -39,6 +39,7 @@ type cartSurface interface {
 	Cart() (pluginsdk.CartPort, bool)
 	Catalog() (pluginsdk.CatalogPort, bool)
 	CatalogSeed() (pluginsdk.CatalogSeedPort, bool)
+	BootstrapDB() (*sql.DB, bool)
 	WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context
 	Logger() pluginsdk.Logger
 }
@@ -92,10 +93,9 @@ func (p *Plugin) Init(app *plugin.App) error {
 	h.Require(pluginsdk.CapCatalog)
 	h.Require(pluginsdk.CapCatalogSeed)
 	p.host = h
-	// BootstrapDB is denied until CapDB is declared. bindProductPorts marks it when a DB is open.
-	if app.Bootstrap != nil && app.Bootstrap.DB != nil {
-		h.Require(pluginsdk.CapDB)
-	}
+	// CLI opens the DB after InitAll freezes needs. BootstrapDB stays false
+	// unless CapDB is recorded here, including when Bootstrap.DB is still nil.
+	h.Require(pluginsdk.CapDB)
 	// ConfigValue is plugin-scoped; queue.driver is an allowlisted core key.
 	if err := pluginsdk.RequireQueueDriver(h, "postgres"); err != nil {
 		return fmt.Errorf("metaldogs plugin: %w", err)
@@ -109,14 +109,14 @@ func (p *Plugin) Init(app *plugin.App) error {
 	maxAttempts := settings.MaxAttemptsPerDesign
 	cooldownSecs := settings.CooldownSeconds
 
-	if err := registerDesignIDField(app); err != nil {
+	if err := registerDesignIDField(h); err != nil {
 		return fmt.Errorf("metaldogs plugin: design field: %w", err)
 	}
 	if err := registerCartValidation(app, p); err != nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
 	}
 
-	registerCLICommands(app, p)
+	registerCLICommands(h, p)
 
 	store, err := resolveAssetStore(app)
 	if err != nil {

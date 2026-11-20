@@ -1,6 +1,6 @@
 # CR-22: MIG2 pluginsdk group A (simple replacements)
 
-- Status: ticket 01 done; items 4–8 are ticket 02
+- Status: closed 2026-11-20 (group A). Items 4 and `metaldogs:eval` on the real CLI path wait for MIG3.
 - Slices: MIG2 (behaviour unchanged)
 
 ## What changed
@@ -17,9 +17,24 @@
 
 `pluginsdk.IsConflict` is `apperror.Is(CodeConflict)` or `domain/extension.ErrStringValueConflict`. The job queue returns `apperror.Conflict` with no wrap (`internal/infrastructure/postgres/job_queue.go`). The new tests wrap that same error with `fmt.Errorf("%w")`. A wrapped non-conflict does not enter requeue. `ErrStringValueConflict` is not what `Enqueue` returns.
 
+## Ticket 02
+
+| # | Decision | Why |
+| --- | --- | --- |
+| 4 | Left on `plugin.Migrator` | `Registry.CollectMigrations` / `migratorRegistration` type-assert `plugin.Migrator` (`Migration() plugin.MigrationSpec`). `pluginsdk.Migrator` returns `pluginsdk.MigrationSpec`. Those are different named types, so a `plugin.App` plugin that implements only the SDK interface is skipped. `pluginsdk.Adapt` forwards it, and Adapt requires `pluginsdk.Plugin`. That move is MIG3. |
+| 5 | `pluginsdk.NewHost(...).CLI().RegisterCommand` | Same registry, `RequiresDB` and `cmd.Plugin` still set from `CurrentPluginName`. |
+| 6, 7 | `Host.BootstrapDB` after `Require(CapDB)` during Init | `pluginsdk.CLIContext` has no `*sql.DB` and no config. The CLI root opens the pool after `InitAll` (`FreezePluginNeeds`). CapDB has to be recorded while Init still runs, including when `Bootstrap.DB` is nil. `metaldogs:templates` is `RequiresDB: true` so load/publish/retire see that pool. `validate` does not query. The shared pool is not closed. |
+| 8 | `Host.RegisterField(extapi.FieldDef)` | Same strings as the domain constants (`string`, `cart_item`, `snapshot`, `public`, `PluginOnlyWrite`, UUID regex). Owner stays `metaldogs` via `AsHostFor`. |
+
+`metaldogs:eval` stays `RequiresDB: false` (`TestPlugin_Init_Enabled_RegistersObsPing`). The real CLI path (`runPluginCLICommand`) rejects it: the plugin `Needs` `CapCatalogSeed`, and `cmd/api/cli_plugins.go` refuses any command of that plugin with `RequiresDB` false before `Run`. Eval does not read a database; setting `RequiresDB` true would open one. Direct `cmd.Run` in the plugin tests still works.
+
+`metaldogs:templates` on that same path used to die on the same check. `RequiresDB: true` is what lets it run. `validate` then needs a database the process can open, and still does not query it.
+
+`metaldogs:catalog-seed` is unchanged: `RequiresDB`, `Host.CatalogSeed()`, `runPluginCLICommandWithDeps`.
+
 ## Baseline lines gone
 
-`config/tests/importboundary-baseline.txt` is not edited here. These lines no longer appear:
+`config/tests/importboundary-baseline.txt` is not edited here. These lines no longer appear (ticket 01 plus ticket 02):
 
 - `metaldogs/plugin.go imports disallowed github.com/akarso/shopanda/internal/platform/logger (not on allowlist)`
 - `metaldogs/plugin.go imports disallowed github.com/akarso/shopanda/internal/domain/rbac (not on allowlist)`
@@ -28,12 +43,31 @@
 - `metaldogs/catalog/seed.go imports disallowed github.com/akarso/shopanda/internal/domain/catalog (not on allowlist)`
 - `metaldogs/ports/ids.go imports disallowed github.com/akarso/shopanda/internal/platform/id (not on allowlist)`
 - `metaldogs/settings.go imports disallowed github.com/akarso/shopanda/internal/platform/config (not on allowlist)`
+- `metaldogs/cli.go imports disallowed github.com/akarso/shopanda/internal/platform/cli (not on allowlist)`
+- `metaldogs/cli.go imports disallowed github.com/akarso/shopanda/internal/platform/config (not on allowlist)`
+- `metaldogs/cli.go imports disallowed github.com/akarso/shopanda/internal/platform/db (not on allowlist)`
+- `metaldogs/cli.go imports disallowed github.com/akarso/shopanda/internal/platform/plugin (not on allowlist)`
+- `metaldogs/design_field.go imports disallowed github.com/akarso/shopanda/internal/domain/extension (not on allowlist)`
+- `metaldogs/design_field.go imports disallowed github.com/akarso/shopanda/internal/platform/plugin (not on allowlist)`
 
-`catalog/seed.go` still imports `internal/domain/shared` (currency). That line stays.
+`catalog/seed.go` still imports `internal/domain/shared` (currency). That line stays. `migrations.go` still imports `internal/platform/plugin`.
+
+`go test ./plugins/ -run ImportBoundary` now prints 17 violations (baseline file still has 30). No new line.
+
+## MIG3 (17 import lines that stay)
+
+- `platform/plugin` (`plugin.App` and, for migrations, `plugin.Migrator`): `assets.go`, `cart_validate.go`, `httpapi/health.go`, `migrations.go`, `plugin.go`, `sync_generate.go`, `sync_obs.go`, `sync_prepare_production.go`
+- `domain/jobs`: `application/generate_worker.go`, `httpapi/health.go`, `sync_generate.go`, `sync_prepare_production.go`
+- `domain/media`: `adapters/mediastore/store.go`, `assets.go`
+- `platform/requestctx`: `observability/correlation.go`
+- `domain/shared`: `catalog/seed.go`
+- `platform/migrate`: `testutil/db.go`
+
+`metaldogs:eval` on `runPluginCLICommand` is the same follow-up (CapCatalogSeed + `RequiresDB: false`). It is not an import line.
 
 ## Not in this change
 
-Items 4–8 (migrator, CLI, `Host.BootstrapDB`, `RegisterField`) stay on `plugin.App`. Ticket 02.
+No Shopanda change and no pin change. The plugin stays a `plugin.App` plugin.
 
 ## Flags / rollback
 

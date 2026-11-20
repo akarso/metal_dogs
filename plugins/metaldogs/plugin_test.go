@@ -2,6 +2,7 @@ package metaldogs_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +25,8 @@ import (
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/plugins/metaldogs"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // fakeSigned is a minimal SignedURLStorage for Init wiring (no *localfs.Storage).
@@ -317,6 +320,9 @@ func TestPlugin_Init_Enabled_RegistersObsPing(t *testing.T) {
 				t.Fatal("metaldogs:eval must not require DB")
 			}
 		}
+		if c.Name == metaldogs.CommandTemplates && !c.RequiresDB {
+			t.Fatal("metaldogs:templates must require DB so load/publish/retire see BootstrapDB")
+		}
 	}
 	if !foundEval {
 		t.Fatalf("CLIRegistry missing %s: %+v", metaldogs.CommandEval, cmds)
@@ -401,6 +407,41 @@ func TestCLI_Eval_NonZeroOnSampleFailure(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected non-zero exit when samples fail")
+	}
+}
+
+func TestCLI_TemplatesLoad_UsesBootstrapDB(t *testing.T) {
+	t.Parallel()
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
+	reg.Register(metaldogs.New())
+	app := testApp(t, true)
+	if summary := reg.InitAll(app); summary.Failed > 0 {
+		t.Fatalf("InitAll: %+v", summary)
+	}
+	if !app.CapabilityDeclaredBy(plugin.CapDB, metaldogs.PluginName) {
+		t.Fatal("CapDB must be declared at Init so a later Bootstrap.DB is visible")
+	}
+	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandTemplates)
+	if !ok || !cmd.RequiresDB {
+		t.Fatalf("templates cmd = %+v", cmd)
+	}
+	path := filepath.Join(t.TempDir(), "t.json")
+	if err := os.WriteFile(path, []byte(`{"id":"cli","prompt":"p","prompt_version":"v1"}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Run(cli.Context{Ctx: context.Background()}, []string{"load", "-file", path})
+	if err == nil || !strings.Contains(err.Error(), "database is not configured") {
+		t.Fatalf("load without DB: %v", err)
+	}
+	conn, err := sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	app.Bootstrap = &plugin.Bootstrap{DB: conn}
+	err = cmd.Run(cli.Context{Ctx: context.Background()}, []string{"load", "-file", path})
+	if err == nil || strings.Contains(err.Error(), "database is not configured") || strings.Contains(err.Error(), "sql: database is closed") {
+		t.Fatalf("load with Bootstrap.DB: %v", err)
 	}
 }
 
