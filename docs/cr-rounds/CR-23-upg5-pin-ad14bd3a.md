@@ -1,7 +1,7 @@
 # CR-23: Shopanda pin `ad14bd3a` (UPG5)
 
 - Opened: 2026-11-20
-- Pin: `ad14bd3aa9aee24886a50cb1da1ce6f3af4cf844` (`upstream/main`, shopanda#640, PR-1591)
+- Pin: `ad14bd3a…` (`upstream/main`, shopanda#640, PR-1591)
 - Previous pin: `fd4dd577…` (shopanda#629)
 
 `fd4dd577` is the promote merge of `dev` (`abc82f51`) into `main` (`619bb4b7`, shopanda#628). Its tree equals `619bb4b7`. PR-1582…1591 are first-parent children of `619bb4b7`, not of `fd4dd577`. Merge-base of this branch and the new pin is `619bb4b7`.
