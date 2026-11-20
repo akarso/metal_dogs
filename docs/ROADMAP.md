@@ -10,7 +10,7 @@ No calendar dates are given. Ordering is expressed through dependencies and mile
 
 ## 1. Ground truth this plan is built on
 
-Inspected against Shopanda source at pin [`fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75`](UPSTREAM_PIN.md) (`upstream/main`; PR-1581 on top of `abc82f51`). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
+Inspected against Shopanda source at pin [`ad14bd3aa9aee24886a50cb1da1ce6f3af4cf844`](UPSTREAM_PIN.md) (`upstream/main`; PR-1591 on top of `fd4dd577`). **Inspected at pin** = code/docs read + ImportBoundary where noted; not a runtime contract suite. Promote a row to **Contract-tested** when F1/F2/E* add automated checks. Re-inspect on every upstream upgrade.
 
 | Capability | Status | Consequence for Metal Dogs |
 | --- | --- | --- |
@@ -236,7 +236,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Safe delivery:** No behaviour change.
 - **Docs:** ADR-0001 → Accepted; runbook `shopanda-upgrade.md` gets real commands; `AGENTS.md` gets the real build/test commands; [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md).
 - **Exit:** `go build -o app ./cmd/api` succeeds; `./app dev` serves the default Shopanda storefront locally (after `./app setup`).
-- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`fd4dd577…` on `upstream/main`; PR-1581 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00d: `metaldogs:catalog-seed` is bound by upstream `runPluginCLICommand` (`register_products.go` only registers the plugin). Ticket 00e: pin includes `WithRequeueTerminal`, `Host.PlatformConfig`, and `cmd/api/plugin_boot.go`. Ticket 03b calls `Queue.Requeue` with `WithRequeueTerminal`, `pluginsdk.RequireQueueDriver`, and `bootServePlugins` / `bootWorkerPlugins`. Ticket 00f: non-UUID job ids are not-found on the pin; `job_queue.go` is not a Metal Dogs edit. Ticket 00g: `ReadableStorage.Read` takes a context; `localfs/storage.go` matches the pin. Ticket 05: cart extension tests are race-free (`go test -race ./internal/application/cart/` in `scripts/ci/unit.sh`).
+- **Pin (F0):** `56818946…`. **Current pin:** see [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) (`ad14bd3a…` on `upstream/main`; PR-1591 merged). Ticket 02 removed `cmd/api/metaldogs_catalog.go`. Ticket 00d: `metaldogs:catalog-seed` is bound by upstream `runPluginCLICommand` (`register_products.go` only registers the plugin). Ticket 00e: pin includes `WithRequeueTerminal`, `Host.PlatformConfig`, and `cmd/api/plugin_boot.go`. Ticket 03b calls `Queue.Requeue` with `WithRequeueTerminal`, `pluginsdk.RequireQueueDriver`, and `bootServePlugins` / `bootWorkerPlugins`. Ticket 00f: non-UUID job ids are not-found on the pin; `job_queue.go` is not a Metal Dogs edit. Ticket 00g: `ReadableStorage.Read` takes a context; `localfs/storage.go` matches the pin. Ticket 05: cart extension tests are race-free (`go test -race ./internal/application/cart/` in `scripts/ci/unit.sh`).
 
 #### F1 · Plugin skeleton behind a flag — size S — **DONE** (CR-02, 2026-11-06)
 
@@ -263,7 +263,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
 - **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
-- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/fd4dd5770004f6d25a4397ffe7ba035b7c4a2c75/docs/guides/SYNC_JOB_OBSERVABILITY.md).
+- **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/ad14bd3aa9aee24886a50cb1da1ce6f3af4cf844/docs/guides/SYNC_JOB_OBSERVABILITY.md).
 
 #### F4 · Private object storage — size S — **DONE** (CR-05, 2026-11-07; pin absorb 2026-11-08)
 

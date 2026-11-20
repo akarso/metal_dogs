@@ -403,7 +403,9 @@ func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
 	cfg := metalDogsEnabledConfig()
 	log := logger.NewWithWriter(io.Discard, "error")
 	deps := defaultPluginCLIDeps()
+	var opened int
 	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
+		opened++
 		return sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
 	}
 	var bound bool
@@ -439,9 +441,19 @@ func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
 		t.Fatalf("load error = %v, want a store scan of the bound pool", err)
 	}
 
+	openedBefore := opened
 	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandEval, nil, deps)
-	if !ran || err == nil || !strings.Contains(err.Error(), "RequiresDB is false") {
-		t.Fatalf("eval ran=%v err=%v, want CapCatalogSeed rejection", ran, err)
+	if !ran {
+		t.Fatal("metaldogs:eval was not found")
+	}
+	if err == nil || !strings.Contains(err.Error(), "--template is required") {
+		t.Fatalf("eval err = %v, want missing --template", err)
+	}
+	if strings.Contains(err.Error(), "RequiresDB is false") {
+		t.Fatalf("eval rejected for CapCatalogSeed: %v", err)
+	}
+	if opened != openedBefore {
+		t.Fatalf("metaldogs:eval opened a DSN (%d calls)", opened-openedBefore)
 	}
 }
 
