@@ -403,9 +403,7 @@ func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
 	cfg := metalDogsEnabledConfig()
 	log := logger.NewWithWriter(io.Discard, "error")
 	deps := defaultPluginCLIDeps()
-	var opened int
 	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
-		opened++
 		return sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
 	}
 	var bound bool
@@ -440,20 +438,68 @@ func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "metaldogs templates scan:") || !strings.Contains(err.Error(), "connect") {
 		t.Fatalf("load error = %v, want a store scan of the bound pool", err)
 	}
+}
 
-	openedBefore := opened
-	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandEval, nil, deps)
+func TestRunPluginCLICommand_EvalRunsWithoutDSN(t *testing.T) {
+	cfg := metalDogsEnabledConfig()
+	log := logger.NewWithWriter(io.Discard, "error")
+	deps := defaultPluginCLIDeps()
+	var opened int
+	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
+		opened++
+		return sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
+	}
+	registry := func() (*pluginCLIRuntime, error) {
+		return bootstrapPluginCLIRegistry(cfg, log)
+	}
+
+	photos := t.TempDir()
+	if err := os.WriteFile(filepath.Join(photos, "dog.png"), evalTinyPNG(), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	ran, err := runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandEval, []string{
+		"-template", metalDogsTemplateFile(t),
+		"-photos", photos,
+		"-out", out,
+		"-provider", "fake",
+		"-dog-name", "X",
+	}, deps)
 	if !ran {
 		t.Fatal("metaldogs:eval was not found")
 	}
-	if err == nil || !strings.Contains(err.Error(), "--template is required") {
-		t.Fatalf("eval err = %v, want missing --template", err)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
 	}
-	if strings.Contains(err.Error(), "RequiresDB is false") {
-		t.Fatalf("eval rejected for CapCatalogSeed: %v", err)
+	if opened != 0 {
+		t.Fatalf("metaldogs:eval opened a DSN (%d calls)", opened)
 	}
-	if opened != openedBefore {
-		t.Fatalf("metaldogs:eval opened a DSN (%d calls)", opened-openedBefore)
+	if _, err := os.Stat(filepath.Join(out, "report.json")); err != nil {
+		t.Fatalf("report.json: %v", err)
+	}
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pngs := 0
+	for _, e := range entries {
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".png") {
+			pngs++
+		}
+	}
+	if pngs == 0 {
+		t.Fatalf("eval wrote no png in %s", out)
+	}
+}
+
+func evalTinyPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+		0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xef, 0x00, 0x00,
+		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 	}
 }
 
