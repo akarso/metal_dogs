@@ -1,7 +1,7 @@
 # CR-26: MIG3b pluginsdk group B2 (tickets 01–02)
 
 - Status: ticket 02 recorded 2026-11-20. Round not closed. Baseline file not edited (orchestrator).
-- Pin: `647c6a2a78257743db42b25019fd02fdf376618c`
+- Pin: `647c6a2a…`
 - Slice: MIG3b tickets 01–02
 
 ## Host access check
