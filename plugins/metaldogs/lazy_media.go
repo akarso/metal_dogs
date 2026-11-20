@@ -30,7 +30,7 @@ func (s lazyAssetStore) open() (ports.AssetStore, error) {
 	}
 	backend, ok := signed.(ports.MediaBackend)
 	if !ok {
-		return nil, fmt.Errorf("metaldogs: media storage %q does not implement SignedURLStorage", media.Name())
+		return nil, fmt.Errorf("metaldogs: media storage %q does not implement metaldogs MediaBackend", media.Name())
 	}
 	return resolveAssetStore(backend)
 }

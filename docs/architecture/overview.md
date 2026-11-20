@@ -186,7 +186,6 @@ Serving the customizer from the shop origin avoids CORS and third-party-cookie i
 | `.github/scripts/run-metaldogs-integration-tests.sh` | Metal Dogs DSN suite + canaries | F2 |
 | `.gitignore` | `/app`, `.idea/`, `.vscode/` | F0 |
 | `Makefile` | `docs-policy` runs the Metal Dogs link checker and this allowlist script, not `SHOPANDA_PLATFORM=1` | CR-06 |
-| `cmd/api/plugin_boot.go` | `pluginCLINeedsSkip` also skips `CapJobs` and `CapMedia`. Plugin CLI does not bind those ports; `metaldogs:templates` and `metaldogs:catalog-seed` would fail the assert. Serve and worker still bind them | MIG3b-03 |
 | `cmd/api/register_products.go` | `registerMetalDogs` via `pluginsdk.Adapt` when the plugin is enabled or the flag does not parse. `register_plugins.go` matches the pin | UPG4-01 / MIG3b-03 |
 | `cmd/api/register_plugins_metaldogs_test.go` | Registration, NoCache, boot helpers, catalog-seed dispatch through `bindPluginCLIPorts`, opaque bearer guest check, Metal Dogs migrator collected when the plugin is enabled | UPG4-01 / 05 |
 | `configs/config.example.yaml` | Commented `plugins.metaldogs` block (enabled + `generation`) | F1 |

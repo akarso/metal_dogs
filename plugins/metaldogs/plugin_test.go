@@ -191,7 +191,7 @@ func TestPlugin_Init_CooldownSecondsBounds(t *testing.T) {
 	}
 }
 
-func TestPlugin_Init_WithoutMedia_EvalOnly_NoHTTP(t *testing.T) {
+func TestPlugin_Init_WithoutMedia_RoutesRegisteredMediaResolvedLazily(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
 	p := metaldogs.New()

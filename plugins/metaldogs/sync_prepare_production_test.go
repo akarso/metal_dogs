@@ -277,7 +277,7 @@ type prepareResult int64
 func (r prepareResult) LastInsertId() (int64, error) { return 0, nil }
 func (r prepareResult) RowsAffected() (int64, error) { return int64(r), nil }
 
-func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
+func TestEnqueuePrepare_ExistingPendingRowSkipsEnqueue(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
 	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {

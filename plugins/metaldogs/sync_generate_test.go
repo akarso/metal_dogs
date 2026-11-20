@@ -121,38 +121,17 @@ func (q *queueWithAdmin) Requeue(_ context.Context, _ string, attempt int, opts 
 	return nil
 }
 
-func TestResolveGenerateEnqueueConflict_LiveClaimNoOp(t *testing.T) {
-	t.Parallel()
-	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
-	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
-		t.Fatal(err)
-	}
-	if admin.requeued || admin.hookCalls != 0 {
-		t.Fatalf("young processing must not requeue/fence: requeued=%v hooks=%d", admin.requeued, admin.hookCalls)
+const generateConflictJobID = "11111111-1111-4111-8111-111111111111"
+
+func conflictEnqueue(admin *conflictAdmin) *queueWithAdmin {
+	admin.jobType = "integration.sync.metaldogs.generate"
+	return &queueWithAdmin{
+		conflictAdmin: admin,
+		enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
 	}
 }
 
-func TestResolveGenerateEnqueueConflict_ReliesOnRequeueHookOnly(t *testing.T) {
-	t.Parallel()
-	admin := &conflictAdmin{
-		status:    jobs.StatusProcessing,
-		updatedAt: time.Now().Add(-10 * time.Minute),
-	}
-	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
-		t.Fatal(err)
-	}
-	if !admin.requeued {
-		t.Fatal("stale processing must requeue")
-	}
-	// Conflict path must not add a second InvalidateClaim; fencing is OnRequeued once.
-	if admin.hookCalls != 1 {
-		t.Fatalf("OnRequeued-equivalent calls=%d, want 1", admin.hookCalls)
-	}
-}
-
-func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptRetriesOnce(t *testing.T) {
+func TestEnqueueGenerate_SDKWrongAttemptReloadsOnce(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 2}
 	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
@@ -161,19 +140,19 @@ func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptRetriesOnce(t *testi
 			a.status = jobs.StatusDone
 		}
 	}
-	q := &queueWithAdmin{conflictAdmin: admin}
-	if err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1"); err != nil {
+	q := conflictEnqueue(admin)
+	if err := enqueueGenerateOn(t, q, generateConflictJobID); err != nil {
 		t.Fatal(err)
 	}
 	if !admin.requeued || admin.status != jobs.StatusPending || admin.attempts != 3 {
-		t.Fatalf("retry must re-pend once with the live attempt: requeued=%v status=%s attempts=%d", admin.requeued, admin.status, admin.attempts)
+		t.Fatalf("plugin must re-pend once with the live attempt: requeued=%v status=%s attempts=%d", admin.requeued, admin.status, admin.attempts)
 	}
 	if admin.hookCalls != 1 {
 		t.Fatalf("OnRequeued-equivalent calls=%d, want 1", admin.hookCalls)
 	}
 }
 
-func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptStopsAfterOneRetry(t *testing.T) {
+func TestEnqueueGenerate_SDKWrongAttemptStopsAfterOneRetry(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 2}
 	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
@@ -182,8 +161,8 @@ func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptStopsAfterOneRetry(t
 			a.status = jobs.StatusDone
 		}
 	}
-	q := &queueWithAdmin{conflictAdmin: admin}
-	err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1")
+	q := conflictEnqueue(admin)
+	err := enqueueGenerateOn(t, q, generateConflictJobID)
 	if err == nil || !errors.Is(err, jobs.ErrRequeueWrongAttempt) {
 		t.Fatalf("second mismatch must surface: %v", err)
 	}
@@ -192,16 +171,50 @@ func TestResolveGenerateEnqueueConflict_TerminalWrongAttemptStopsAfterOneRetry(t
 	}
 }
 
-func TestResolveGenerateEnqueueConflict_ReclaimingReturnsError(t *testing.T) {
+func TestEnqueueGenerate_SDKNotTerminalPendingIsSuccess(t *testing.T) {
 	t.Parallel()
-	admin := &conflictAdmin{status: jobs.StatusReclaiming}
-	q := &queueWithAdmin{conflictAdmin: admin}
-	err := resolveGenerateEnqueueConflict(q, context.Background(), "job-1")
+	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 1}
+	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
+		if terminal {
+			a.status = jobs.StatusPending
+		}
+	}
+	q := conflictEnqueue(admin)
+	if err := enqueueGenerateOn(t, q, generateConflictJobID); err != nil {
+		t.Fatal(err)
+	}
+	if admin.requeued || admin.status != jobs.StatusPending {
+		t.Fatalf("pending after a lost terminal requeue must stay: requeued=%v status=%s", admin.requeued, admin.status)
+	}
+}
+
+func TestEnqueueGenerate_SDKNotTerminalReclaimingErrors(t *testing.T) {
+	t.Parallel()
+	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 1}
+	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
+		if terminal {
+			a.status = jobs.StatusReclaiming
+		}
+	}
+	q := conflictEnqueue(admin)
+	err := enqueueGenerateOn(t, q, generateConflictJobID)
 	if err == nil || !strings.Contains(err.Error(), string(jobs.StatusReclaiming)) {
-		t.Fatalf("reclaiming must error, got %v", err)
+		t.Fatalf("reclaiming raced under terminal requeue must error, got %v", err)
 	}
 	if admin.requeued {
 		t.Fatal("reclaiming must not requeue")
+	}
+}
+
+func TestEnqueueGenerate_ReclaimingAtConflictIsSuccess(t *testing.T) {
+	t.Parallel()
+	admin := &conflictAdmin{status: jobs.StatusReclaiming, attempts: 1}
+	q := conflictEnqueue(admin)
+	if err := enqueueGenerateOn(t, q, generateConflictJobID); err != nil {
+		t.Fatal(err)
+	}
+	if admin.requeued {
+		t.Fatal("WithJobID treats reclaiming as in-flight success")
 	}
 }
 
@@ -221,6 +234,15 @@ func hostJobsFor(t *testing.T, app *plugin.App, q jobs.Queue) ports.JobAccess {
 	return PlatformJobs(pluginsdk.AsHostFor(app, PluginName), nil)
 }
 
+func enqueueGenerateOn(t *testing.T, q *queueWithAdmin, id string) error {
+	t.Helper()
+	app := &plugin.App{}
+	if err := registerGenerate(pluginsdk.New(app, PluginName).Integration(PluginName), &application.GenerateWorker{}, 3); err != nil {
+		t.Fatal(err)
+	}
+	return enqueueGenerateIdempotent(hostJobsFor(t, app, q), context.Background(), id, "design-1")
+}
+
 func TestEnqueueGenerate_RejectsNonUUIDJobID(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
@@ -234,7 +256,7 @@ func TestEnqueueGenerate_RejectsNonUUIDJobID(t *testing.T) {
 	}
 }
 
-func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
+func TestEnqueueGenerate_SDKLeavesFreshProcessingConflict(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
 	if err := registerGenerate(pluginsdk.New(app, PluginName).Integration(PluginName), &application.GenerateWorker{}, 3); err != nil {
