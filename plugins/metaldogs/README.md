@@ -84,7 +84,7 @@ export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?s
 go test ./plugins/metaldogs/... -count=1
 ```
 
-`testutil.OpenIsolated` — unique schema per call, forced `search_path`. CI: `integration-metaldogs` canaries.
+`testutil.OpenIsolated` wraps `harness.OpenIsolated`: unique schema per call, forced `search_path`, Metal Dogs plugin migrations (`OpenIsolatedWithCore` also applies core). CI: `integration-metaldogs` canaries. Plugin advisory locks stay global per plugin name, so the suite still runs with `-p 1`.
 
 Later job types: `integration.sync.metaldogs.<name>` (ADR-0003).
 

@@ -3,8 +3,8 @@ package observability
 import (
 	"context"
 
-	"github.com/akarso/shopanda/internal/platform/requestctx"
 	"github.com/akarso/shopanda/pkg/extapi"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
 
 // CorrelationID returns the platform request_id for ctx (X-Request-ID).
@@ -14,7 +14,7 @@ import (
 // (see integration sync_runtime). Prefer JobLogFields when logging from a
 // SyncJobContext so correlation is taken from the durable payload.
 func CorrelationID(ctx context.Context) string {
-	return requestctx.RequestID(ctx)
+	return pluginsdk.RequestIDFromContext(ctx)
 }
 
 // JobLogFields builds structured log fields for a sync job handler.

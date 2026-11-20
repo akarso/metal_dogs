@@ -131,7 +131,7 @@ go tool cover -func=coverage-metaldogs-nodsn.out
 COVERPROFILE=coverage-metaldogs-integration.out bash .github/scripts/run-metaldogs-integration-tests.sh
 ```
 
-`plugins/metaldogs/testutil.OpenIsolated` creates a **unique** schema per call and returns a DB whose pool connections all start with that `search_path` (`pgx` RuntimeParams; URL or libpq keyword DSN). Any `search_path` already in `SHOPANDA_TEST_DSN` is overwritten. It runs `plugin:metaldogs:*` migrations and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `NewSeqGenerator`. Product clock/ID ports live in `plugins/metaldogs/ports`. When Actions billing returns, require `CI / integration-metaldogs` on `main` branch protection before closing CR-03.
+`plugins/metaldogs/testutil.OpenIsolated` wraps `harness.OpenIsolated`: a **unique** schema per call and a DB whose pool connections pin `search_path` to it. Any `search_path` already in `SHOPANDA_TEST_DSN` is overwritten. It applies `plugin:metaldogs:*` migrations (`OpenIsolatedWithCore` also applies core) and drops the schema on cleanup. Deterministic helpers: `FakeClock`, `NewSeqGenerator`. Product clock/ID ports live in `plugins/metaldogs/ports`. When Actions billing returns, require `CI / integration-metaldogs` on `main` branch protection before closing CR-03.
 
 - Storefront unit and E2E: `S1`.
 - Opt-in smoke against real providers: `METALDOGS_SMOKE=1` plus credentials in env; costs money; never in CI.

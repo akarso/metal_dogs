@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
 
@@ -247,7 +247,7 @@ func loadPrices(path string) ([]priceRow, error) {
 			return nil, fieldErr(pricesFile, line, "sku", "empty")
 		}
 		currency := strings.ToUpper(cell(rec, col, "currency"))
-		if !shared.IsValidCurrency(currency) {
+		if !extapi.IsValidCurrency(currency) {
 			return nil, fieldErr(pricesFile, line, "currency", fmt.Sprintf("invalid currency %q", cell(rec, col, "currency")))
 		}
 		minor, err := parseNetMinor(cellRaw(rec, col, "amount"))

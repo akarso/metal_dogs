@@ -16,7 +16,9 @@ import (
 
 func TestOpenIsolated_PoolSeesSchema(t *testing.T) {
 	db := testutil.OpenIsolated(t, "pool_sees")
-	db.SetMaxOpenConns(8)
+	if got := db.Stats().MaxOpenConnections; got != 8 {
+		t.Fatalf("MaxOpenConnections = %d, want 8", got)
+	}
 
 	var wantSchema string
 	if err := db.QueryRow(`SELECT current_schema()`).Scan(&wantSchema); err != nil {

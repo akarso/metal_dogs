@@ -22,7 +22,7 @@ func (p *Plugin) Migration() plugin.MigrationSpec {
 }
 
 // MigrationFS returns the embedded SQL migrations for the test harness.
-// Prefer plugins/metaldogs/testutil.OpenIsolated over calling migrate directly.
+// Tests apply them through testutil.OpenIsolated (harness.OpenIsolated).
 func MigrationFS() fs.FS { return migrationFiles }
 
 // MigrationDir is the directory inside MigrationFS() that holds *.sql files.
