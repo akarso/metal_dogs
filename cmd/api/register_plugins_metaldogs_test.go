@@ -398,6 +398,47 @@ func TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant(t *testing.T) {
 	}
 }
 
+func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
+	cfg := metalDogsEnabledConfig()
+	log := logger.NewWithWriter(io.Discard, "error")
+	deps := defaultPluginCLIDeps()
+	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
+		return sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
+	}
+	registry := func() (*pluginCLIRuntime, error) {
+		return bootstrapPluginCLIRegistry(cfg, log)
+	}
+	file := metalDogsTemplateFile(t)
+
+	ran, err := runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandTemplates, []string{"validate", "-file", file}, deps)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if !ran {
+		t.Fatal("metaldogs:templates was not found")
+	}
+
+	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandTemplates, []string{"load", "-file", file}, deps)
+	if !ran {
+		t.Fatal("metaldogs:templates load was not found")
+	}
+	if err == nil {
+		t.Fatal("load against an unreachable DSN must fail")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "database is not configured") {
+		t.Fatalf("load did not see the bound pool: %v", err)
+	}
+	if strings.Contains(msg, "RequiresDB is false") || strings.Contains(msg, "Needs CapCatalogSeed") {
+		t.Fatalf("load rejected before Run: %v", err)
+	}
+
+	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandEval, nil, deps)
+	if !ran || err == nil || !strings.Contains(err.Error(), "RequiresDB is false") {
+		t.Fatalf("eval ran=%v err=%v, want CapCatalogSeed rejection", ran, err)
+	}
+}
+
 func metalDogsEnabledConfig() *config.Config {
 	return &config.Config{
 		Plugins: config.PluginsConfig{
@@ -419,6 +460,19 @@ func metalDogsCatalogDir(t *testing.T) string {
 		t.Fatalf("catalog dir %s: %v", dir, err)
 	}
 	return dir
+}
+
+func metalDogsTemplateFile(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate register_plugins_metaldogs_test.go")
+	}
+	path := filepath.Join(filepath.Dir(file), "..", "..", "plugins", "metaldogs", "templates", "head-front-blackmetal.yaml")
+	if st, err := os.Stat(path); err != nil || st.IsDir() {
+		t.Fatalf("template file %s: %v", path, err)
+	}
+	return path
 }
 
 func useIsolatedCatalogSchema(t *testing.T) string {

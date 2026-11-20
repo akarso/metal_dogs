@@ -95,6 +95,8 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
 - **With media:** full Init — `AssetStore`, customizer HTTP, obs.ping, and `metaldogs:eval`.
 - **Without media (eval-only):** Init still succeeds and registers `metaldogs:eval` only — no customizer HTTP / AssetStore (F4 fail-closed for HTTP).
 
+`./app metaldogs:eval` is rejected on the process CLI until MIG3 (the plugin needs `CapCatalogSeed` and this command is `RequiresDB: false`; [CR-22](../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md), UPSTREAM-CANDIDATES #18). Init still registers the command; plugin tests call `Run` directly.
+
 ```bash
 ./app metaldogs:eval \
   -template plugins/metaldogs/templates/head-front-blackmetal.yaml \
@@ -107,6 +109,8 @@ With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
 Writes `photo.ext.png` per input (e.g. `dog.jpg.png`) plus `report.json` (`template_model` vs per-sample `provider_model`, parameters/seed; `validation.status` = `pass`/`fail`/`skipped` via `generation/validate`). Hard validation failures set sample `error` / `error_class=validation_failed` (non-zero CLI exit). `--out` must have no non-dot entries. Default provider is `fake` (deterministic monochrome fixtures). Canvas ≤2048²; photo ≤20MiB. Accepts Template v1 YAML or a legacy G0 stub JSON.
 
 ### Templates (G2)
+
+`validate` does not query. The command is `RequiresDB`, so the process must open the configured DSN ([CR-22](../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md)).
 
 ```bash
 ./app metaldogs:templates validate -file plugins/metaldogs/templates/head-front-blackmetal.yaml
