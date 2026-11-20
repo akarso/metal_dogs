@@ -1,7 +1,7 @@
 # CR-25: Shopanda pin `647c6a2a` (UPG6)
 
 - Opened: 2026-11-20
-- Pin: `647c6a2a78257743db42b25019fd02fdf376618c` (shopanda#642, PR-1592)
+- Pin: `647c6a2a…` (shopanda#642, PR-1592)
 - Previous pin: `ad14bd3a…` (shopanda#640)
 - `upstream/main` tip at fetch: `8546b0c3` (shopanda#643). Its tree equals this pin (second parent is `647c6a2a`).
 
