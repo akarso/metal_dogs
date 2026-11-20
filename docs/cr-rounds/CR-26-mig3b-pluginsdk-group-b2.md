@@ -52,6 +52,28 @@ Unit conflict tests still pass non-UUIDs (`job-1`, `ver-1`) through `EnqueueManu
 
 C4 assertions were not edited. Call sites that built a `*plugin.App` now pass `PlatformJobs(app)` or `pluginsdk.New(app, PluginName).Integration(PluginName)`.
 
+## Reader check vs `jobs.Reader`
+
+`ReaderBound` and `CountsByType` both assert `queueReaderSurface`: `Get`, `CountsByStatus`, `CountsByType`. The old health check was `q.(jobs.Reader)`, which also requires `List`. A bound queue with those three methods and no `List` now reports public health ok. The Postgres queue implements `List`, so a real queue still passes or fails as before.
+
+`List` is not on the surface. `pluginsdk.JobsPort` does not expose it, and there is no exported `ListFilter` or `Summary`. Putting `List` on `queueReaderSurface` means `plugin.go` imports `internal/domain/jobs`. That line is not in the ImportBoundary baseline, and the gate fails on any line the baseline does not already name. Baseline file is not edited in this ticket.
+
+## ImportBoundary
+
+`go test ./plugins/ -run TestImportBoundary` on 2026-11-20: 14 → 7. Baseline file not edited (orchestrator).
+
+Still present:
+
+- `metaldogs/adapters/mediastore/store.go` → `internal/domain/media`
+- `metaldogs/assets.go` → `internal/domain/media`
+- `metaldogs/assets.go` → `internal/platform/plugin`
+- `metaldogs/cart_validate.go` → `internal/platform/plugin`
+- `metaldogs/migrations.go` → `internal/platform/plugin`
+- `metaldogs/plugin.go` → `internal/platform/plugin`
+- `metaldogs/sync_obs.go` → `internal/platform/plugin`
+
+No longer present (still listed in the baseline): `generate_worker.go`, `httpapi/health.go`, `sync_generate.go`, and `sync_prepare_production.go` (`internal/domain/jobs` and `internal/platform/plugin`).
+
 ## Tests touched (assertions unchanged)
 
 - `sync_generate_test.go` — register and enqueue call sites

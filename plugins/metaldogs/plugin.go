@@ -343,12 +343,11 @@ func newGenerateServices(
 	return svc, worker, nil
 }
 
-// appJobs adapts *plugin.App. Callers take ports.JobAccess.
 type appJobs struct {
 	app *plugin.App
 }
 
-// PlatformJobs adapts app. A nil app returns a nil interface.
+// PlatformJobs returns a nil interface when app is nil.
 func PlatformJobs(app *plugin.App) ports.JobAccess {
 	if app == nil {
 		return nil
@@ -405,9 +404,7 @@ func (a appJobs) CountsByType(ctx context.Context, jobType string) (map[ports.Jo
 	if !ok {
 		return nil, fmt.Errorf("metaldogs: queue unbound")
 	}
-	c, ok := q.(interface {
-		CountsByType(context.Context, string) (map[ports.JobStatus]int, error)
-	})
+	c, ok := q.(queueReaderSurface)
 	if !ok {
 		return nil, fmt.Errorf("metaldogs: queue reader unavailable")
 	}
