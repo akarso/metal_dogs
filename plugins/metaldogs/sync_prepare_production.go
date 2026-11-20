@@ -7,12 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akarso/shopanda/internal/domain/jobs"
-	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/observability"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 const prepareProductionJobName = "prepare_production_artwork"
@@ -38,16 +37,15 @@ const prepareCancelledSQL = `
 		WHERE id = $1 AND type = $2 AND status = 'cancelled'
 	`
 
-func registerPrepareProduction(app *plugin.App) error {
-	sdk := pluginsdk.New(app, PluginName)
-	return sdk.Integration(PluginName).RegisterManual(
+func registerPrepareProduction(reg *pluginsdk.SyncJobs, log pluginsdk.Logger) error {
+	return reg.RegisterManual(
 		prepareProductionJobName,
-		prepareProductionHandler(app),
+		prepareProductionHandler(log),
 		pluginsdk.MaxRetries(prepareProductionMaxRetries),
 	)
 }
 
-func prepareProductionHandler(app *plugin.App) extapi.SyncJobHandler {
+func prepareProductionHandler(log pluginsdk.Logger) extapi.SyncJobHandler {
 	return func(_ context.Context, job extapi.SyncJobContext) error {
 		fields := observability.JobLogFields(job)
 		fields["pending_spec"] = true
@@ -61,8 +59,8 @@ func prepareProductionHandler(app *plugin.App) extapi.SyncJobHandler {
 		switch {
 		case job.Logger != nil:
 			job.Logger.Error("metaldogs.prepare_production_artwork.pending_spec", err, fields)
-		case app != nil && app.Logger != nil:
-			app.Logger.Error("metaldogs.prepare_production_artwork.pending_spec", err, fields)
+		case log != nil:
+			log.Error("metaldogs.prepare_production_artwork.pending_spec", err, fields)
 		}
 		if versionID == "" || designID == "" {
 			return fmt.Errorf("metaldogs prepare: design_version_id and design_id required")
@@ -73,8 +71,8 @@ func prepareProductionHandler(app *plugin.App) extapi.SyncJobHandler {
 
 // enqueuePrepareProduction enqueues prepare_production_artwork with platform job id =
 // design_version_id. On Conflict, never calls Admin.Retry (which would re-pend failed).
-func enqueuePrepareProduction(app *plugin.App, ctx context.Context, designVersionID, designID string) error {
-	if app == nil {
+func enqueuePrepareProduction(jobs ports.JobAccess, ctx context.Context, designVersionID, designID string) error {
+	if jobs == nil {
 		return fmt.Errorf("metaldogs prepare enqueue: app required")
 	}
 	designVersionID = strings.TrimSpace(designVersionID)
@@ -82,41 +80,24 @@ func enqueuePrepareProduction(app *plugin.App, ctx context.Context, designVersio
 	if designVersionID == "" || designID == "" {
 		return fmt.Errorf("metaldogs prepare enqueue: design_version_id and design_id required")
 	}
-	queue, ok := app.BoundQueue()
-	if !ok || queue == nil {
-		return fmt.Errorf("metaldogs prepare enqueue: %w", extapi.ErrSyncJobQueueUnbound)
-	}
 	jobType, err := extapi.SyncJobType(PluginName, prepareProductionJobName)
 	if err != nil {
 		return fmt.Errorf("metaldogs prepare enqueue: %w", err)
 	}
-	var reg plugin.SyncJobRegistration
-	found := false
-	for _, r := range app.SyncJobs() {
-		if r.JobType == jobType {
-			reg = r
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("metaldogs prepare enqueue: %w", extapi.ErrSyncJobNotFound)
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	payload := plugin.InjectRequestID(ctx, map[string]interface{}{
+	payload := map[string]interface{}{
 		"design_version_id": designVersionID,
 		"design_id":         designID,
-	})
-	job, err := plugin.NewSyncJobEnvelope(reg, extapi.SyncTriggerManual, payload)
-	if err != nil {
-		return fmt.Errorf("metaldogs prepare enqueue: envelope: %w", err)
 	}
-	job.ID = designVersionID
-	if err := queue.Enqueue(ctx, job); err != nil {
+	if err := jobs.EnqueueManual(ctx, prepareProductionJobName, designVersionID, payload); err != nil {
 		if pluginsdk.IsConflict(err) {
-			return resolvePrepareEnqueueConflict(app, queue, ctx, designVersionID, jobType)
+			store, ok := jobs.Store()
+			if !ok {
+				return fmt.Errorf("metaldogs prepare enqueue: job %s already exists but queue does not support Reader (require queue.driver=postgres)", designVersionID)
+			}
+			return resolvePrepareEnqueueConflict(jobs.DB(), store, ctx, designVersionID, jobType)
 		}
 		return fmt.Errorf("metaldogs prepare enqueue: %w", err)
 	}
@@ -126,12 +107,8 @@ func enqueuePrepareProduction(app *plugin.App, ctx context.Context, designVersio
 // resolvePrepareEnqueueConflict never uses Admin.Retry. Failed/done/pending are
 // success. Young processing is left alone. Stale processing and cancelled are
 // reclaimed with status-constrained UPDATEs (type-scoped).
-func resolvePrepareEnqueueConflict(app *plugin.App, queue jobs.Queue, ctx context.Context, designVersionID, jobType string) error {
-	reader, ok := queue.(jobs.Reader)
-	if !ok {
-		return fmt.Errorf("metaldogs prepare enqueue: job %s already exists but queue does not support Reader (require queue.driver=postgres)", designVersionID)
-	}
-	detail, err := reader.Get(ctx, designVersionID)
+func resolvePrepareEnqueueConflict(db *sql.DB, store ports.JobStore, ctx context.Context, designVersionID, jobType string) error {
+	detail, err := store.Get(ctx, designVersionID)
 	if err != nil {
 		return fmt.Errorf("metaldogs prepare enqueue: get after conflict: %w", err)
 	}
@@ -139,15 +116,15 @@ func resolvePrepareEnqueueConflict(app *plugin.App, queue jobs.Queue, ctx contex
 		return fmt.Errorf("metaldogs prepare enqueue: job %s missing after conflict", designVersionID)
 	}
 	switch detail.Status {
-	case jobs.StatusDone, jobs.StatusPending, jobs.StatusFailed:
+	case ports.JobStatusDone, ports.JobStatusPending, ports.JobStatusFailed:
 		return nil
-	case jobs.StatusCancelled:
-		return reclaimCancelledPrepareJob(prepareJobDB(app), reader, ctx, designVersionID, jobType)
-	case jobs.StatusProcessing:
+	case ports.JobStatusCancelled:
+		return reclaimCancelledPrepareJob(db, store, ctx, designVersionID, jobType)
+	case ports.JobStatusProcessing:
 		if !prepareJobStale(detail.UpdatedAt, domain.DefaultClaimLease) {
 			return nil
 		}
-		return reclaimStaleProcessingPrepareJob(prepareJobDB(app), reader, ctx, designVersionID, jobType)
+		return reclaimStaleProcessingPrepareJob(db, store, ctx, designVersionID, jobType)
 	default:
 		return fmt.Errorf("metaldogs prepare enqueue: unexpected status %s", detail.Status)
 	}
@@ -165,7 +142,7 @@ func prepareJobStale(updatedAt time.Time, lease time.Duration) bool {
 
 // prepareReclaimRereadOK is success when the row is already in a stable or
 // in-flight state after a status-constrained UPDATE matched zero rows.
-func prepareReclaimRereadOK(reader jobs.Reader, ctx context.Context, designVersionID string) error {
+func prepareReclaimRereadOK(reader jobLookup, ctx context.Context, designVersionID string) error {
 	detail, err := reader.Get(ctx, designVersionID)
 	if err != nil {
 		return fmt.Errorf("metaldogs prepare enqueue: re-read after reclaim: %w", err)
@@ -174,7 +151,7 @@ func prepareReclaimRereadOK(reader jobs.Reader, ctx context.Context, designVersi
 		return fmt.Errorf("metaldogs prepare enqueue: job %s missing after reclaim", designVersionID)
 	}
 	switch detail.Status {
-	case jobs.StatusPending, jobs.StatusProcessing, jobs.StatusFailed, jobs.StatusDone:
+	case ports.JobStatusPending, ports.JobStatusProcessing, ports.JobStatusFailed, ports.JobStatusDone:
 		return nil
 	default:
 		return fmt.Errorf("metaldogs prepare enqueue: reclaim unmatched, status=%s", detail.Status)
@@ -184,7 +161,7 @@ func prepareReclaimRereadOK(reader jobs.Reader, ctx context.Context, designVersi
 // prepareStaleReclaimRereadOK is the zero-row path after a stale-processing UPDATE.
 // Still-stale processing means the UPDATE did not match (type mismatch or app/DB
 // clock skew) — error so approve returns 503 instead of a silent 200.
-func prepareStaleReclaimRereadOK(reader jobs.Reader, ctx context.Context, designVersionID string) error {
+func prepareStaleReclaimRereadOK(reader jobLookup, ctx context.Context, designVersionID string) error {
 	detail, err := reader.Get(ctx, designVersionID)
 	if err != nil {
 		return fmt.Errorf("metaldogs prepare enqueue: re-read after stale reclaim: %w", err)
@@ -193,9 +170,9 @@ func prepareStaleReclaimRereadOK(reader jobs.Reader, ctx context.Context, design
 		return fmt.Errorf("metaldogs prepare enqueue: job %s missing after stale reclaim", designVersionID)
 	}
 	switch detail.Status {
-	case jobs.StatusPending, jobs.StatusFailed, jobs.StatusDone:
+	case ports.JobStatusPending, ports.JobStatusFailed, ports.JobStatusDone:
 		return nil
-	case jobs.StatusProcessing:
+	case ports.JobStatusProcessing:
 		if prepareJobStale(detail.UpdatedAt, domain.DefaultClaimLease) {
 			return fmt.Errorf("metaldogs prepare enqueue: still stale processing after reclaim (type mismatch or clock skew)")
 		}
@@ -210,9 +187,13 @@ type prepareJobExec interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+type jobLookup interface {
+	Get(ctx context.Context, id string) (*ports.JobDetail, error)
+}
+
 // reclaimStaleProcessingPrepareJob re-pends only stale processing rows of this job type.
 // Leaves attempts unchanged so a late Fail from the old delivery cannot match the next dequeue.
-func reclaimStaleProcessingPrepareJob(db prepareJobExec, reader jobs.Reader, ctx context.Context, designVersionID, jobType string) error {
+func reclaimStaleProcessingPrepareJob(db prepareJobExec, reader jobLookup, ctx context.Context, designVersionID, jobType string) error {
 	if db == nil {
 		return fmt.Errorf("metaldogs prepare enqueue: stale processing reclaim requires Bootstrap.DB")
 	}
@@ -235,7 +216,7 @@ func reclaimStaleProcessingPrepareJob(db prepareJobExec, reader jobs.Reader, ctx
 }
 
 // reclaimCancelledPrepareJob sets cancelled → pending with attempts=0 for this job type only.
-func reclaimCancelledPrepareJob(db prepareJobExec, reader jobs.Reader, ctx context.Context, designVersionID, jobType string) error {
+func reclaimCancelledPrepareJob(db prepareJobExec, reader jobLookup, ctx context.Context, designVersionID, jobType string) error {
 	if db == nil {
 		return fmt.Errorf("metaldogs prepare enqueue: cancelled reclaim requires Bootstrap.DB")
 	}
@@ -251,11 +232,4 @@ func reclaimCancelledPrepareJob(db prepareJobExec, reader jobs.Reader, ctx conte
 		return nil
 	}
 	return prepareReclaimRereadOK(reader, ctx, designVersionID)
-}
-
-func prepareJobDB(app *plugin.App) *sql.DB {
-	if app == nil || app.Bootstrap == nil {
-		return nil
-	}
-	return app.Bootstrap.DB
 }

@@ -4,50 +4,38 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/akarso/shopanda/internal/domain/jobs"
-	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 // Health returns GET /api/customizer/health — coarse plugin/queue readiness.
-// Probes BoundQueue + jobs.Reader only (no CountsByType / no DB aggregations).
+// Probes a bound queue that can read job rows (no per-type counts).
 // Depths and typed failure reasons stay on AdminHealth (jobs.read).
 // Not a k8s probe (use /healthz and /readyz).
 //
 // Degraded responses use HTTP 503 with a generic reason so accidental
 // LB/uptime wiring fails closed without leaking recon detail.
-func Health(app *plugin.App) http.Handler {
+func Health(jobs ports.JobHealth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		resp, code := evaluatePublicHealth(app)
+		resp, code := evaluatePublicHealth(jobs)
 		writeHealth(w, code, resp)
 	})
 }
 
 // AdminHealth returns GET /api/v1/admin/customizer/health — per-type depths
-// for registered metaldogs sync jobs via BoundQueue + CountsByType. Always
-// includes every registered type; query failures keep the row with error set.
-func AdminHealth(app *plugin.App) http.Handler {
+// for registered metaldogs sync jobs. Always includes every registered type;
+// query failures keep the row with error set.
+func AdminHealth(jobs ports.JobHealth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		resp, code := evaluateAdminHealth(r, app)
+		resp, code := evaluateAdminHealth(r, jobs)
 		writeHealth(w, code, resp)
 	})
 }
 
-func evaluatePublicHealth(app *plugin.App) (healthResponse, int) {
+func evaluatePublicHealth(jobs ports.JobHealth) (healthResponse, int) {
 	resp := healthResponse{Status: "ok", Plugin: "metaldogs"}
-	if app == nil {
-		resp.Status = "degraded"
-		resp.Reason = "degraded"
-		return resp, http.StatusServiceUnavailable
-	}
-	q, ok := app.BoundQueue()
-	if !ok {
-		resp.Status = "degraded"
-		resp.Reason = "degraded"
-		return resp, http.StatusServiceUnavailable
-	}
-	if _, ok := q.(jobs.Reader); !ok {
+	if jobs == nil || !jobs.QueueBound() || !jobs.ReaderBound() {
 		resp.Status = "degraded"
 		resp.Reason = "degraded"
 		return resp, http.StatusServiceUnavailable
@@ -55,21 +43,20 @@ func evaluatePublicHealth(app *plugin.App) (healthResponse, int) {
 	return resp, http.StatusOK
 }
 
-func evaluateAdminHealth(r *http.Request, app *plugin.App) (healthResponse, int) {
+func evaluateAdminHealth(r *http.Request, jobs ports.JobHealth) (healthResponse, int) {
 	resp := healthResponse{
 		Status: "ok",
 		Plugin: "metaldogs",
 		Queues: []queueDepth{},
 	}
-	if app == nil {
+	if jobs == nil {
 		resp.Status = "degraded"
 		resp.Reason = "app_unconfigured"
 		return resp, http.StatusServiceUnavailable
 	}
 
-	types := metaldogsJobTypes(app)
-	q, ok := app.BoundQueue()
-	if !ok {
+	types := jobs.JobTypes("metaldogs")
+	if !jobs.QueueBound() {
 		resp.Status = "degraded"
 		resp.Reason = "queue_unbound"
 		for _, jobType := range types {
@@ -77,8 +64,7 @@ func evaluateAdminHealth(r *http.Request, app *plugin.App) (healthResponse, int)
 		}
 		return resp, http.StatusServiceUnavailable
 	}
-	reader, ok := q.(jobs.Reader)
-	if !ok {
+	if !jobs.ReaderBound() {
 		resp.Status = "degraded"
 		resp.Reason = "reader_unavailable"
 		for _, jobType := range types {
@@ -89,7 +75,7 @@ func evaluateAdminHealth(r *http.Request, app *plugin.App) (healthResponse, int)
 
 	countsFailed := false
 	for _, jobType := range types {
-		counts, err := reader.CountsByType(r.Context(), jobType)
+		counts, err := jobs.CountsByType(r.Context(), jobType)
 		if err != nil {
 			countsFailed = true
 			resp.Queues = append(resp.Queues, queueDepth{
@@ -100,9 +86,9 @@ func evaluateAdminHealth(r *http.Request, app *plugin.App) (healthResponse, int)
 		}
 		resp.Queues = append(resp.Queues, queueDepth{
 			Type:       jobType,
-			Pending:    counts[jobs.StatusPending],
-			Processing: counts[jobs.StatusProcessing],
-			Failed:     counts[jobs.StatusFailed],
+			Pending:    counts[ports.JobStatusPending],
+			Processing: counts[ports.JobStatusProcessing],
+			Failed:     counts[ports.JobStatusFailed],
 		})
 	}
 	if countsFailed {
@@ -111,16 +97,6 @@ func evaluateAdminHealth(r *http.Request, app *plugin.App) (healthResponse, int)
 		return resp, http.StatusServiceUnavailable
 	}
 	return resp, http.StatusOK
-}
-
-func metaldogsJobTypes(app *plugin.App) []string {
-	var out []string
-	for _, reg := range app.SyncJobs() {
-		if reg.PluginSlug == "metaldogs" {
-			out = append(out, reg.JobType)
-		}
-	}
-	return out
 }
 
 type healthResponse struct {
