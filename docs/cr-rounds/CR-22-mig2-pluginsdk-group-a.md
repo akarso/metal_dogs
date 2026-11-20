@@ -32,6 +32,15 @@
 
 `metaldogs:catalog-seed` is unchanged: `RequiresDB`, `Host.CatalogSeed()`, `runPluginCLICommandWithDeps`.
 
+`Require(CapDB)` during Init does not add a boot failure. Every production root that calls `assertServeNeedsMet`, `assertWorkerNeedsMet`, or `assertPluginCLINeedsMet` already holds a non-nil `*sql.DB` before `bindProductPorts`, and that function marks `CapDB` when `boot.DB != nil`:
+
+- `runServe` → `wireServeRuntime` (`db.Open`, then `Bootstrap.DB`)
+- `runWorker`, `runScheduler`, `runScheduleTrigger`, `newJobsRuntime`, `newCacheAdminService`, `newSearchReindexService`, `defaultOpenExtensionFieldRetireRuntime` (`db.Open`, then `newPluginBootstrap`, which rejects a nil pool)
+- `syncDiscoveryFacetsFromDB` (`newPluginBootstrap` on the caller's pool; a nil pool returns before the assert)
+- plugin CLI `bindPluginCLIPorts` only after `OpenDB`, and only when `RequiresDB` is true
+
+`bootServePlugins`, `bootWorkerPlugins`, and `plugin_ports_test.go` can assert with a nil boot. Those tests do not register metaldogs. `metalDogsBootFixture` has no pool, so it marks `CapDB` itself. That keeps the catalog-seed skip assertion. It is not a production root.
+
 ## Baseline lines gone
 
 `config/tests/importboundary-baseline.txt` is not edited here. These lines no longer appear (ticket 01 plus ticket 02):
