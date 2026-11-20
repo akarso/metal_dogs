@@ -75,4 +75,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-21 | UPG4 pin `fd4dd577` (00 through 05, including 00b–00g, 01b/01c, 03b) | M3 pin | [`CR-21-upg4-pin-7c982b00.md`](CR-21-upg4-pin-7c982b00.md) |
 | CR-22 | MIG2 group A ticket 01 (logger, conflict, catalog literals, jobs.read, ids, enabled map) | M3 imports | [`CR-22-mig2-pluginsdk-group-a.md`](CR-22-mig2-pluginsdk-group-a.md) |
 | CR-23 | UPG5 pin `ad14bd3a` (ticket 00) | M3 pin | [`CR-23-upg5-pin-ad14bd3a.md`](CR-23-upg5-pin-ad14bd3a.md) |
-| CR-24 | MIG3a ticket 01 (price, currency, request id). Ticket 02 open; round not closed | M3 imports | [`CR-24-mig3a-pluginsdk-group-b1.md`](CR-24-mig3a-pluginsdk-group-b1.md) |
+| CR-24 | MIG3a tickets 01–02 (price, currency, request id, isolated test DB). Baseline file still has the three vanished lines | M3 imports | [`CR-24-mig3a-pluginsdk-group-b1.md`](CR-24-mig3a-pluginsdk-group-b1.md) |
