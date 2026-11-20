@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
-	"github.com/akarso/shopanda/internal/platform/apperror"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
@@ -77,7 +76,7 @@ func enqueueGenerateIdempotent(app *plugin.App, ctx context.Context, generationJ
 	}
 	job.ID = generationJobID
 	if err := queue.Enqueue(ctx, job); err != nil {
-		if apperror.Is(err, apperror.CodeConflict) {
+		if pluginsdk.IsConflict(err) {
 			return resolveGenerateEnqueueConflict(queue, ctx, generationJobID)
 		}
 		return fmt.Errorf("metaldogs generate enqueue: %w", err)

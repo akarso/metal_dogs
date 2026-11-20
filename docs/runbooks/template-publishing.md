@@ -19,7 +19,9 @@ Templates are declarative definitions (see `docs/architecture/domain-model.md`) 
 ./app metaldogs:templates validate -file plugins/metaldogs/templates/<slug>.yaml
 ```
 
-4. Render test outputs with the fake provider to check composition and print area:
+`validate` does not query. The command is `RequiresDB`, so the process must open the configured DSN. See [CR-22](../cr-rounds/CR-22-mig2-pluginsdk-group-a.md).
+
+4. Render test outputs with the fake provider to check composition and print area. `./app metaldogs:eval` is rejected on the process CLI until MIG3 (the plugin needs `CapCatalogSeed` and this command is `RequiresDB: false`; [CR-22](../cr-rounds/CR-22-mig2-pluginsdk-group-a.md), UPSTREAM-CANDIDATES #18). Plugin tests still call the runner directly.
 
 ```bash
 ./app metaldogs:eval \

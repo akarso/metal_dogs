@@ -11,6 +11,37 @@ import (
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
 
+func TestEnabled_ExtraMap(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		extra map[string]string
+		on    bool
+		bad   bool
+	}{
+		{name: "nil", on: false},
+		{name: "empty", extra: map[string]string{"enabled": ""}, on: false},
+		{name: "false", extra: map[string]string{"enabled": "false"}, on: false},
+		{name: "true", extra: map[string]string{"enabled": "true"}, on: true},
+		{name: "maybe", extra: map[string]string{"enabled": "maybe"}, bad: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			on, err := Enabled(tc.extra)
+			if tc.bad {
+				if err == nil || !strings.Contains(err.Error(), "is not a bool") {
+					t.Fatalf("err = %v", err)
+				}
+				return
+			}
+			if err != nil || on != tc.on {
+				t.Fatalf("on=%v err=%v, want on=%v", on, err, tc.on)
+			}
+		})
+	}
+}
+
 func TestSettingsFrom_ProductionEnvNames(t *testing.T) {
 	t.Setenv("SHOPANDA_SERVER_PUBLIC_BASE_URL", "http://test.localhost:8080")
 	t.Setenv("SHOPANDA_PLUGINS_METALDOGS_ENABLED", "yes")

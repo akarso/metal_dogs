@@ -23,6 +23,7 @@ import (
 	"github.com/akarso/shopanda/internal/interfaces/http/shared"
 	storefront "github.com/akarso/shopanda/internal/interfaces/http/storefront"
 	"github.com/akarso/shopanda/internal/platform/auth"
+	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/db"
 	"github.com/akarso/shopanda/internal/platform/event"
@@ -340,6 +341,9 @@ func metalDogsBootFixture() (*plugin.Registry, *plugin.App, *plugin.Bootstrap) {
 	reg := plugin.NewRegistry(log)
 	reg.Register(metaldogs.New())
 	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
+	// Fixture has no DB. CapDB is still declared at Init; satisfy it so this
+	// test keeps asserting the catalog-seed skip, not a missing database.
+	app.MarkCapabilitySatisfied(plugin.CapDB)
 	boot := &plugin.Bootstrap{
 		Products: seedBootProducts{},
 		Variants: seedBootVariants{},
@@ -395,6 +399,52 @@ func TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant(t *testing.T) {
 	}
 }
 
+func TestRunPluginCLICommand_TemplatesUsesBoundDB(t *testing.T) {
+	cfg := metalDogsEnabledConfig()
+	log := logger.NewWithWriter(io.Discard, "error")
+	deps := defaultPluginCLIDeps()
+	deps.OpenDB = func(*config.Config) (*sql.DB, error) {
+		return sql.Open("pgx", "postgres://127.0.0.1:1/nope?sslmode=disable&connect_timeout=2")
+	}
+	var bound bool
+	deps.Bind = func(app *plugin.App, conn *sql.DB, cmd cli.Command) error {
+		bound = true
+		if conn == nil {
+			t.Fatal("Bind received a nil pool")
+		}
+		return bindPluginCLIPorts(app, conn, cmd)
+	}
+	registry := func() (*pluginCLIRuntime, error) {
+		return bootstrapPluginCLIRegistry(cfg, log)
+	}
+	file := metalDogsTemplateFile(t)
+
+	ran, err := runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandTemplates, []string{"validate", "-file", file}, deps)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if !ran {
+		t.Fatal("metaldogs:templates was not found")
+	}
+
+	bound = false
+	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandTemplates, []string{"load", "-file", file}, deps)
+	if !ran {
+		t.Fatal("metaldogs:templates load was not found")
+	}
+	if !bound {
+		t.Fatal("load returned before Bind")
+	}
+	if err == nil || !strings.Contains(err.Error(), "metaldogs templates scan:") || !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("load error = %v, want a store scan of the bound pool", err)
+	}
+
+	ran, err = runPluginCLICommandWithDeps(cfg, log, registry, metaldogs.CommandEval, nil, deps)
+	if !ran || err == nil || !strings.Contains(err.Error(), "RequiresDB is false") {
+		t.Fatalf("eval ran=%v err=%v, want CapCatalogSeed rejection", ran, err)
+	}
+}
+
 func metalDogsEnabledConfig() *config.Config {
 	return &config.Config{
 		Plugins: config.PluginsConfig{
@@ -416,6 +466,19 @@ func metalDogsCatalogDir(t *testing.T) string {
 		t.Fatalf("catalog dir %s: %v", dir, err)
 	}
 	return dir
+}
+
+func metalDogsTemplateFile(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate register_plugins_metaldogs_test.go")
+	}
+	path := filepath.Join(filepath.Dir(file), "..", "..", "plugins", "metaldogs", "templates", "head-front-blackmetal.yaml")
+	if st, err := os.Stat(path); err != nil || st.IsDir() {
+		t.Fatalf("template file %s: %v", path, err)
+	}
+	return path
 }
 
 func useIsolatedCatalogSchema(t *testing.T) string {

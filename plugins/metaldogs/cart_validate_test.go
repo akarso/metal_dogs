@@ -2,6 +2,7 @@ package metaldogs
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"strings"
 	"testing"
@@ -213,6 +214,7 @@ func (s *surface) Catalog() (pluginsdk.CatalogPort, bool) {
 	return s.catalog, s.catalog != nil
 }
 func (s *surface) CatalogSeed() (pluginsdk.CatalogSeedPort, bool) { return nil, false }
+func (s *surface) BootstrapDB() (*sql.DB, bool)                   { return nil, false }
 func (s *surface) WithPluginWrite(ctx context.Context, pluginName string, fieldCodes ...string) context.Context {
 	s.writeCalls++
 	return pluginwrite.Grant(ctx, pluginName, fieldCodes...)

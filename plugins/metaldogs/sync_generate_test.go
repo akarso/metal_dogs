@@ -11,6 +11,8 @@ import (
 
 	"github.com/akarso/shopanda/internal/domain/jobs"
 	"github.com/akarso/shopanda/internal/platform/apperror"
+	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
 
@@ -70,9 +72,10 @@ func (a *conflictAdmin) CountsByType(context.Context, string) (map[jobs.Status]i
 type queueWithAdmin struct {
 	jobs.Queue
 	*conflictAdmin
+	enqueueErr error
 }
 
-func (q *queueWithAdmin) Enqueue(context.Context, jobs.Job) error { return nil }
+func (q *queueWithAdmin) Enqueue(context.Context, jobs.Job) error { return q.enqueueErr }
 func (q *queueWithAdmin) Dequeue(context.Context) (*jobs.Job, error) {
 	return nil, nil
 }
@@ -192,5 +195,33 @@ func TestResolveGenerateEnqueueConflict_ReclaimingReturnsError(t *testing.T) {
 	}
 	if admin.requeued {
 		t.Fatal("reclaiming must not requeue")
+	}
+}
+
+func TestEnqueueGenerate_WrappedQueueConflictUsesConflictPath(t *testing.T) {
+	t.Parallel()
+	app := &plugin.App{}
+	if err := registerGenerate(app, &application.GenerateWorker{}, 3); err != nil {
+		t.Fatal(err)
+	}
+	admin := &conflictAdmin{status: jobs.StatusProcessing, updatedAt: time.Now()}
+	q := &queueWithAdmin{
+		conflictAdmin: admin,
+		enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
+	}
+	if err := app.BindQueue(q); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueGenerateIdempotent(app, context.Background(), "job-1", "design-1"); err != nil {
+		t.Fatal(err)
+	}
+	if admin.requeued {
+		t.Fatal("young processing claim must stay")
+	}
+
+	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
+	err := enqueueGenerateIdempotent(app, context.Background(), "job-1", "design-1")
+	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "requeue after conflict") {
+		t.Fatalf("non-conflict must not enter requeue: %v", err)
 	}
 }

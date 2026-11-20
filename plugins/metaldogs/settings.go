@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
 
@@ -22,12 +21,13 @@ type Settings struct {
 }
 
 // Enabled reports whether plugins.metaldogs.enabled is on.
-// A missing value is off. Values other than 1/true/yes and 0/false/no are errors.
-func Enabled(cfg *config.Config) (bool, error) {
-	if cfg == nil {
+// extra is the plugins.metaldogs map (nil or a missing value is off).
+// Values other than 1/true/yes and 0/false/no are errors.
+func Enabled(extra map[string]string) (bool, error) {
+	if extra == nil {
 		return false, nil
 	}
-	return ParseEnabled(cfg.Plugins.Extra[metalDogsSlug]["enabled"])
+	return ParseEnabled(extra["enabled"])
 }
 
 // ParseEnabled interprets the Extra string for plugins.metaldogs.enabled.

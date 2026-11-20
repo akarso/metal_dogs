@@ -73,3 +73,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-19 | E2 cart line design attach | M3 → E2 | [`CR-19-e2-cart-design-attach.md`](CR-19-e2-cart-design-attach.md) |
 | CR-20 | MIG1 cart path on pluginsdk | M3 cart SDK | [`CR-20-mig1-cart-pluginsdk.md`](CR-20-mig1-cart-pluginsdk.md) |
 | CR-21 | UPG4 pin `fd4dd577` (00 through 05, including 00b–00g, 01b/01c, 03b) | M3 pin | [`CR-21-upg4-pin-7c982b00.md`](CR-21-upg4-pin-7c982b00.md) |
+| CR-22 | MIG2 group A ticket 01 (logger, conflict, catalog literals, jobs.read, ids, enabled map) | M3 imports | [`CR-22-mig2-pluginsdk-group-a.md`](CR-22-mig2-pluginsdk-group-a.md) |
