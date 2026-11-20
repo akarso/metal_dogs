@@ -113,13 +113,13 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := registerDesignIDField(h); err != nil {
 		return fmt.Errorf("metaldogs plugin: design field: %w", err)
 	}
-	if err := registerCartValidation(app, p); err != nil {
+	if err := registerCartValidation(app.Hooks(p.Name()), p); err != nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
 	}
 
 	registerCLICommands(h, p)
 
-	store, err := resolveAssetStore(app)
+	store, err := openAssetStore(app)
 	if err != nil {
 		p.assets = nil
 		if app.Logger != nil {
@@ -195,10 +195,10 @@ func (p *Plugin) Init(app *plugin.App) error {
 	if err := h.RegisterAdminRoute("GET /api/v1/admin/customizer/health", permJobsRead, httpapi.AdminHealth(jobs)); err != nil {
 		return fmt.Errorf("metaldogs plugin: admin health route: %w", err)
 	}
-	if err := registerObsPing(app); err != nil {
+	syncAPI := pluginsdk.New(app, PluginName).Integration(PluginName)
+	if err := registerObsPing(syncAPI, app.Logger); err != nil {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
 	}
-	syncAPI := pluginsdk.New(app, PluginName).Integration(PluginName)
 	if err := registerPrepareProduction(syncAPI, app.Logger); err != nil {
 		return fmt.Errorf("metaldogs plugin: prepare_production_artwork: %w", err)
 	}
@@ -341,6 +341,23 @@ func newGenerateServices(
 		Cooldown:    time.Duration(cooldownSecs) * time.Second, // 0 disables
 	}
 	return svc, worker, nil
+}
+
+// openAssetStore uses MediaStorage, not BoundMediaStorage. Init runs before
+// BindMediaStorage; both refer to the same backend once the root binds it.
+func openAssetStore(app *plugin.App) (ports.AssetStore, error) {
+	if app == nil {
+		return nil, fmt.Errorf("metaldogs: app required")
+	}
+	st, ok := app.MediaStorage()
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: media storage not registered (enable core storagelocal or storages3)")
+	}
+	signer, ok := st.(ports.MediaBackend)
+	if !ok {
+		return nil, fmt.Errorf("metaldogs: media storage %q does not implement SignedURLStorage", st.Name())
+	}
+	return resolveAssetStore(signer)
 }
 
 type appJobs struct {

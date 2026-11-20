@@ -1,8 +1,8 @@
-# CR-26: MIG3b pluginsdk group B2 (ticket 01)
+# CR-26: MIG3b pluginsdk group B2 (tickets 01–02)
 
-- Status: ticket 01 recorded 2026-11-20. Round not closed. Baseline file not edited (orchestrator).
+- Status: ticket 02 recorded 2026-11-20. Round not closed. Baseline file not edited (orchestrator).
 - Pin: `647c6a2a78257743db42b25019fd02fdf376618c`
-- Slice: MIG3b ticket 01
+- Slice: MIG3b tickets 01–02
 
 ## Host access check
 
@@ -83,3 +83,46 @@ No longer present (still listed in the baseline): `generate_worker.go`, `httpapi
 ## Not in this change
 
 No `Init(Host)`, no `pluginsdk.Adapt`, no `WithJobID` call, no edits under `internal/*`, `pkg/*`, or core `cmd/api/*`. Baseline file not edited.
+
+## Host.Media gaps (ticket 02)
+
+`ports.MediaBackend` is the surface `mediastore` wraps: `Name`, `Save`, `Delete`, `URL`, `Head`, `SignedURL(ctx, path, pluginsdk.SignURLOptions)`. `*plugin.App` does not have that method set. `openAssetStore` still calls `MediaStorage()` and type-asserts `ports.MediaBackend` (same methods as `media.SignedURLStorage`, with `pluginsdk.SignURLOptions` standing in for `media.SignURLOptions`). `Read` and `SaveWithContentType` stay optional asserts on the concrete value.
+
+| Gap | SDK today | Decision |
+| --- | --- | --- |
+| `AsReadableStorage` | `MediaPort.AsReadableStorage` returns the concrete `ReadableStorage` (`Read` only) | Ticket 02 asserts `Read` on the concrete backend. Same signature as `pluginsdk.ReadableMediaStorage`. Ticket 03 can use `AsReadableStorage`, or assert `Read` on the value from `AsSignedURLStorage` (localfs and S3 implement both). No upstream change |
+| `AsSignedURLStorage` | `MediaPort.AsSignedURLStorage` returns the concrete signer as `SignedURLMediaStorage` (`Head` + `SignedURL` only, not `Save`) | Ticket 02 replaces `media.AsSignedURLStorage` with the `ports.MediaBackend` assert on `MediaStorage()`. Ticket 03 must assert that returned value to `ports.MediaBackend`, not call `MediaPort.Save`. `AsSignedURLStorage` returns the backend itself, so `Save` / `Delete` / `URL` are still on the dynamic type. No upstream change |
+| `SignURLOptions` | `pluginsdk.SignURLOptions` is an alias of `media.SignURLOptions` (`TTL`, `Filename`, `Disposition`) | Adapter uses the alias. No missing field |
+| dispositions | `MediaDispositionAttachment` / `MediaDispositionInline` alias `media.DispositionAttachment` / `DispositionInline` | Adapter sets those constants (`attachment` / `inline`). `NormalizeMediaDisposition` is not required; the value is explicit. No gap |
+
+`SaveWithContentType` is not on `MediaPort` or `SignedURLMediaStorage`. It still runs in ticket 02 because the assert sees the concrete backend (`localfs` ignores the MIME; S3 stores it). Ticket 03 drops MIME on S3 if it calls `MediaPort.Save` instead of the concrete value. Decision: keep the assert. Do not patch upstream.
+
+`Host.Media()` reads `BoundMediaStorage`, which is unset during `Init`. `openAssetStore` stays on `MediaStorage()` so the eval-only branch (no customizer HTTP) still happens at `Init`. The agreed lazy wrapper is ticket 03. That branch is Init-time: ticket 03 stops if a lazy `Host.Media()` call cannot keep "no media → eval CLI only, no HTTP".
+
+## Ticket 02
+
+| Was | Now |
+| --- | --- |
+| `resolveAssetStore(*plugin.App)` imported `domain/media` and called `media.AsSignedURLStorage` | `resolveAssetStore(ports.MediaBackend)`. `openAssetStore` adapts `*plugin.App` |
+| `mediastore.New(media.SignedURLStorage)` | `mediastore.New(ports.MediaBackend)`. Key rejection, content type, ctx cancel unchanged. `adapters/mediastore` tests not edited |
+| `registerObsPing(*plugin.App)` | `syncRegistrar` + `pluginsdk.Logger`. `*pluginsdk.SyncJobs` and `app.Logger` satisfy them |
+| `registerCartValidation(*plugin.App)` | `pluginsdk.HookAPI`. `app.Hooks(name)` satisfies it |
+
+## ImportBoundary
+
+`go test ./plugins/ -run TestImportBoundary` on 2026-11-20 after ticket 02: 7 → 2. Baseline file not edited (orchestrator). No new line.
+
+Still present:
+
+- `metaldogs/migrations.go` → `internal/platform/plugin`
+- `metaldogs/plugin.go` → `internal/platform/plugin`
+
+No longer present (still listed in the baseline): `assets.go` (`domain/media`, `platform/plugin`), `adapters/mediastore/store.go` (`domain/media`), `cart_validate.go`, `sync_obs.go`.
+
+## Tests
+
+`TASK_DB=shopanda_task_mig3b bash ~/ai-os/config/tests/metal_dogs.sh` on 2026-11-20: pass (`./plugins/metaldogs/...`, `./cmd/api/...`, gofmt, deviations, docs links). ImportBoundary line from that run: `2 znanych naruszeń (baseline), 0 nowych`. `adapters/mediastore` tests were not edited.
+
+## Not in this change
+
+No `Init(Host)`, no `pluginsdk.Adapt`, no edits under `internal/*`, `pkg/*`, or core `cmd/api/*`. Baseline file not edited.

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
@@ -21,11 +20,11 @@ const (
 
 var errUnexpectedCartPayload = errors.New("metaldogs: cart.validate payload is not a cart")
 
-func registerCartValidation(app *plugin.App, p *Plugin) error {
-	if app == nil || p == nil {
+func registerCartValidation(hooks pluginsdk.HookAPI, p *Plugin) error {
+	if hooks == nil || p == nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: app not configured")
 	}
-	return app.Hooks(p.Name()).Register(extapi.HookCartValidate, 100, p.onCartValidate)
+	return hooks.Register(extapi.HookCartValidate, 100, p.onCartValidate)
 }
 
 func (p *Plugin) onCartValidate(hctx *extapi.HookContext) error {

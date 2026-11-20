@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akarso/shopanda/internal/domain/media"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
@@ -20,6 +20,11 @@ type contentTypedSaver interface {
 	SaveWithContentType(path string, file io.Reader, contentType string) error
 }
 
+// readableBackend is optional on backends that can return object bytes.
+type readableBackend interface {
+	Read(ctx context.Context, path string) ([]byte, error)
+}
+
 // previewMIMEByExt is the allowlist for inline customizer delivery.
 // Anything else is stored/served as octet-stream with attachment disposition.
 var previewMIMEByExt = map[string]string{
@@ -29,14 +34,14 @@ var previewMIMEByExt = map[string]string{
 	".webp": "image/webp",
 }
 
-// Store adapts Shopanda media.SignedURLStorage to ports.AssetStore and
+// Store adapts a signed media backend to ports.AssetStore and
 // enforces the Metal Dogs private key namespace.
 type Store struct {
-	inner media.SignedURLStorage
+	inner ports.MediaBackend
 }
 
-// New wraps a SignedURLStorage. inner must be non-nil.
-func New(inner media.SignedURLStorage) (*Store, error) {
+// New wraps a MediaBackend. inner must be non-nil.
+func New(inner ports.MediaBackend) (*Store, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("mediastore: SignedURLStorage required")
 	}
@@ -95,7 +100,7 @@ func (c ctxReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Put writes via media.Storage.Save (or SaveWithContentType when available).
+// Put writes via Save (or SaveWithContentType when the backend implements it).
 // The call is synchronous; ctx cancellation stops the reader so Save returns
 // without leaving an abandoned write goroutine.
 func (s *Store) Put(ctx context.Context, key string, r io.Reader, contentType string) error {
@@ -131,7 +136,7 @@ func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
 	if err := rejectKey(key); err != nil {
 		return nil, err
 	}
-	readable, ok := s.inner.(media.ReadableStorage)
+	readable, ok := s.inner.(readableBackend)
 	if !ok {
 		return nil, fmt.Errorf("mediastore: read: backend does not support ReadableStorage")
 	}
@@ -145,7 +150,6 @@ func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
 	return b, nil
 }
 
-// Head delegates to SignedURLStorage.Head.
 func (s *Store) Head(ctx context.Context, key string) error {
 	if err := rejectKey(key); err != nil {
 		return err
@@ -156,7 +160,6 @@ func (s *Store) Head(ctx context.Context, key string) error {
 	return nil
 }
 
-// Delete delegates to media.Storage.Delete.
 func (s *Store) Delete(_ context.Context, key string) error {
 	if err := rejectKey(key); err != nil {
 		return err
@@ -176,11 +179,11 @@ func (s *Store) SignedGetURL(ctx context.Context, key string, ttl time.Duration)
 	ttl = ports.CapSignedGetTTL(ttl)
 	filename := path.Base(key)
 	_, inlineOK := resolveContentType(key, "")
-	disp := media.DispositionAttachment
+	disp := pluginsdk.MediaDispositionAttachment
 	if inlineOK {
-		disp = media.DispositionInline
+		disp = pluginsdk.MediaDispositionInline
 	}
-	url, err := s.inner.SignedURL(ctx, key, media.SignURLOptions{
+	url, err := s.inner.SignedURL(ctx, key, pluginsdk.SignURLOptions{
 		TTL:         ttl,
 		Filename:    filename,
 		Disposition: disp,
