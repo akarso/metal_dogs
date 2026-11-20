@@ -21,8 +21,11 @@ const (
 var errUnexpectedCartPayload = errors.New("metaldogs: cart.validate payload is not a cart")
 
 func registerCartValidation(hooks pluginsdk.HookAPI, p *Plugin) error {
-	if hooks == nil || p == nil {
-		return fmt.Errorf("metaldogs plugin: cart validation: app not configured")
+	if hooks == nil {
+		return fmt.Errorf("metaldogs plugin: cart validation: hooks not configured")
+	}
+	if p == nil {
+		return fmt.Errorf("metaldogs plugin: cart validation: plugin not configured")
 	}
 	return hooks.Register(extapi.HookCartValidate, 100, p.onCartValidate)
 }

@@ -20,7 +20,6 @@ type contentTypedSaver interface {
 	SaveWithContentType(path string, file io.Reader, contentType string) error
 }
 
-// readableBackend is optional on backends that can return object bytes.
 type readableBackend interface {
 	Read(ctx context.Context, path string) ([]byte, error)
 }
@@ -43,7 +42,7 @@ type Store struct {
 // New wraps a MediaBackend. inner must be non-nil.
 func New(inner ports.MediaBackend) (*Store, error) {
 	if inner == nil {
-		return nil, fmt.Errorf("mediastore: SignedURLStorage required")
+		return nil, fmt.Errorf("mediastore: media backend required")
 	}
 	return &Store{inner: inner}, nil
 }
@@ -138,7 +137,7 @@ func (s *Store) Read(ctx context.Context, key string) ([]byte, error) {
 	}
 	readable, ok := s.inner.(readableBackend)
 	if !ok {
-		return nil, fmt.Errorf("mediastore: read: backend does not support ReadableStorage")
+		return nil, fmt.Errorf("mediastore: read: backend does not support Read")
 	}
 	b, err := readable.Read(ctx, key)
 	if err != nil {
