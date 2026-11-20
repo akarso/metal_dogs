@@ -2,9 +2,9 @@ package catalog
 
 import (
 	"encoding/csv"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -26,9 +26,13 @@ func TestLoadPrices_AmountStrings(t *testing.T) {
 		{amount: "abc"},
 		{amount: "1,234"},
 		{amount: "1."},
+		{amount: "80,"},
 		{amount: ".50"},
+		{amount: ",49"},
 		{amount: "1.234.567"},
+		{amount: "1,234,567"},
 		{amount: "1234.567,89"},
+		{amount: "12345,678.90"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.amount, func(t *testing.T) {
@@ -38,14 +42,9 @@ func TestLoadPrices_AmountStrings(t *testing.T) {
 					t.Fatal("expected error")
 				}
 				msg := err.Error()
-				quoted := tc.amount
-				if tc.amount == "" {
-					quoted = `invalid amount ""`
-				}
-				for _, part := range []string{"prices.csv", "row 2", "column amount", quoted} {
-					if !strings.Contains(msg, part) {
-						t.Fatalf("error %q missing %q", msg, part)
-					}
+				want := fmt.Sprintf("metaldogs:catalog-seed: prices.csv: row 2: column amount: invalid amount %q", tc.amount)
+				if msg != want {
+					t.Fatalf("error %q, want %q", msg, want)
 				}
 				return
 			}

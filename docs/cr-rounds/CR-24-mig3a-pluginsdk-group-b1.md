@@ -32,7 +32,7 @@ Exponent is 2. Compared by running the old function and `ParseMinorUnits` on eve
 | `1.234.567` `1,234,567` | reject (thousands marks and no fraction) | accept (123456700) | keep E1 reject |
 | `1234.567,89` `12345,678.90` `1234.567.890,12` | reject (leftmost thousands group longer than 3) | accept | keep E1 reject |
 
-`TestLoadPrices_AmountStrings` pins the E1 strings and one example of each kept reject through `loadPrices`.
+`TestLoadPrices_AmountStrings` pins the E1 strings and the kept rejects through `loadPrices`, including both empty sides (`80,`, `,49`), fraction-less thousands (`1,234,567`), and a thousands group wider than 3 on the dot-decimal side (`12345,678.90`). The assertion is the full `metaldogs:catalog-seed: prices.csv: row 2: column amount: invalid amount %q` text.
 
 ## Currency
 
