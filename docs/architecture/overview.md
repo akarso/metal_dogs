@@ -1,6 +1,6 @@
 # Architecture overview
 
-Metal Dogs is a Shopanda deployment plus one external plugin (`plugins/metaldogs`) and one static storefront application (the customizer). Shopanda owns commerce; the plugin owns the design-to-artwork pipeline. See [ADR-0001](../adr/0001-metal-dogs-as-shopanda-external-plugin.md) and [ADR-0002](../adr/0002-storefront-customizer-and-shopanda-checkout.md).
+Metal Dogs is a Shopanda deployment plus one external plugin (`plugins/metaldogs`) and one static storefront application (the customizer). Shopanda owns commerce; the plugin owns the design-to-artwork pipeline. `plugins/metaldogs.Plugin` implements `pluginsdk.Plugin` (`Init(pluginsdk.Host)`, `pluginsdk.Migrator`). `cmd/api/register_products.go` registers `pluginsdk.Adapt(metaldogs.New())`. See [ADR-0001](../adr/0001-metal-dogs-as-shopanda-external-plugin.md), [ADR-0002](../adr/0002-storefront-customizer-and-shopanda-checkout.md), and [CR-26](../cr-rounds/CR-26-mig3b-pluginsdk-group-b2.md).
 
 ## System context
 

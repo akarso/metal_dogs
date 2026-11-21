@@ -1,8 +1,8 @@
-# CR-26: MIG3b pluginsdk group B2 (tickets 01–03)
+# CR-26: MIG3b pluginsdk group B2 (tickets 01–04)
 
-- Status: ticket 03 recorded 2026-11-21. Round not closed (ticket 04 remains). Baseline file not edited (orchestrator).
+- Status: closed 2026-11-21. Baseline file not edited in this repo (orchestrator removes it and sets the gate scripts strict after review).
 - Pin: `d9ccc21c48eac4b60d33795286d7d36877014fe4`
-- Slice: MIG3b tickets 01–03
+- Slice: MIG3b tickets 01–04
 
 ## Host access check
 
@@ -169,5 +169,64 @@ Changed tests: `plugin_test.go` boots through `Adapt`; without bound media the r
 - `plugins/metaldogs/upload_wire_test.go` — `internal/platform/logger`
 
 Baseline file not edited. Production `plugins/metaldogs` has no `internal/platform/plugin`, `internal/domain/jobs`, or `internal/domain/media` import.
+
+## Ticket 04
+
+Production code already implements `pluginsdk.Plugin`. This ticket records that shape and the empty import boundary. Gate scripts in `~/ai-os/config/tests` are not edited here. The baseline file is not edited here.
+
+### What moved
+
+| Was | Now |
+| --- | --- |
+| `Plugin.Init(*plugin.App)` | `Plugin.Init(pluginsdk.Host)` |
+| `registry.Register(metaldogs.New())` on a `plugin.Plugin` | `registry.Register(pluginsdk.Adapt(metaldogs.New()))` in `cmd/api/register_products.go` |
+| `plugin.Migrator` / `plugin.MigrationSpec` | `pluginsdk.Migrator`; `Migration` returns `pluginsdk.MigrationSpec` |
+| enqueue via `BoundQueue` + `NewSyncJobEnvelope` | `SyncJobs.Enqueue(ctx, name, payload, WithJobID(id))` |
+| `domain/jobs` and `domain/media` in production files | `Host.Jobs()`, `Host.Media()`, `ports` surfaces |
+
+`plugins/metaldogs` production `.go` files (not `*_test.go`) import no `internal/*`. `TestImportBoundary` skips `*_test.go`. Test files that still import `internal/*` are listed under ticket 03.
+
+### Decisions per gap
+
+| Gap | Decision |
+| --- | --- |
+| `JobsPort.CountsByType` was missing | Shopanda added it. Admin health calls `Host.Jobs().CountsByType`. No Metal Dogs patch under `pkg/` or `internal/` |
+| `Host.Media()` unset during `Init` | Lazy wrapper. Routes and sync jobs register at Init. The first asset use asserts `AsSignedURLStorage` to `ports.MediaBackend`. A missing or unsigned backend fails that call |
+| No Host list of registered sync jobs | Plugin keeps the names it registered and derives types with `extapi.SyncJobType` |
+| `BoundQueue` can exist without `JobsPort` | `Require(CapJobs)`. Serve and worker bind queue and port together. Public health is ok only when `Host.Jobs()` is bound. `TestHealth_UsesBoundQueueWithoutRegisterQueue` binds both |
+| No `Host` equivalent of `app.Config == nil` | Check dropped. `Host.ConfigValue` returns `""` when unset |
+| `WithJobID` treats pending and processing as success and requeues only terminal rows | Kept. After generate `Enqueue`, the plugin `Get`s the row and requeues processing older than `DefaultClaimLease` with `WithRequeueMinAge`. Fresh processing is left. Prepare still applies its own rule when `Get` finds a row (failed and done stay; cancelled and stale processing use the type-scoped SQL). That prepare check is not atomic; recorded in ticket 03 |
+| Job id must be a UUID | Generate and prepare ids come from `ports.UUIDGenerator` (`uuid.NewString()`). A non-UUID generate id fails closed |
+
+### Stale-claim rule
+
+Unchanged. A generate row in `processing` whose `UpdatedAt` is older than `domain.DefaultClaimLease` is requeued with `pluginsdk.WithRequeueMinAge(domain.DefaultClaimLease)`. A younger processing row is left. `ErrRequeueTooFresh` is success. The fence stays `Host.OnRequeued`. C4 assertions were not weakened in tickets 01–03 and are not edited here.
+
+### Docs
+
+`plugins/metaldogs/README.md`, `AGENTS.md`, and `docs/architecture/overview.md` describe `pluginsdk.Plugin` and `pluginsdk.Adapt`. README no longer says Init without media registers eval only, and no longer names `App.BoundQueue` as the enqueue API. `docs/ROADMAP.md` verify rows that said `WithJobID` and `CountsByType` are unused, and that migrations implement `plugin.Migrator`, now match this pin.
+
+### Tests
+
+Plain `go test -count=1 ./plugins/ -run TestImportBoundary -v` on 2026-11-21: `TestImportBoundary` PASS, `TestImportBoundary_ForbidsCorePluginImport` PASS, no violation lines. The test has no baseline file; any production `internal/*` import fails it.
+
+`bash .github/scripts/check-upstream-deviations.sh`: `upstream-deviations OK (pin d9ccc21c48ea, 17 allowlisted path(s))`.
+
+`bash .github/scripts/check-product-docs-links.sh`: pass.
+
+`TASK_DB=shopanda_task_mig3b_flip bash ~/ai-os/config/tests/metal_dogs.sh` on 2026-11-21: first run exit 1. `plugins/metaldogs/application` hit the 10m timeout in `TestGenerateWorker_LostClaimAfterGenerate_SkipsComplete`: `gatedProvider.Generate` took the `default` branch on an unbuffered `gate` send, so the test blocked on `<-gate` and the provider blocked on `<-release`. No product code changed in this ticket. Retry of the same command: exit 0. `plugins/metaldogs/application` 0.025s ok. Summary lines: `gofmt: zmienione pliki OK`, `ImportBoundary: 0 naruszeń (strict)`, `upstream-deviations OK (pin d9ccc21c48ea, 17 allowlisted path(s))`, `deviations + docs-links OK`.
+
+### Closure checklist
+
+- [x] `docs/ROADMAP.md`: verify rows for the import boundary, `WithJobID`, `CountsByType`, and `pluginsdk.Migrator` match the flip. MIG3b is not a named slice in the roadmap.
+- [x] `architecture/overview.md` states `pluginsdk.Plugin` + `Adapt`. Domain model and flows were not changed by this round.
+- [x] API paths, DTOs, and error codes are unchanged. Health is still public `degraded` / 503 when `Host.Jobs()` is unbound. `architecture/api.md` still says BoundQueue/Reader for that readiness check; the HTTP contract is the same.
+- [x] No new ADR. Gap decisions are the table above. ADR-0001 still holds: Metal Dogs is an external plugin.
+- [x] No new job type, flag, or failure mode. The generate stale-claim rule is the one already in the C4 runbook path (`Host.OnRequeued` plus `WithRequeueMinAge`).
+- [x] `plugins/metaldogs/README.md` and `AGENTS.md` describe the plugin shape. `storefront/README.md` and `docs/README.md` are outside this flip.
+- [x] Tests: no new test in this ticket. Safety net is the existing suite plus `TestImportBoundary` with zero production violations. Regression coverage for the flip is the ticket 03 tests named above.
+- [x] Safe delivery: plugin flag still defaults off. No migration. Rollback is reverting the branch; the pin is unchanged.
+- [x] Privacy/cost: no new logs, no new provider calls.
+- [x] This record is linked from the index.
 
 Real `go run ./cmd/api` on 2026-11-21, DB `shopanda_task_mig3b_flip` port 5433, plugin enabled, `cmd/api/plugin_boot.go` equal to the pin: `metaldogs:templates validate -file plugins/metaldogs/templates/head-front-blackmetal.yaml` printed `ok slug=head-front-blackmetal hash=e66b2a96d1ca5bb7d671e088ccebb57db40ec9c247b6073fe79ea11bbe1ec21f` and exited 0. `metaldogs:eval -provider fake -dog-name Burek` wrote 1 ok / 0 failed and exited 0. Core postgres search/cache/queue still log `database not configured` at Init; Metal Dogs init completed. That log is from before the CLI opens the pool. `TestRunPluginCLICommand_TemplatesUsesBoundDB`, `TestRunPluginCLICommand_CatalogSeedWritesProductAndVariant` (`metaldogs:catalog-seed: ok`), `TestRunPluginCLICommand_EvalRunsWithoutDSN`, and `TestMetalDogs_ServeAndWorkerBootWithoutCatalogSeed` passed on the same DSN. `go test ./plugins/metaldogs/... -count=1 -p 1` passed. `go test ./plugins/ -run TestImportBoundary` passed with no violation lines (production count 0). Baseline file not edited.

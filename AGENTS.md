@@ -4,6 +4,8 @@
 
 Metal Dogs is a headless store for personalized, metal-themed dog apparel. The storefront guides a customer through a constrained design flow, while Shopanda remains responsible for standard commerce concerns such as catalog, cart, checkout, orders, and payments.
 
+`plugins/metaldogs.Plugin` implements `pluginsdk.Plugin` (`Init(pluginsdk.Host)`, `Needs`, `pluginsdk.Migrator`). `cmd/api/register_products.go` registers `pluginsdk.Adapt(metaldogs.New())`. Production plugin code talks to jobs, media, hooks, config, and the bootstrap DB through that host.
+
 Read `docs/PROJECT_DESCRIPTION.md` before making architectural or product decisions. Treat it as the current source of truth, but verify assumptions about Shopanda, external AI APIs, and print-on-demand providers against their actual capabilities before implementing integrations.
 
 Plan work from `docs/ROADMAP.md` (tracks, vertical slices, per-slice tests and safe-delivery rules) and, when closing a change-request round, run the documentation checklist in `docs/cr-rounds/README.md`.
