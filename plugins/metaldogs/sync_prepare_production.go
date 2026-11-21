@@ -73,7 +73,7 @@ func prepareProductionHandler(log pluginsdk.Logger) extapi.SyncJobHandler {
 // design_version_id. On Conflict, never calls Admin.Retry (which would re-pend failed).
 func enqueuePrepareProduction(jobs ports.JobAccess, ctx context.Context, designVersionID, designID string) error {
 	if jobs == nil {
-		return fmt.Errorf("metaldogs prepare enqueue: app required")
+		return fmt.Errorf("metaldogs prepare enqueue: jobs access required")
 	}
 	designVersionID = strings.TrimSpace(designVersionID)
 	designID = strings.TrimSpace(designID)
@@ -106,7 +106,7 @@ func enqueuePrepareProduction(jobs ports.JobAccess, ctx context.Context, designV
 		if pluginsdk.IsConflict(err) {
 			store, ok := jobs.Store()
 			if !ok {
-				return fmt.Errorf("metaldogs prepare enqueue: job %s already exists but queue does not support Reader (require queue.driver=postgres)", designVersionID)
+				return fmt.Errorf("metaldogs prepare enqueue: job %s already exists but JobsPort is not bound (require CapJobs)", designVersionID)
 			}
 			return resolvePrepareEnqueueConflict(jobs.DB(), store, ctx, designVersionID, jobType)
 		}

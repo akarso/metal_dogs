@@ -65,8 +65,8 @@ func New() *Plugin { return &Plugin{} }
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
 
-// AssetStore returns the private object store wired during Init (nil before Init).
-// Each call resolves Host.Media, which is bound after InitAll.
+// AssetStore is nil before Init and a wrapper afterwards, so non-nil does not mean media is bound.
+// Each call resolves Host.Media, and a missing or unsigned backend fails that call.
 func (p *Plugin) AssetStore() ports.AssetStore { return p.assets }
 
 // UploadService returns the upload use case wired during Init (nil before Init,
@@ -435,7 +435,7 @@ func (j *hostJobs) DB() *sql.DB {
 
 func (j *hostJobs) EnqueueManual(ctx context.Context, name, jobID string, payload map[string]interface{}) error {
 	if j == nil || j.sync == nil {
-		return fmt.Errorf("metaldogs: app required")
+		return fmt.Errorf("metaldogs: jobs access required")
 	}
 	if ctx == nil {
 		ctx = context.Background()

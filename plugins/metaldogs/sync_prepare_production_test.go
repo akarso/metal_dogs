@@ -301,3 +301,48 @@ func TestEnqueuePrepare_ExistingPendingRowSkipsEnqueue(t *testing.T) {
 		t.Fatalf("non-conflict must not enter conflict resolution: %v", err)
 	}
 }
+
+type appearOnEnqueue struct {
+	*queueWithAdmin
+	insertedType string
+}
+
+func (q *appearOnEnqueue) Enqueue(context.Context, jobs.Job) error {
+	q.mu.Lock()
+	q.missing = false
+	q.status = jobs.StatusFailed
+	q.attempts = 1
+	q.jobType = q.insertedType
+	q.mu.Unlock()
+	return q.enqueueErr
+}
+
+func TestEnqueuePrepare_TerminalRowAfterNilGetIsRequeued(t *testing.T) {
+	t.Parallel()
+	app := &plugin.App{}
+	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {
+		t.Fatal(err)
+	}
+	jobType, err := extapi.SyncJobType(PluginName, prepareProductionJobName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := &conflictAdmin{missing: true}
+	q := &appearOnEnqueue{
+		queueWithAdmin: &queueWithAdmin{
+			conflictAdmin: admin,
+			enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
+		},
+		insertedType: jobType,
+	}
+	access := hostJobsFor(t, app, q)
+	const id = "33333333-3333-4333-8333-333333333333"
+	if err := enqueuePrepareProduction(access, context.Background(), id, "des-1"); err != nil {
+		t.Fatal(err)
+	}
+	admin.mu.Lock()
+	defer admin.mu.Unlock()
+	if !admin.requeued || admin.status != jobs.StatusPending {
+		t.Fatalf("terminal row inserted after Get must be requeued by WithJobID: requeued=%v status=%s", admin.requeued, admin.status)
+	}
+}

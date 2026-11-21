@@ -33,7 +33,7 @@ func registerGenerate(reg *pluginsdk.SyncJobs, worker *application.GenerateWorke
 // processing claim is requeued here. The product fence runs in Host.OnRequeued.
 func enqueueGenerateIdempotent(jobs ports.JobAccess, ctx context.Context, generationJobID, designID string) error {
 	if jobs == nil {
-		return fmt.Errorf("metaldogs generate enqueue: app required")
+		return fmt.Errorf("metaldogs generate enqueue: jobs access required")
 	}
 	generationJobID = strings.TrimSpace(generationJobID)
 	designID = strings.TrimSpace(designID)
@@ -49,7 +49,7 @@ func enqueueGenerateIdempotent(jobs ports.JobAccess, ctx context.Context, genera
 	}
 	if err := jobs.EnqueueManual(ctx, generateJobName, generationJobID, payload); err != nil {
 		if pluginsdk.IsConflict(err) {
-			return fmt.Errorf("metaldogs generate enqueue: job %s already exists but queue does not support Requeue (require queue.driver=postgres)", generationJobID)
+			return fmt.Errorf("metaldogs generate enqueue: job %s already exists but JobsPort is not bound (require CapJobs)", generationJobID)
 		}
 		return fmt.Errorf("metaldogs generate enqueue: %w", err)
 	}
