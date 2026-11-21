@@ -220,7 +220,7 @@ Plain `go test -count=1 ./plugins/ -run TestImportBoundary -v` on 2026-11-21: `T
 
 - [x] `docs/ROADMAP.md`: verify rows for the import boundary, `WithJobID`, `CountsByType`, and `pluginsdk.Migrator` match the flip. MIG3b is not a named slice in the roadmap.
 - [x] `architecture/overview.md` states `pluginsdk.Plugin` + `Adapt`. Domain model and flows were not changed by this round.
-- [x] API paths, DTOs, and error codes are unchanged. Health is still public `degraded` / 503 when `Host.Jobs()` is unbound. `architecture/api.md` still says BoundQueue/Reader for that readiness check; the HTTP contract is the same.
+- [x] API paths, DTOs, and error codes are unchanged. Health is still public `degraded` / 503 when `Host.Jobs()` is unbound. `architecture/api.md` and the generation-job runbook name that check `Host.Jobs()` bound (`CapJobs`). Admin depths are `Host.Jobs().CountsByType`. ROADMAP F3 marks `App.BoundQueue()` unused by the plugin after MIG3b. The HTTP contract is the same.
 - [x] No new ADR. Gap decisions are the table above. ADR-0001 still holds: Metal Dogs is an external plugin.
 - [x] No new job type, flag, or failure mode. The generate stale-claim rule is the one already in the C4 runbook path (`Host.OnRequeued` plus `WithRequeueMinAge`).
 - [x] `plugins/metaldogs/README.md` and `AGENTS.md` describe the plugin shape. `storefront/README.md` and `docs/README.md` are outside this flip.

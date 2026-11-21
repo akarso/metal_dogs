@@ -9,7 +9,7 @@ Exact `/api/customizer` is not a route. The platform answers with a plain 404, w
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | `GET` | `/api/customizer/enabled` | public | `{"status":"ok","plugin":"metaldogs"}` |
-| `GET` | `/api/customizer/health` | public | BoundQueue/Reader only; `503` + generic `degraded` when not ready |
+| `GET` | `/api/customizer/health` | public | `Host.Jobs()` bound (`CapJobs`) only; `503` + generic `degraded` when not ready |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type job depths |
 
 ## Templates (C1)

@@ -259,9 +259,9 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 
 - **Goal:** Structured logging with `correlation_id` propagated from HTTP request to enqueued job; metrics hooks for job duration/attempts; health reports queue readiness (depths on admin).
 - **Platform (Shopanda):** `request_id` injection on Enqueue, `SyncJobContext.Attempts`, `JobResult` metrics, `CountsByType` — [shopanda#568](https://github.com/akarso/shopanda/pull/568) merge at pin `a8cbcb18`.
-- **Platform residuals (Metal Dogs only until upstreamed):** `App.BoundQueue()`, sync-handler payload `request_id`→ctx reinjection — listed in overview deviations; product health/correlation depends on them.
-- **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (BoundQueue/Reader only); admin depths (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
-- **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public BoundQueue probe; admin counts-error path; worker `JobResult` after Complete/Fail.
+- **Platform residuals (Metal Dogs only until upstreamed):** `App.BoundQueue()` is unused by the plugin after MIG3b ([CR-26](cr-rounds/CR-26-mig3b-pluginsdk-group-b2.md)). Sync-handler payload `request_id`→ctx reinjection remains; product correlation depends on it.
+- **Vendor (Metal Dogs):** `correlation_id` log alias; public `GET /api/customizer/health` (`Host.Jobs()` bound / `CapJobs` only); admin depths via `Host.Jobs().CountsByType` (`jobs.read`); `obs.ping` (Enqueue + ctx reinjection + log fields; HTTP→worker E2E follow-up).
+- **Tests:** Enqueue `request_id`; sync handler ctx reinjection; public `Host.Jobs()` probe; admin counts-error path; worker `JobResult` after Complete/Fail.
 - **Safe delivery:** Additive; flag still default off. Public health does not run `CountsByType` or expose typed degrade reasons.
 - **Docs:** runbook diagnosis; CR-04. Upstream guide: [SYNC_JOB_OBSERVABILITY](https://github.com/akarso/shopanda/blob/d9ccc21c48eac4b60d33795286d7d36877014fe4/docs/guides/SYNC_JOB_OBSERVABILITY.md).
 
