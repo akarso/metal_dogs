@@ -28,13 +28,12 @@ func registerGenerate(reg *pluginsdk.SyncJobs, worker *application.GenerateWorke
 	return reg.RegisterManual(generateJobName, generateHandler(worker), opts...)
 }
 
-// enqueueGenerateIdempotent enqueues integration.sync.metaldogs.generate using
-// generation_job_id as the platform job id. On conflict it re-pends through
-// Requeue (WithRequeueMinAge for a stale processing claim, WithRequeueTerminal
-// for failed, done, or cancelled); the product fence runs in Host.OnRequeued.
+// enqueueGenerateIdempotent enqueues generate with generation_job_id as the job id.
+// WithJobID owns the terminal-requeue race (one retry in the pin). A stale
+// processing claim is requeued here. The product fence runs in Host.OnRequeued.
 func enqueueGenerateIdempotent(jobs ports.JobAccess, ctx context.Context, generationJobID, designID string) error {
 	if jobs == nil {
-		return fmt.Errorf("metaldogs generate enqueue: app required")
+		return fmt.Errorf("metaldogs generate enqueue: jobs access required")
 	}
 	generationJobID = strings.TrimSpace(generationJobID)
 	designID = strings.TrimSpace(designID)
@@ -50,81 +49,34 @@ func enqueueGenerateIdempotent(jobs ports.JobAccess, ctx context.Context, genera
 	}
 	if err := jobs.EnqueueManual(ctx, generateJobName, generationJobID, payload); err != nil {
 		if pluginsdk.IsConflict(err) {
-			store, ok := jobs.Store()
-			if !ok {
-				return fmt.Errorf("metaldogs generate enqueue: job %s already exists but queue does not support Requeue (require queue.driver=postgres)", generationJobID)
-			}
-			return resolveGenerateEnqueueConflict(store, ctx, generationJobID)
+			return fmt.Errorf("metaldogs generate enqueue: job %s already exists but JobsPort is not bound (require CapJobs)", generationJobID)
 		}
 		return fmt.Errorf("metaldogs generate enqueue: %w", err)
 	}
-	return nil
+	store, ok := jobs.Store()
+	if !ok {
+		return nil
+	}
+	// WithJobID leaves a processing row alone. A stale claim is requeued here.
+	return requeueStaleGenerateClaim(store, ctx, generationJobID)
 }
 
-func resolveGenerateEnqueueConflict(store ports.JobStore, ctx context.Context, generationJobID string) error {
+func requeueStaleGenerateClaim(store ports.JobStore, ctx context.Context, generationJobID string) error {
 	detail, err := store.Get(ctx, generationJobID)
 	if err != nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
+		return fmt.Errorf("metaldogs generate enqueue: stale claim: %w", err)
 	}
-	if detail == nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", generationJobID)
+	if detail == nil || detail.Status != ports.JobStatusProcessing {
+		return nil
+	}
+	if !prepareJobStale(detail.UpdatedAt, domain.DefaultClaimLease) {
+		return nil
 	}
 	err = store.Requeue(ctx, generationJobID, detail.Attempts, pluginsdk.WithRequeueMinAge(domain.DefaultClaimLease))
 	if err == nil || errors.Is(err, pluginsdk.ErrRequeueTooFresh) {
 		return nil
 	}
-	if errors.Is(err, pluginsdk.ErrRequeueNotProcessing) {
-		return requeueTerminalGenerateJob(store, ctx, generationJobID, detail.Attempts)
-	}
-	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
-}
-
-// A wrong attempt is a raced completion: reload once and retry with the live count.
-func requeueTerminalGenerateJob(store ports.JobStore, ctx context.Context, id string, attempt int) error {
-	err := requeueTerminalGenerateOnce(store, ctx, id, attempt)
-	if err == nil || !errors.Is(err, pluginsdk.ErrRequeueWrongAttempt) {
-		return err
-	}
-	again, getErr := store.Get(ctx, id)
-	if getErr != nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", getErr)
-	}
-	if again == nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", id)
-	}
-	if again.Attempts == attempt {
-		return err
-	}
-	return requeueTerminalGenerateOnce(store, ctx, id, again.Attempts)
-}
-
-func requeueTerminalGenerateOnce(store ports.JobStore, ctx context.Context, id string, attempt int) error {
-	err := store.Requeue(ctx, id, attempt, pluginsdk.WithRequeueTerminal())
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, pluginsdk.ErrRequeueNotTerminal) {
-		return leaveNonTerminalGenerateJob(store, ctx, id)
-	}
-	return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
-}
-
-// leaveNonTerminalGenerateJob accepts pending and processing. Any other
-// non-terminal status (for example reclaiming) is still an error.
-func leaveNonTerminalGenerateJob(store ports.JobStore, ctx context.Context, id string) error {
-	again, err := store.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: %w", err)
-	}
-	if again == nil {
-		return fmt.Errorf("metaldogs generate enqueue: requeue after conflict: job %s missing", id)
-	}
-	switch again.Status {
-	case ports.JobStatusPending, ports.JobStatusProcessing:
-		return nil
-	default:
-		return fmt.Errorf("metaldogs generate enqueue: requeue terminal job %s is %s", id, again.Status)
-	}
+	return fmt.Errorf("metaldogs generate enqueue: stale claim: %w", err)
 }
 
 func generateHandler(worker *application.GenerateWorker) extapi.SyncJobHandler {

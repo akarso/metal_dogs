@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
@@ -28,5 +29,5 @@ func metalDogsExtra(cfg *config.Config) map[string]string {
 }
 
 func registerMetalDogs(registry *plugin.Registry) {
-	registry.Register(metaldogs.New())
+	registry.Register(pluginsdk.Adapt(metaldogs.New()))
 }

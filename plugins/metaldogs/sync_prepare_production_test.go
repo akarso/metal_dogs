@@ -277,7 +277,7 @@ type prepareResult int64
 func (r prepareResult) LastInsertId() (int64, error) { return 0, nil }
 func (r prepareResult) RowsAffected() (int64, error) { return int64(r), nil }
 
-func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
+func TestEnqueuePrepare_ExistingPendingRowSkipsEnqueue(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
 	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {
@@ -288,16 +288,61 @@ func TestEnqueuePrepare_WrappedQueueConflictUsesConflictPath(t *testing.T) {
 		conflictAdmin: admin,
 		enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
 	}
-	if err := app.BindQueue(q); err != nil {
-		t.Fatal(err)
-	}
-	if err := enqueuePrepareProduction(PlatformJobs(app), context.Background(), "ver-1", "des-1"); err != nil {
+	access := hostJobsFor(t, app, q)
+	const id = "22222222-2222-4222-8222-222222222222"
+	if err := enqueuePrepareProduction(access, context.Background(), id, "des-1"); err != nil {
 		t.Fatal(err)
 	}
 
+	admin.missing = true
 	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
-	err := enqueuePrepareProduction(PlatformJobs(app), context.Background(), "ver-1", "des-1")
+	err := enqueuePrepareProduction(access, context.Background(), id, "des-1")
 	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "get after conflict") {
 		t.Fatalf("non-conflict must not enter conflict resolution: %v", err)
+	}
+}
+
+type appearOnEnqueue struct {
+	*queueWithAdmin
+	insertedType string
+}
+
+func (q *appearOnEnqueue) Enqueue(context.Context, jobs.Job) error {
+	q.mu.Lock()
+	q.missing = false
+	q.status = jobs.StatusFailed
+	q.attempts = 1
+	q.jobType = q.insertedType
+	q.mu.Unlock()
+	return q.enqueueErr
+}
+
+func TestEnqueuePrepare_TerminalRowAfterNilGetIsRequeued(t *testing.T) {
+	t.Parallel()
+	app := &plugin.App{}
+	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {
+		t.Fatal(err)
+	}
+	jobType, err := extapi.SyncJobType(PluginName, prepareProductionJobName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := &conflictAdmin{missing: true}
+	q := &appearOnEnqueue{
+		queueWithAdmin: &queueWithAdmin{
+			conflictAdmin: admin,
+			enqueueErr:    fmt.Errorf("job_queue: enqueue: %w", apperror.Conflict("job already enqueued")),
+		},
+		insertedType: jobType,
+	}
+	access := hostJobsFor(t, app, q)
+	const id = "33333333-3333-4333-8333-333333333333"
+	if err := enqueuePrepareProduction(access, context.Background(), id, "des-1"); err != nil {
+		t.Fatal(err)
+	}
+	admin.mu.Lock()
+	defer admin.mu.Unlock()
+	if !admin.requeued || admin.status != jobs.StatusPending {
+		t.Fatalf("terminal row inserted after Get must be requeued by WithJobID: requeued=%v status=%s", admin.requeued, admin.status)
 	}
 }

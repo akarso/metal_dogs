@@ -482,7 +482,7 @@ func runCatalogSeedBound(t *testing.T, db *sql.DB, dir string, bind bool) error 
 	}
 	reg := plugin.NewRegistry(app.Logger)
 	plug := metaldogs.New()
-	reg.Register(plug)
+	reg.Register(pluginsdk.Adapt(plug))
 	if summary := reg.InitAll(app); summary.Failed > 0 {
 		t.Fatalf("InitAll: %+v", summary)
 	}

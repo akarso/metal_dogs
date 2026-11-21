@@ -4,18 +4,18 @@ import (
 	"embed"
 	"io/fs"
 
-	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-var _ plugin.Migrator = (*Plugin)(nil)
+var _ pluginsdk.Migrator = (*Plugin)(nil)
 
-// Migration implements plugin.Migrator for app migrate / InitAll.
+// Migration implements pluginsdk.Migrator for app migrate / InitAll.
 // Versions are recorded as plugin:metaldogs:<basename>.
-func (p *Plugin) Migration() plugin.MigrationSpec {
-	return plugin.MigrationSpec{
+func (p *Plugin) Migration() pluginsdk.MigrationSpec {
+	return pluginsdk.MigrationSpec{
 		FS:  migrationFiles,
 		Dir: "migrations",
 	}

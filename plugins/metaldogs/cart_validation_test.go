@@ -17,7 +17,7 @@ import (
 func TestCartValidation_TeeWithoutDesignWhenMediaUnavailable(t *testing.T) {
 	srv, _, plugin := newDesignCartServerWithoutMedia(t)
 	if plugin.DesignService() != nil {
-		t.Fatal("design service wired without media")
+		t.Fatal("design service wired without Bootstrap.DB")
 	}
 	variantM := teeVariantID(t, srv, "MDOGS-TEE-M")
 	cartID := createPLNCart(t, srv)

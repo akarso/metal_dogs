@@ -1,6 +1,6 @@
 # plugins/metaldogs
 
-Metal Dogs Shopanda external plugin.
+Metal Dogs Shopanda external plugin. `Plugin` implements `pluginsdk.Plugin`: `Init(pluginsdk.Host)`, `Needs`, and `pluginsdk.Migrator` (`Migration` returns `pluginsdk.MigrationSpec`). `cmd/api/register_products.go` registers `pluginsdk.Adapt(metaldogs.New())`.
 
 ## Enable
 
@@ -20,14 +20,14 @@ Registration: `cmd/api/register_products.go` (`registerProductPlugins`, compile-
 
 ```text
 plugins/metaldogs/
-├── plugin.go              # Init + Name + AssetStore wiring
+├── plugin.go              # pluginsdk.Plugin: Init(Host), Needs, AssetStore wrapper
 ├── cli.go                 # metaldogs:eval, templates, catalog-seed
 ├── catalog/               # products.csv, prices.csv, stock.csv + seed loader
 ├── assets.go              # wrap Bound/registered SignedURLStorage
 ├── sync_obs.go            # obs.ping RegisterManual
 ├── sync_generate.go       # generate RegisterManual (C4)
 ├── sync_prepare_production.go  # prepare_production_artwork no-op (C6 → G5)
-├── migrations.go          # plugin.Migrator + MigrationFS
+├── migrations.go          # pluginsdk.Migrator + MigrationFS
 ├── migrations/            # SQL (namespaced plugin:metaldogs:*)
 ├── generation/            # ImageProvider port + fake (ADR-0008 / G0)
 │   ├── eval/              # offline runner + report.json
@@ -48,7 +48,7 @@ plugins/metaldogs/
 | Method | Path | Auth | When enabled |
 | --- | --- | --- | --- |
 | `GET` | `/api/customizer/enabled` | public | `{"status":"ok","plugin":"metaldogs"}` |
-| `GET` | `/api/customizer/health` | public | BoundQueue/Reader readiness only; generic `degraded` reason; HTTP 503 when degraded |
+| `GET` | `/api/customizer/health` | public | `Host.Jobs()` bound (`CapJobs`); generic `degraded` reason; HTTP 503 when degraded |
 | `GET` | `/api/customizer/templates` | public | Published catalog (`?genre=`); DTO without prompts/model; `thumbnail_url` null until asset ingest |
 | `GET` | `/api/customizer/templates/{id}` | public | Published UUID only; draft/unknown → `404` |
 | `POST` | `/api/customizer/uploads` | public | Multipart `file` → oriented JPEG/PNG source + signed preview; media+DB; concurrency-capped |
@@ -60,11 +60,11 @@ plugins/metaldogs/
 | `POST` | `/api/customizer/designs/{id}/approve` | Bearer | Freeze `DesignVersion`; design → `approved`; enqueue prepare (stub fails until G5; 503 + retry) |
 | `POST` | `/api/customizer/designs/{id}/clone` | Bearer | New draft + token; Put-copies source bytes |
 | `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer | Session cart line for one custom-tee variant; `200` `{ "cart_url": "/cart" }`. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |
-| `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `BoundQueue` + `CountsByType` |
+| `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `Host.Jobs().CountsByType` |
 
 **Not k8s probes.** Use `/healthz` and `/readyz`. Guest `/api/customizer/*` responses are `Cache-Control: no-store`. Depths stay admin-only (backlog/failure recon). Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md).
 
-Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Platform injects `request_id` on Enqueue and again in the sync handler; MD logs also emit `correlation_id` (same value). `App.BoundQueue()` is the pin API (PR-1559). The generate claim fence is `Host.OnRequeued` in `Plugin.Init`. See [`docs/UPSTREAM_PIN.md`](../../docs/UPSTREAM_PIN.md).
+Sync jobs: `integration.sync.metaldogs.obs.ping` (F3 sample); `integration.sync.metaldogs.generate` (C4); `integration.sync.metaldogs.prepare_production_artwork` (C6 stub terminals `pending_spec`; approve leaves failed/done alone until G5). Generate and prepare enqueue call `SyncJobs.Enqueue` with `WithJobID` (UUID). After a successful generate enqueue, a processing row older than `DefaultClaimLease` is requeued with `WithRequeueMinAge`; a fresh processing row is left. Prepare keeps its own staleness rule (failed and done stay; cancelled and stale processing use the type-scoped SQL reclaim). Platform injects `request_id` on Enqueue and again in the sync handler; MD logs also emit `correlation_id` (same value). The generate claim fence is `Host.OnRequeued` in `Plugin.Init`. See [`docs/UPSTREAM_PIN.md`](../../docs/UPSTREAM_PIN.md) and [CR-26](../../docs/cr-rounds/CR-26-mig3b-pluginsdk-group-b2.md).
 
 Generation config (C4/C7) is `Config.Extra["metaldogs"]`, read with `Host.ConfigValue`. Env names are unchanged: `SHOPANDA_PLUGINS_METALDOGS_GENERATION_PROVIDER` (Extra key `generation_provider`; dotted alias `generation.provider`; fake only), `..._MAX_RETRIES`, `..._MAX_ATTEMPTS_PER_DESIGN`, `..._COOLDOWN_SECONDS` (default 30; `0` disables). A nested YAML `generation:` map (`provider`, `max_retries`, `max_attempts_per_design`, `cooldown_seconds`) loads those same fields. A non-integer is an error.
 
@@ -90,10 +90,7 @@ Later job types: `integration.sync.metaldogs.<name>` (ADR-0003).
 
 ## Offline eval (G0)
 
-With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`):
-
-- **With media:** full Init — `AssetStore`, customizer HTTP, obs.ping, and `metaldogs:eval`.
-- **Without media (eval-only):** Init still succeeds and registers `metaldogs:eval` only — no customizer HTTP / AssetStore (F4 fail-closed for HTTP).
+With the plugin enabled (`SHOPANDA_PLUGINS_METALDOGS_ENABLED=true`), `Init` registers CLI commands, customizer HTTP, and sync jobs. Media is a wrapper that calls `Host.Media()` on each use; the composition root binds storage after `InitAll`. A missing or unsigned backend fails that asset call. Route registration does not wait for storage. `AssetStore()` is non-nil after Init and does not mean media is bound.
 
 `./app metaldogs:eval` is dispatched on the process CLI and does not open a DSN (`RequiresDB: false`). The rejection in [CR-22](../../docs/cr-rounds/CR-22-mig2-pluginsdk-group-a.md) is superseded by [CR-23](../../docs/cr-rounds/CR-23-upg5-pin-ad14bd3a.md).
 

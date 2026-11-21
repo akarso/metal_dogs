@@ -40,7 +40,7 @@ type JobHealth interface {
 	CountsByType(ctx context.Context, jobType string) (map[JobStatus]int, error)
 }
 
-// JobAccess is enqueue, conflict lookup, and health. PlatformJobs adapts *plugin.App.
+// JobAccess is enqueue, conflict lookup, and health. PlatformJobs adapts pluginsdk.Host.
 type JobAccess interface {
 	JobHealth
 	EnqueueManual(ctx context.Context, name, jobID string, payload map[string]interface{}) error

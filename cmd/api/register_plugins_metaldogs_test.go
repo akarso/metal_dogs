@@ -30,6 +30,7 @@ import (
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/migrate"
 	"github.com/akarso/shopanda/internal/platform/plugin"
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
 )
 
@@ -339,11 +340,23 @@ func metalDogsBootFixture() (*plugin.Registry, *plugin.App, *plugin.Bootstrap) {
 	cfg := metalDogsEnabledConfig()
 	log := logger.NewWithWriter(io.Discard, "error")
 	reg := plugin.NewRegistry(log)
-	reg.Register(metaldogs.New())
+	reg.Register(pluginsdk.Adapt(metaldogs.New()))
 	app := &plugin.App{Logger: log, Bus: event.NewBus(log), Config: cfg}
 	// Fixture has no DB. CapDB is still declared at Init; satisfy it so this
 	// test keeps asserting the catalog-seed skip, not a missing database.
 	app.MarkCapabilitySatisfied(plugin.CapDB)
+	// Serve assert does not skip CapJobs / CapMedia. Production binds both after Init.
+	media := stubSignedMedia{}
+	if err := app.BindMediaStorage(media); err != nil {
+		panic(err)
+	}
+	port, err := pluginsdk.NewJobsPort(stubJobsReaderForBoot{}, &stubJobsQueueForBoot{})
+	if err != nil {
+		panic(err)
+	}
+	if err := app.BindJobsPort(port); err != nil {
+		panic(err)
+	}
 	boot := &plugin.Bootstrap{
 		Products: seedBootProducts{},
 		Variants: seedBootVariants{},
