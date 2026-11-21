@@ -17,7 +17,7 @@ flowchart LR
 
 ## Closure checklist
 
-Run at the close of every round; paste the completed checklist into the round record.
+Run at the close of every round; paste the completed checklist into the round record. A pin-only bump (Shopanda SHA, no product behaviour change) does not paste it. The record keeps conflict resolution and the upstream range, and the log links the file. CR-23, CR-25, CR-27, and CR-28 use that shape.
 
 - [ ] `docs/ROADMAP.md`: slices marked closed; dependency changes; §1 verify-items updated with results.
 - [ ] Architecture diagrams updated for every touched boundary: `architecture/overview.md` (context, containers, modules), `architecture/domain-model.md` (ER, state machines, retention), `architecture/flows/*` (swimlanes and sequences). New flows get a new file.
