@@ -24,11 +24,14 @@ ALLOWLIST=(
   .github/scripts/check-upstream-deviations.sh # this allowlist
   .github/scripts/run-integration-tests.sh # Shopanda DSN suite; Metal Dogs canaries are separate
   .github/scripts/run-metaldogs-integration-tests.sh # Metal Dogs DSN suite and canaries
+  .gitignore # marker section only; rest matches the pin
+  .gitignore.product # /app, .vscode/, F4 AssetStore comment (no path)
   cmd/api/register_plugins_metaldogs_test.go # registration, NoCache, boot, catalog-seed CLI, opaque bearer, migrator collect
   cmd/api/register_products.go # registerMetalDogs when enabled or the flag does not parse
   configs/config.example.product.yaml # commented plugins.metaldogs block; no loader merge
   docker-compose.override.yml # publish Postgres on 127.0.0.1 host port
   product/checks/metaldogs-docs.sh # hardened docs links + deviation allowlist
+  product/checks/metaldogs-reserved-slug.sh # product-init --slug metaldogs --force exits 1
   product/reserved-slugs.txt # refuse product-init --slug metaldogs
   storefront/.gitkeep # empty storefront dir; product app is not the upstream theme tree
 )

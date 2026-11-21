@@ -50,4 +50,7 @@ shopanda
 # Product ignore fragment (see docs/PRODUCT_OWNED.md). Sync with:
 #   bash scripts/ci/apply-product-gitignore.sh
 # >>> shopanda-product-gitignore
+/app
+# Metal Dogs local AssetStore root (F4)
+.vscode/
 # <<< shopanda-product-gitignore
