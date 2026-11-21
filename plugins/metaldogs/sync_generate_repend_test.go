@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -305,6 +306,75 @@ func TestEnqueueGenerate_SameIDStaleAndFresh(t *testing.T) {
 			t.Fatalf("status=%s attempts=%d claim %d→%d", status, attempts, claimBefore, claimAfter)
 		}
 	})
+}
+
+func TestEnqueueGenerate_ConcurrentTerminalBothNilOneRequeue(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "enqueue-race")
+	ctx := context.Background()
+	queue, err := infraPostgres.NewJobQueue(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := testApp(t, true)
+	app.Bootstrap = &plugin.Bootstrap{DB: db}
+	reg := plugin.NewRegistry(app.Logger)
+	p := metaldogs.New()
+	reg.Register(pluginsdk.Adapt(p))
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll %+v", summary)
+	}
+	if err := bindRependQueue(t, app, queue); err != nil {
+		t.Fatal(err)
+	}
+	svc := p.GenerateService()
+	if svc == nil || svc.Enqueue == nil {
+		t.Fatal("generate enqueue not wired")
+	}
+	jobID, designID := seedRunningGenerate(t, db, 21)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO jobs (id, type, payload, status, attempts, max_retries, last_error)
+		VALUES ($1, 'integration.sync.metaldogs.generate', '{}'::jsonb, 'failed', 4, 3, 'boom')`,
+		jobID); err != nil {
+		t.Fatal(err)
+	}
+	var claimBefore int
+	if err := db.QueryRowContext(ctx, `SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = svc.Enqueue(ctx, jobID, designID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+
+	var n int
+	var status string
+	var attempts int
+	if err := db.QueryRowContext(ctx, `SELECT count(*), min(status), min(attempts) FROM jobs WHERE id = $1`, jobID).Scan(&n, &status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	var claimAfter int
+	if err := db.QueryRowContext(ctx, `SELECT claim_token FROM metaldogs_generation_jobs WHERE id = $1`, jobID).Scan(&claimAfter); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || status != "pending" || attempts != 4 || claimAfter != claimBefore+1 {
+		t.Fatalf("jobs=%d status=%s attempts=%d claim %d→%d", n, status, attempts, claimBefore, claimAfter)
+	}
 }
 
 func seedRunningGenerate(t *testing.T, db *sql.DB, n int) (jobID, designID string) {

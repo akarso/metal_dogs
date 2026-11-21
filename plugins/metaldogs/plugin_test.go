@@ -223,6 +223,51 @@ func TestPlugin_Init_WithoutMedia_RoutesRegisteredMediaResolvedLazily(t *testing
 	}
 }
 
+type plainMedia struct{}
+
+func (plainMedia) Name() string                 { return "plain" }
+func (plainMedia) Save(string, io.Reader) error { return nil }
+func (plainMedia) Delete(string) error          { return nil }
+func (plainMedia) URL(string) string            { return "" }
+
+func TestPlugin_UnsignedMediaFailsOnUseHealthOmitsIt(t *testing.T) {
+	t.Parallel()
+	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
+	p := metaldogs.New()
+	reg.Register(pluginsdk.Adapt(p))
+	log := logger.NewWithWriter(io.Discard, "warn")
+	app := &plugin.App{
+		Logger: log,
+		Bus:    event.NewBus(log),
+		Config: &config.Config{Plugins: metalDogsPlugins(true, nil)},
+	}
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v", summary)
+	}
+	if err := app.BindMediaStorage(plainMedia{}); err != nil {
+		t.Fatal(err)
+	}
+	err := p.AssetStore().Head(context.Background(), "private/blobs/metaldogs/source/2026/11/x.jpg")
+	if err == nil || !strings.Contains(err.Error(), "does not implement SignedURLStorage") || strings.Contains(err.Error(), "MediaBackend") {
+		t.Fatalf("unsigned backend: %v", err)
+	}
+	var health http.Handler
+	for _, r := range app.PublicRoutes() {
+		if r.Pattern == "GET /api/customizer/health" {
+			health = r.Handler
+		}
+	}
+	if health == nil {
+		t.Fatal("health route missing")
+	}
+	rec := httptest.NewRecorder()
+	health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customizer/health", nil))
+	if strings.Contains(rec.Body.String(), "SignedURLStorage") || strings.Contains(rec.Body.String(), "MediaBackend") {
+		t.Fatalf("health reports media: %s", rec.Body.String())
+	}
+}
+
 func TestPlugin_Init_Enabled_RegistersRoute(t *testing.T) {
 	t.Parallel()
 	// InitAll wires app.cliRegistry before Init (RegisterCommand panics otherwise).

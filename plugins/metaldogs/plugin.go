@@ -47,7 +47,7 @@ type cartSurface interface {
 
 // Needs declares the composition-root ports this plugin reads.
 // CapCatalogSeed stays declared so the seed CLI can read Host.CatalogSeed; serve and worker leave that port unbound.
-// CapJobs and CapMedia are bound after Init on serve and worker. Plugin CLI does not bind them, and pluginCLINeedsSkip does not skip them.
+// CapJobs and CapMedia are bound after Init on serve and worker. Plugin CLI does not bind them; pluginCLINeedsSkip skips both, so Require does not fail that boot.
 func (p *Plugin) Needs() []pluginsdk.Capability {
 	return []pluginsdk.Capability{
 		pluginsdk.CapCart,

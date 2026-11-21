@@ -19,25 +19,20 @@ import (
 )
 
 type conflictAdmin struct {
-	mu          sync.Mutex
-	requeued    bool
-	retried     bool
-	missing     bool
-	jobType     string
-	status      jobs.Status
-	updatedAt   time.Time
-	hookCalls   int
-	attempts    int
-	retryHook   func(*conflictAdmin) error
-	beforeCheck func(*conflictAdmin, bool)
+	mu        sync.Mutex
+	requeued  bool
+	retried   bool
+	missing   bool
+	jobType   string
+	status    jobs.Status
+	updatedAt time.Time
+	hookCalls int
+	attempts  int
 }
 
 func (a *conflictAdmin) Retry(_ context.Context, _ string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.retryHook != nil {
-		return a.retryHook(a)
-	}
 	switch a.status {
 	case jobs.StatusFailed:
 		a.status = jobs.StatusPending
@@ -95,9 +90,6 @@ func (q *queueWithAdmin) Requeue(_ context.Context, _ string, attempt int, opts 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	settings := jobs.ResolveRequeueOptions(opts)
-	if a.beforeCheck != nil {
-		a.beforeCheck(a, settings.Terminal)
-	}
 	if settings.Terminal {
 		switch a.status {
 		case jobs.StatusFailed, jobs.StatusDone, jobs.StatusCancelled:
@@ -131,82 +123,7 @@ func conflictEnqueue(admin *conflictAdmin) *queueWithAdmin {
 	}
 }
 
-func TestEnqueueGenerate_SDKWrongAttemptReloadsOnce(t *testing.T) {
-	t.Parallel()
-	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 2}
-	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
-		if terminal && a.attempts == 2 {
-			a.attempts = 3
-			a.status = jobs.StatusDone
-		}
-	}
-	q := conflictEnqueue(admin)
-	if err := enqueueGenerateOn(t, q, generateConflictJobID); err != nil {
-		t.Fatal(err)
-	}
-	if !admin.requeued || admin.status != jobs.StatusPending || admin.attempts != 3 {
-		t.Fatalf("plugin must re-pend once with the live attempt: requeued=%v status=%s attempts=%d", admin.requeued, admin.status, admin.attempts)
-	}
-	if admin.hookCalls != 1 {
-		t.Fatalf("OnRequeued-equivalent calls=%d, want 1", admin.hookCalls)
-	}
-}
-
-func TestEnqueueGenerate_SDKWrongAttemptStopsAfterOneRetry(t *testing.T) {
-	t.Parallel()
-	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 2}
-	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
-		if terminal {
-			a.attempts++
-			a.status = jobs.StatusDone
-		}
-	}
-	q := conflictEnqueue(admin)
-	err := enqueueGenerateOn(t, q, generateConflictJobID)
-	if err == nil || !errors.Is(err, jobs.ErrRequeueWrongAttempt) {
-		t.Fatalf("second mismatch must surface: %v", err)
-	}
-	if admin.requeued {
-		t.Fatal("must not re-pend after the single retry")
-	}
-}
-
-func TestEnqueueGenerate_SDKNotTerminalPendingIsSuccess(t *testing.T) {
-	t.Parallel()
-	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 1}
-	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
-		if terminal {
-			a.status = jobs.StatusPending
-		}
-	}
-	q := conflictEnqueue(admin)
-	if err := enqueueGenerateOn(t, q, generateConflictJobID); err != nil {
-		t.Fatal(err)
-	}
-	if admin.requeued || admin.status != jobs.StatusPending {
-		t.Fatalf("pending after a lost terminal requeue must stay: requeued=%v status=%s", admin.requeued, admin.status)
-	}
-}
-
-func TestEnqueueGenerate_SDKNotTerminalReclaimingErrors(t *testing.T) {
-	t.Parallel()
-	admin := &conflictAdmin{status: jobs.StatusFailed, attempts: 1}
-	admin.beforeCheck = func(a *conflictAdmin, terminal bool) {
-		if terminal {
-			a.status = jobs.StatusReclaiming
-		}
-	}
-	q := conflictEnqueue(admin)
-	err := enqueueGenerateOn(t, q, generateConflictJobID)
-	if err == nil || !strings.Contains(err.Error(), string(jobs.StatusReclaiming)) {
-		t.Fatalf("reclaiming raced under terminal requeue must error, got %v", err)
-	}
-	if admin.requeued {
-		t.Fatal("reclaiming must not requeue")
-	}
-}
-
-func TestEnqueueGenerate_ReclaimingAtConflictIsSuccess(t *testing.T) {
+func TestEnqueueGenerate_ReclaimingRowIsSuccess(t *testing.T) {
 	t.Parallel()
 	admin := &conflictAdmin{status: jobs.StatusReclaiming, attempts: 1}
 	q := conflictEnqueue(admin)
@@ -256,7 +173,7 @@ func TestEnqueueGenerate_RejectsNonUUIDJobID(t *testing.T) {
 	}
 }
 
-func TestEnqueueGenerate_SDKLeavesFreshProcessingConflict(t *testing.T) {
+func TestEnqueueGenerate_LeavesFreshProcessing(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
 	if err := registerGenerate(pluginsdk.New(app, PluginName).Integration(PluginName), &application.GenerateWorker{}, 3); err != nil {
@@ -282,7 +199,7 @@ func TestEnqueueGenerate_SDKLeavesFreshProcessingConflict(t *testing.T) {
 
 	q.enqueueErr = fmt.Errorf("job_queue: enqueue: %w", errors.New("connection reset"))
 	err := enqueueGenerateIdempotent(access, context.Background(), id, "design-1")
-	if err == nil || !strings.Contains(err.Error(), "connection reset") || strings.Contains(err.Error(), "requeue after conflict") {
-		t.Fatalf("non-conflict must not enter requeue: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "connection reset") {
+		t.Fatalf("non-conflict enqueue: %v", err)
 	}
 }
