@@ -1,7 +1,7 @@
 # CR-26: MIG3b pluginsdk group B2 (tickets 01–04)
 
 - Status: closed 2026-11-21. Baseline file not edited in this repo (orchestrator removes it and sets the gate scripts strict after review).
-- Pin: `d9ccc21c48eac4b60d33795286d7d36877014fe4`
+- Pin: `d9ccc21c…`
 - Slice: MIG3b tickets 01–04
 
 ## Host access check

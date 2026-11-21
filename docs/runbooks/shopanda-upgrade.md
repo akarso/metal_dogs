@@ -1,7 +1,7 @@
 # Runbook: upgrading the pinned Shopanda version
 
 - **Introduced by slice:** `F0`
-- **Last exercised:** 2026-11-21 (pin → `d9ccc21c`; PR-1594 / shopanda#645, PR-1595 / shopanda#646). Explicit SHA. Tree equals `upstream/main` tip `79c3b59a` (shopanda#647).
+- **Last exercised:** 2026-11-21 (pin → `72785f27`; PR-1596 / shopanda#648). Explicit SHA. Tip of `upstream/dev` and an ancestor of `upstream/main`. Tree equals `upstream/main` tip `f0bf700f` (shopanda#649).
 - **Severity when triggered:** medium (planned change with regression risk)
 - **Owner:** backend maintainer
 
@@ -37,11 +37,16 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
    git merge <sha>   # prefer an explicit SHA until upstream tags exist
    ```
 
-   Resolve conflicts:
-   - **`docs/`** — keep Metal Dogs docs; discard upstream `docs/` additions (link to GitHub at the new pin instead).
+   Resolve conflicts using the upstream runbook at the pin
+   ([product-fork-upgrade](https://github.com/akarso/shopanda/blob/72785f27e1f82cf18dbdb2322a3f6309bfd8cead/docs/runbooks/product-fork-upgrade.md);
+   manifest [`../PRODUCT_OWNED.md`](../PRODUCT_OWNED.md)):
+   - **`docs/`** — keep Metal Dogs narrative. Keep upstream `docs/PRODUCT_OWNED.md`. Do not vendor Shopanda guide files, phase history, or the upstream product-fork-upgrade runbook (it links guide files that are not in this tree).
    - **`AGENTS.md`** — keep Metal Dogs project rules; refresh the build/test command section from upstream if commands changed.
-   - **`cmd/api/register_plugins.go`** — re-apply the `metaldogs` registration line if upstream touched the file.
-   - All other conflicts: prefer upstream unless listed under "Upstream deviations" in `docs/architecture/overview.md`.
+   - **`cmd/api/register_products.go`** — keep the product registration (owned). Do not add product plugins to `register_plugins.go`.
+   - **Hook rows and other upstream-owned files** (`Makefile`, `docker-compose.yml`, `.env.example`, `configs/config.example.yaml`, `scripts/ci/docs-policy.sh` and its seed copy, `scripts/product-init/reserved-slugs.txt`, `scripts/product-init/product-init_test.sh`) — take upstream. Save the product text first; do not drop it.
+   - **`.gitignore`** — take upstream, then `bash scripts/ci/apply-product-gitignore.sh`.
+   - **`.github/scripts/*` and `.cursor/rules/*`** — not in the manifest. Keep the product copies and list them under upstream deviations.
+   - Anything else: prefer upstream unless it is still listed under "Upstream deviations" in `docs/architecture/overview.md`.
 4. Update the pin **everywhere** (not only `UPSTREAM_PIN.md`). Pin SHAs are hardcoded in product-facing markdown that links upstream guides. Use a portable rewrite (no GNU `sed -i` / `xargs -r`):
 
    ```bash

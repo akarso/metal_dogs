@@ -1,6 +1,10 @@
 # =============================================================================
 # Shopanda — Configuration Reference
 # =============================================================================
+# Product forks: optional sibling configs/config.example.product.yaml (copy into
+# config.yaml manually; no loader merge). Do not edit this upstream file for
+# product keys. See docs/PRODUCT_OWNED.md.
+#
 # This is a fully annotated example. Copy to configs/config.yaml and adjust.
 #
 # Every value here shows the default. Remove or comment out lines you don't
@@ -274,7 +278,8 @@ queue:
 #     postgres_cache: true
 #     postgres_queue: true
 
-# --- Plugins (single map; do not paste multiple top-level `plugins:` keys) -----
+# --- External plugins ---------------------------------------------------------
+# Third-party-style plugins (see plugins/example). Not part of plugins/core/.
 # plugins:
 #   example:
 #     enabled: false
@@ -296,16 +301,19 @@ queue:
 #   myproduct:
 #     enabled: true
 #     api_key: "..."
-#   b2b:                         # commercial; see docs/COMMERCIAL.md
+#     generation:
+#       provider: openai
+
+# --- B2B module (commercial) --------------------------------------------------
+# Requires a valid license key. See docs/COMMERCIAL.md and plugins/b2b/README.md.
+# plugins:
+#   b2b:
 #     enabled: false
 #     license_key: "DEV-local"
-#   metaldogs:                   # Metal Dogs product plugin (dark by default; Extra slug)
-#     enabled: false             # or SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
-#     generation:                # or generation_provider / generation.provider; env SHOPANDA_PLUGINS_METALDOGS_GENERATION_*
-#       provider: fake
-#       max_retries: 3
-#       max_attempts_per_design: 3
-#       cooldown_seconds: 30
+
+# --- GraphQL API (optional, read-only) ----------------------------------------
+# Headless catalog queries; REST remains canonical for writes.
+# plugins:
 #   graphql:
 #     enabled: false
 
