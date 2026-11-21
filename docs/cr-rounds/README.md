@@ -79,3 +79,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-25 | UPG6 pin `647c6a2a` (ticket 00) | M3 pin | [`CR-25-upg6-pin-647c6a2a.md`](CR-25-upg6-pin-647c6a2a.md) |
 | CR-26 | MIG3b tickets 01–02 (jobs, media, hooks, logger). Round open | M3 imports | [`CR-26-mig3b-pluginsdk-group-b2.md`](CR-26-mig3b-pluginsdk-group-b2.md) |
 | CR-27 | UPG7 pin `4bff865b` (ticket 00) | M3 pin | [`CR-27-upg7-pin-4bff865b.md`](CR-27-upg7-pin-4bff865b.md) |
+| CR-28 | UPG8 pin `d9ccc21c` (ticket 00) | M3 pin | [`CR-28-upg8-pin-d9ccc21c.md`](CR-28-upg8-pin-d9ccc21c.md) |
