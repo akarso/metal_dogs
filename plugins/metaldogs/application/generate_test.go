@@ -520,7 +520,7 @@ func TestGenerateWorker_StageCancelWhileHoldingClaim_RequeuesProduct(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate := make(chan struct{})
+	gate := make(chan struct{}, 1) // buffered: gatedProvider signals without blocking, so a late receiver cannot lose it
 	release := make(chan struct{})
 	orig := prov.inner
 	prov.inner = &gatedProvider{inner: orig, gate: gate, release: release}
@@ -565,7 +565,7 @@ func TestGenerateWorker_LostClaimAfterGenerate_SkipsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate := make(chan struct{})
+	gate := make(chan struct{}, 1) // buffered: gatedProvider signals without blocking, so a late receiver cannot lose it
 	release := make(chan struct{})
 	orig := prov.inner
 	prov.inner = &gatedProvider{inner: orig, gate: gate, release: release}
@@ -701,7 +701,7 @@ func TestGenerateWorker_OverlapProcess_WinnerStaysSucceeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate := make(chan struct{})
+	gate := make(chan struct{}, 1) // buffered: gatedProvider signals without blocking, so a late receiver cannot lose it
 	release := make(chan struct{})
 	orig := prov.inner
 	prov.inner = &gatedProvider{inner: orig, gate: gate, release: release}
