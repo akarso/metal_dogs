@@ -1,0 +1,13 @@
+README.md merge=ours
+AGENTS.md merge=ours
+RUNBOOK.md merge=ours
+PLUGINS.md merge=ours
+PRODUCT_README.* merge=ours
+Makefile.product merge=ours
+cmd/api/register_products.go merge=ours
+product/** merge=ours
+docker-compose.override.yml merge=ours
+.gitignore.product merge=ours
+.env.example.product merge=ours
+configs/config.example.product.yaml merge=ours
+.github/workflows/** merge=ours

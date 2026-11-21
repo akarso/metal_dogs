@@ -1,0 +1,9 @@
+# Copy into config.yaml. Nothing loads this file.
+# plugins:
+#   metaldogs:                   # Metal Dogs product plugin (dark by default; Extra slug)
+#     enabled: false             # or SHOPANDA_PLUGINS_METALDOGS_ENABLED=true
+#     generation:                # or generation_provider / generation.provider; env SHOPANDA_PLUGINS_METALDOGS_GENERATION_*
+#       provider: fake
+#       max_retries: 3
+#       max_attempts_per_design: 3
+#       cooldown_seconds: 30

@@ -18,12 +18,18 @@ fi
 # Reasons match docs/architecture/overview.md. '#' comments are not part of the path.
 ALLOWLIST=(
   .cursor/rules/pr-documentation-checklist.mdc # Metal Dogs main-only / CR-round checklist
+  .env.example.product # media path, plugin flag, local DSN comment; no loader merge
+  .gitattributes # merge=ours for owned and companion rows
   .github/scripts/check-product-docs-links.sh # product docs links; previous-pin SHA guard
   .github/scripts/check-upstream-deviations.sh # this allowlist
   .github/scripts/run-integration-tests.sh # Shopanda DSN suite; Metal Dogs canaries are separate
   .github/scripts/run-metaldogs-integration-tests.sh # Metal Dogs DSN suite and canaries
   cmd/api/register_plugins_metaldogs_test.go # registration, NoCache, boot, catalog-seed CLI, opaque bearer, migrator collect
   cmd/api/register_products.go # registerMetalDogs when enabled or the flag does not parse
+  configs/config.example.product.yaml # commented plugins.metaldogs block; no loader merge
+  docker-compose.override.yml # publish Postgres on 127.0.0.1 host port
+  product/checks/metaldogs-docs.sh # hardened docs links + deviation allowlist
+  product/reserved-slugs.txt # refuse product-init --slug metaldogs
   storefront/.gitkeep # empty storefront dir; product app is not the upstream theme tree
 )
 

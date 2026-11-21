@@ -76,6 +76,8 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # GET /api/v1/admin/customizer/health → depths (jobs.read)
 # F4 assets use platform media (local SignedURL or S3). Recommended local:
 #   SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media   # not under a static web root
+#   Upstream .env.example says ./public/media. The product line is in
+#   .env.example.product — copy it into .env. Nothing merges that file.
 #   SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"  # required outside DEV
 # Never FileServer base_path / base_url — private/blobs keys live there too.
 # First private Save may chmod the media root (and ancestors) to 0700.
@@ -109,7 +111,7 @@ bash .github/scripts/check-product-docs-links.sh
 
 ### DSN-gated feature tests (F2)
 
-Compose publishes Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}`. Default password is `changeme` (same as compose service defaults).
+`docker-compose.override.yml` publishes Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}`. Upstream `docker-compose.yml` does not. Default password is `changeme` (same as compose service defaults).
 
 ```bash
 docker compose up -d postgres

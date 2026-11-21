@@ -80,4 +80,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-26 | MIG3b tickets 01–04 (`pluginsdk.Plugin` + `Adapt`). Closed | M3 imports | [`CR-26-mig3b-pluginsdk-group-b2.md`](CR-26-mig3b-pluginsdk-group-b2.md) |
 | CR-27 | UPG7 pin `4bff865b` (ticket 00) | M3 pin | [`CR-27-upg7-pin-4bff865b.md`](CR-27-upg7-pin-4bff865b.md) |
 | CR-28 | UPG8 pin `d9ccc21c` (ticket 00) | M3 pin | [`CR-28-upg8-pin-d9ccc21c.md`](CR-28-upg8-pin-d9ccc21c.md) |
-| CR-29 | UPG9 pin `72785f27` (ticket 00 bump; ticket 01 moves product files) | M3 pin | [`CR-29-upg9-pin-72785f27.md`](CR-29-upg9-pin-72785f27.md) |
+| CR-29 | UPG9 pin `72785f27` (ticket 00 bump; review reapplied slug, port, example companions; ticket 01 moves the rest and deletes `upg9-t00-preserved/`) | M3 pin | [`CR-29-upg9-pin-72785f27.md`](CR-29-upg9-pin-72785f27.md) |
