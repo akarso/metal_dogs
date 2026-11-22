@@ -42,9 +42,9 @@ The step uses `pluginsdk.ValidationError` so the message survives. A custom code
 | Item | Result |
 | --- | --- |
 | `bash .github/scripts/check-product-docs-links.sh` | Exit 0 on 2026-11-22 in this worktree |
-| `TestCheckout_DesignSale` and `TestValidateDesignLine` | Landed in the E3 commits before this record. This close does not re-run them |
+| `TestCheckout_DesignSale` and `TestValidateDesignLine` | `TASK_DB=shopanda_task_e3 bash ~/ai-os/config/tests/metal_dogs.sh` on 2026-11-22: exit 0, 516 pass / 0 fail. Both PASS |
 | Guest SSR checkout, Stripe test mode | Not run. Checklist [`docs/runbooks/checkout-manual-verification.md`](../runbooks/checkout-manual-verification.md) has an empty record |
-| Known red on the upgrade base, not part of E3 | `TestImportBoundary` (`job_fence.go`), `store_credit`, notification dedupe, OpenAI smoke |
+| Known red in that gate | None. `ImportBoundary: 0 naruszeń (strict)`. `TestSmoke_OpenAI_Edits` skipped. `store_credit` and notification dedupe are outside this gate and were not re-run |
 
 ## Tests added
 
