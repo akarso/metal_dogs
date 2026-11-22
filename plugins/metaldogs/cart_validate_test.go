@@ -337,8 +337,8 @@ func TestDesignCartIssue(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	variant := "variant-m"
 	design := domain.Design{Status: domain.DesignDraft, ExpiresAt: now.Add(time.Hour)}
-	in := DesignLineInput{Now: now, DesignID: "design-a", Present: true, Design: design, Found: true}
-	want, wantBlocked := ValidateDesignLine(in)
+	in := designLineInput{Now: now, DesignID: "design-a", Present: true, Design: design, Found: true}
+	want, wantBlocked := validateDesignLine(in)
 	issue, blocked := designCartIssue(now, variant, in.DesignID, in.Present, in.Design, in.Found)
 	if !wantBlocked || !blocked || issue.VariantID != variant || issue.Code != want.Code || issue.Message != want.Message || issue.Level != "" {
 		t.Fatalf("issue=%+v blocked=%v want=%+v", issue, blocked, want)

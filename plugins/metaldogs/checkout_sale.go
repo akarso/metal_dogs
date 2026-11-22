@@ -112,7 +112,7 @@ func (s *designCheckoutStep) Execute(ctx context.Context, cctx extapi.CheckoutCo
 				return checkoutUnavailable(p, cartID, err)
 			}
 		}
-		if issue, blocked := ValidateDesignLine(DesignLineInput{
+		if issue, blocked := validateDesignLine(designLineInput{
 			Now: now, DesignID: designID, Present: present, Design: foundDesign, Found: known,
 		}); blocked {
 			lines = append(lines, refusalLine(item.VariantID, clientIssueCode(issue.Code)))

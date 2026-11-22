@@ -8,7 +8,7 @@
 ## What shipped
 
 - Checkout step `metaldogs_design_sale` at `before:reserve_inventory`, registered only when the plugin is enabled
-- One sale rule, `ValidateDesignLine`, used by `cart.validate` and by the step. `approved` or `ordered`, and not expired, passes. A missing row is not found (the design store has no soft-delete). Other loaded products are ignored. An unknown product fails closed
+- One sale rule, `validateDesignLine`, used by `cart.validate` and by the step. `approved` or `ordered`, and not expired, passes. A missing row is not found (the design store has no soft-delete). Other loaded products are ignored. An unknown product fails closed
 - A failing custom-tee line stops checkout before stock reservation and before the order row. Round 1 returned only the message `Design no longer available`. Round 2 returns the code, the lines, and `retryable`
 - The add-to-cart route still accepts only `approved`
 - No new migration and no new flag

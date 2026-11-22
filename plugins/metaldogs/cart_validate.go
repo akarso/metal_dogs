@@ -206,7 +206,7 @@ func lineDesignID(line extapi.CartLineView) (string, bool) {
 }
 
 func designCartIssue(now time.Time, variantID, designID string, present bool, d domain.Design, found bool) (extapi.CartValidationIssue, bool) {
-	issue, blocked := ValidateDesignLine(DesignLineInput{
+	issue, blocked := validateDesignLine(designLineInput{
 		Now: now, DesignID: designID, Present: present, Design: d, Found: found,
 	})
 	if !blocked {

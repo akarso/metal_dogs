@@ -35,11 +35,11 @@ func TestValidateDesignLine(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			issue, blocked := ValidateDesignLine(DesignLineInput{
+			issue, blocked := validateDesignLine(designLineInput{
 				Now: now, DesignID: tc.id, Present: tc.present, Design: tc.design, Found: tc.found,
 			})
 			if tc.code == "" {
-				if blocked || issue != (DesignLineIssue{}) {
+				if blocked || issue != (designLineIssue{}) {
 					t.Fatalf("issue=%+v blocked=%v", issue, blocked)
 				}
 				return

@@ -89,7 +89,7 @@ sequenceDiagram
     UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer, session cookie)
     Note over API: Response is cart_url /cart. The cart id stays in the cookie
     API->>Shop: trusted plugin write of metaldogs.design_id on AddItem only
-    Shop->>Shop: cart.validate via ValidateDesignLine. No ownership check
+    Shop->>Shop: cart.validate via validateDesignLine. No ownership check
     API-->>UI: 200 cart_url
     UI->>Shop: redirect /cart → /checkout (SSR, guest session cart)
     Shop->>API: metaldogs_design_sale before reserve_inventory

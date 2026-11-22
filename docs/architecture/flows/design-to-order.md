@@ -142,7 +142,7 @@ sequenceDiagram
     Note over Shop: cart.validate already ran on the cart change. Checkout does not call it
     Cust->>Shop: guest checkout
     Shop->>API: metaldogs_design_sale at before:reserve_inventory
-    Note over API: ValidateDesignLine, plugin clock. approved or ordered, unexpired, passes. Other loaded products are ignored
+    Note over API: validateDesignLine, plugin clock. approved or ordered, unexpired, passes. Other loaded products are ignored
     alt a custom-tee line fails, or the product classification is unknown
         API-->>Shop: validation error
         Shop-->>Cust: 422 plugin.metaldogs.design_unavailable, lines and retryable false. No reservation and no order
@@ -170,7 +170,7 @@ sequenceDiagram
 | Add to cart | variant is not the custom tee, or the body is invalid | `422` `unprocessable` | Pick a size of `mdogs-tee` |
 | Add to cart | that size already has another design, or a custom-tee line with no design id | `409` `conflict`; cart unchanged | Remove the line, then add again |
 | Add to cart | another client sets `metaldogs.design_id` | `403` `forbidden_plugin_only_field`; nothing stored | Use this route |
-| Cart read or line change | custom tee missing, unknown, expired, or neither `approved` nor `ordered` | Blocking cart issue. Same `ValidateDesignLine` rules as checkout | Fix or remove that line. Other products still change |
+| Cart read or line change | custom tee missing, unknown, expired, or neither `approved` nor `ordered` | Blocking cart issue. Same `validateDesignLine` rules as checkout | Fix or remove that line. Other products still change |
 | Checkout | custom-tee line missing, unknown, expired, deleted, or not `approved` or `ordered` | API `422` `plugin.metaldogs.design_unavailable`, message "Design no longer available", `details.lines` for every failing line, `retryable: false`. No reservation and no order | Return to the customizer and add the design again |
 | Checkout | cart, catalog, or design store cannot be read | API `503` `plugin.metaldogs.validation_unavailable`, message "Checkout validation unavailable", `retryable: true`. The cause is only in the log | Retry. Nothing was reserved or ordered |
 

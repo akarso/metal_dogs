@@ -48,9 +48,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		if got := orderVariantIDs(t, body); len(got) != 1 || got[0] != variantM {
-			t.Fatalf("variants=%v", got)
-		}
+		assertOrderCarriesDesign(t, body, design.ID, variantM)
 	})
 
 	t.Run("same design two sizes", func(t *testing.T) {
@@ -64,10 +62,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		got := orderVariantIDs(t, body)
-		if len(got) != 2 || !containsAll(got, variantM, variantL) {
-			t.Fatalf("variants=%v", got)
-		}
+		assertOrderCarriesDesign(t, body, design.ID, variantM, variantL)
 	})
 
 	t.Run("ordered", func(t *testing.T) {
@@ -80,9 +75,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		if got := orderVariantIDs(t, body); len(got) != 1 || got[0] != variantM {
-			t.Fatalf("variants=%v", got)
-		}
+		assertOrderCarriesDesign(t, body, design.ID, variantM)
 	})
 
 	t.Run("expired", func(t *testing.T) {
@@ -457,15 +450,21 @@ func sameStrings(got, want []string) bool {
 	return true
 }
 
-func orderVariantIDs(t *testing.T, body []byte) []string {
+type checkoutOrderItem struct {
+	VariantID  string `json:"variant_id"`
+	Extensions []struct {
+		FieldCode string `json:"field_code"`
+		Value     any    `json:"value"`
+	} `json:"extensions"`
+}
+
+func checkoutOrder(t *testing.T, body []byte) (string, []checkoutOrderItem) {
 	t.Helper()
 	var env struct {
 		Data struct {
 			Order struct {
-				ID    string `json:"id"`
-				Items []struct {
-					VariantID string `json:"variant_id"`
-				} `json:"items"`
+				ID    string              `json:"id"`
+				Items []checkoutOrderItem `json:"items"`
 			} `json:"order"`
 		} `json:"data"`
 	}
@@ -475,11 +474,48 @@ func orderVariantIDs(t *testing.T, body []byte) []string {
 	if env.Data.Order.ID == "" {
 		t.Fatalf("order id empty: %s", body)
 	}
-	out := make([]string, len(env.Data.Order.Items))
-	for i, item := range env.Data.Order.Items {
+	return env.Data.Order.ID, env.Data.Order.Items
+}
+
+func orderVariantIDs(t *testing.T, body []byte) []string {
+	t.Helper()
+	_, items := checkoutOrder(t, body)
+	out := make([]string, len(items))
+	for i, item := range items {
 		out[i] = item.VariantID
 	}
 	return out
+}
+
+func assertOrderCarriesDesign(t *testing.T, body []byte, designID string, variantIDs ...string) {
+	t.Helper()
+	_, items := checkoutOrder(t, body)
+	if len(items) != len(variantIDs) {
+		t.Fatalf("items=%d want %d body=%s", len(items), len(variantIDs), body)
+	}
+	seen := map[string]int{}
+	for _, item := range items {
+		seen[item.VariantID]++
+		got := ""
+		for _, ext := range item.Extensions {
+			if ext.FieldCode != ports.DesignIDFieldCode {
+				continue
+			}
+			value, ok := ext.Value.(string)
+			if !ok {
+				t.Fatalf("variant %s design id %#v body=%s", item.VariantID, ext.Value, body)
+			}
+			got = value
+		}
+		if got != designID {
+			t.Fatalf("variant %s design_id=%q want %q body=%s", item.VariantID, got, designID, body)
+		}
+	}
+	for _, id := range variantIDs {
+		if seen[id] != 1 {
+			t.Fatalf("variant %s count=%d body=%s", id, seen[id], body)
+		}
+	}
 }
 
 type saleSnap struct {
@@ -519,17 +555,4 @@ func assertSaleUnchanged(t *testing.T, db *sql.DB, before saleSnap, variantIDs .
 			t.Fatalf("variant %s stock %d reserved %d, want stock %d reserved %d", id, after.stock[id], after.reserved[id], before.stock[id], before.reserved[id])
 		}
 	}
-}
-
-func containsAll(got []string, want ...string) bool {
-	seen := map[string]int{}
-	for _, id := range got {
-		seen[id]++
-	}
-	for _, id := range want {
-		if seen[id] == 0 {
-			return false
-		}
-	}
-	return true
 }
