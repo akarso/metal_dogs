@@ -18,6 +18,7 @@ type Settings struct {
 	MaxRetries           int
 	MaxAttemptsPerDesign int
 	CooldownSeconds      int
+	OrderSnapshotEnabled bool
 }
 
 // Enabled reports whether plugins.metaldogs.enabled is on.
@@ -32,13 +33,17 @@ func Enabled(extra map[string]string) (bool, error) {
 
 // ParseEnabled interprets the Extra string for plugins.metaldogs.enabled.
 func ParseEnabled(raw string) (bool, error) {
+	return parseSettingBool(raw, "enabled")
+}
+
+func parseSettingBool(raw, name string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "0", "false", "no":
 		return false, nil
 	case "1", "true", "yes":
 		return true, nil
 	default:
-		return false, fmt.Errorf("metaldogs plugin: plugins.metaldogs.enabled %q is not a bool", raw)
+		return false, fmt.Errorf("metaldogs plugin: plugins.metaldogs.%s %q is not a bool", name, raw)
 	}
 }
 
@@ -73,12 +78,17 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	orderSnapshot, err := parseSettingBool(preferUnderscore(get, "order_snapshot.enabled", "order_snapshot_enabled"), "order_snapshot.enabled")
+	if err != nil {
+		return Settings{}, err
+	}
 	return Settings{
 		Enabled:              enabled,
 		Provider:             provider,
 		MaxRetries:           maxRetries,
 		MaxAttemptsPerDesign: maxAttempts,
 		CooldownSeconds:      cooldown,
+		OrderSnapshotEnabled: orderSnapshot,
 	}, nil
 }
 

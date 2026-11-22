@@ -101,6 +101,40 @@ func TestSettingsFrom_BadIntAndBool(t *testing.T) {
 	}
 }
 
+func TestSettingsFrom_OrderSnapshotFlag(t *testing.T) {
+	got, err := SettingsFrom(func(string) string { return "" })
+	if err != nil || got.OrderSnapshotEnabled {
+		t.Fatalf("default %+v err=%v", got, err)
+	}
+	got, err = SettingsFrom(func(key string) string {
+		if key == "plugins.metaldogs.order_snapshot.enabled" {
+			return "true"
+		}
+		return ""
+	})
+	if err != nil || !got.OrderSnapshotEnabled {
+		t.Fatalf("on %+v err=%v", got, err)
+	}
+	got, err = SettingsFrom(func(key string) string {
+		if key == "plugins.metaldogs.order_snapshot_enabled" {
+			return "yes"
+		}
+		return ""
+	})
+	if err != nil || !got.OrderSnapshotEnabled {
+		t.Fatalf("underscore %+v err=%v", got, err)
+	}
+	_, err = SettingsFrom(func(key string) string {
+		if key == "plugins.metaldogs.order_snapshot.enabled" {
+			return "maybe"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "order_snapshot.enabled") || !strings.Contains(err.Error(), "is not a bool") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSettingsFrom_ScalarGenerationKey(t *testing.T) {
 	_, err := SettingsFrom(func(key string) string {
 		if key == "plugins.metaldogs.generation" {

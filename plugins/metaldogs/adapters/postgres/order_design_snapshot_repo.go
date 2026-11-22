@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -32,7 +34,102 @@ const orderDesignSnapshotColumns = `
 	created_at
 `
 
+type snapshotExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 func (r *OrderDesignSnapshotRepo) Insert(ctx context.Context, s domain.OrderDesignSnapshot) (bool, error) {
+	return insertOrderDesignSnapshot(ctx, r.db, s)
+}
+
+// CommitOrder writes every snapshot and moves approved designs to ordered together.
+// A failed insert or status check leaves designs and snapshots unchanged.
+func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, at time.Time) ([]bool, error) {
+	if len(snapshots) == 0 {
+		return nil, nil
+	}
+	if at.IsZero() {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots commit: updated_at required")
+	}
+	for _, s := range snapshots {
+		if err := s.Validate(); err != nil {
+			return nil, err
+		}
+		if err := requireUUIDOrderID(s.OrderID); err != nil {
+			return nil, err
+		}
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	ids := designIDs(snapshots)
+	sort.Strings(ids)
+	at = at.UTC()
+	for _, id := range ids {
+		var status string
+		err := tx.QueryRowContext(ctx, `
+			SELECT status FROM metaldogs_designs WHERE id = $1 FOR UPDATE
+		`, id).Scan(&status)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("metaldogs snapshot: design %s not found", id)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("metaldogs snapshot: lock design %s: %w", id, err)
+		}
+		switch status {
+		case domain.DesignApproved:
+			res, err := tx.ExecContext(ctx, `
+				UPDATE metaldogs_designs
+				SET status = $1, updated_at = $2
+				WHERE id = $3 AND status = $4
+			`, domain.DesignOrdered, at, id, domain.DesignApproved)
+			if err != nil {
+				return nil, fmt.Errorf("metaldogs snapshot: order design %s: %w", id, err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return nil, err
+			}
+			if n != 1 {
+				return nil, fmt.Errorf("metaldogs snapshot: design %s status changed", id)
+			}
+		case domain.DesignOrdered:
+		default:
+			return nil, fmt.Errorf("metaldogs snapshot: design %s status %s", id, status)
+		}
+	}
+
+	written := make([]bool, len(snapshots))
+	for i, s := range snapshots {
+		ok, err := insertOrderDesignSnapshot(ctx, tx, s)
+		if err != nil {
+			return nil, err
+		}
+		written[i] = ok
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots commit: %w", err)
+	}
+	return written, nil
+}
+
+func designIDs(snapshots []domain.OrderDesignSnapshot) []string {
+	seen := make(map[string]struct{}, len(snapshots))
+	ids := make([]string, 0, len(snapshots))
+	for _, s := range snapshots {
+		if _, ok := seen[s.DesignID]; ok {
+			continue
+		}
+		seen[s.DesignID] = struct{}{}
+		ids = append(ids, s.DesignID)
+	}
+	return ids
+}
+
+func insertOrderDesignSnapshot(ctx context.Context, db snapshotExecer, s domain.OrderDesignSnapshot) (bool, error) {
 	if err := s.Validate(); err != nil {
 		return false, err
 	}
@@ -48,7 +145,7 @@ func (r *OrderDesignSnapshotRepo) Insert(ctx context.Context, s domain.OrderDesi
 		prodAsset = s.ProductionAssetID
 		prodChecksum = s.ProductionChecksum
 	}
-	res, err := r.db.ExecContext(ctx, `
+	res, err := db.ExecContext(ctx, `
 		INSERT INTO metaldogs_order_design_snapshots (
 			order_id, variant_id, design_id, design_version_id, sku,
 			template_slug, template_version, texts, provider, model, prompt_version,

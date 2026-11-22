@@ -9,6 +9,7 @@ import (
 
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
+	"github.com/akarso/shopanda/plugins/metaldogs/adapters/memory"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
@@ -25,13 +26,16 @@ const permJobsRead = "jobs.read"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets       ports.AssetStore
-	uploads      *application.UploadService
-	designs      *application.DesignService
-	generate     *application.GenerateService
-	worker       *application.GenerateWorker
-	host         cartSurface
-	syncJobNames []string
+	assets        ports.AssetStore
+	uploads       *application.UploadService
+	designs       *application.DesignService
+	generate      *application.GenerateService
+	worker        *application.GenerateWorker
+	host          cartSurface
+	syncJobNames  []string
+	jobs          ports.JobAccess
+	orderSource   ports.OrderSource
+	snapshotClock ports.Clock
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.
@@ -141,6 +145,7 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 	}
 
 	jobs := p.jobAccess(h)
+	p.jobs = jobs
 	if dbOK && db != nil {
 		var genErr error
 		p.generate, p.worker, genErr = newGenerateServices(jobs, store, db, providerName, maxRetries, maxAttempts, cooldownSecs, log)
@@ -215,7 +220,31 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		}
 		p.noteSyncJob(generateJobName)
 	}
+	if settings.OrderSnapshotEnabled {
+		if p.orderSource == nil {
+			p.orderSource = memory.NewOrderSource()
+		}
+		if err := registerSnapshotOrder(syncAPI, p); err != nil {
+			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
+		}
+		p.noteSyncJob(SnapshotOrderJobName)
+	}
 	return nil
+}
+
+// OrderSource is the in-memory order source wired when order snapshots are enabled.
+func (p *Plugin) OrderSource() ports.OrderSource {
+	if p == nil {
+		return nil
+	}
+	return p.orderSource
+}
+
+// SetSnapshotClock replaces the clock used when writing snapshots.
+func (p *Plugin) SetSnapshotClock(c ports.Clock) {
+	if p != nil {
+		p.snapshotClock = c
+	}
 }
 
 func (p *Plugin) noteSyncJob(name string) {

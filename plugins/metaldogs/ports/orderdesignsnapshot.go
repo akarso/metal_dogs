@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 )
@@ -18,6 +19,10 @@ type OrderDesignSnapshotRepository interface {
 	// Insert writes the row. A duplicate (order_id, variant_id) writes nothing
 	// and returns written=false.
 	Insert(ctx context.Context, s domain.OrderDesignSnapshot) (written bool, err error)
+	// CommitOrder inserts every snapshot and moves each design from approved
+	// to ordered in one transaction. written[i] is false when that line already
+	// existed. Any error rolls the transaction back.
+	CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, at time.Time) (written []bool, err error)
 	Get(ctx context.Context, orderID, variantID string) (domain.OrderDesignSnapshot, bool, error)
 	ListByOrder(ctx context.Context, orderID string) ([]domain.OrderDesignSnapshot, error)
 	// FillProduction sets production artwork once, while both columns are NULL.

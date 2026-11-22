@@ -7,3 +7,5 @@
 #       max_retries: 3
 #       max_attempts_per_design: 3
 #       cooldown_seconds: 30
+#     order_snapshot:            # or order_snapshot_enabled; env SHOPANDA_PLUGINS_METALDOGS_ORDER_SNAPSHOT_ENABLED
+#       enabled: false           # when false, snapshot_order_design is not registered
