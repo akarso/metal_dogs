@@ -82,3 +82,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-28 | UPG8 pin `d9ccc21c` (ticket 00) | M3 pin | [`CR-28-upg8-pin-d9ccc21c.md`](CR-28-upg8-pin-d9ccc21c.md) |
 | CR-29 | UPG9 pin `72785f27` (ticket 00 bump; ticket 01 puts product files on the manifest and leaves seven deviations) | M3 pin | [`CR-29-upg9-pin-72785f27.md`](CR-29-upg9-pin-72785f27.md) |
 | CR-30 | E3 checkout validation | M3 → E3 | [`CR-30-e3-checkout-validation.md`](CR-30-e3-checkout-validation.md) |
+| CR-31 | UPG10 pin `c25f3e7e` (ticket 00; two-step merge through `40e0d571`) | M3 pin | [`CR-31-upg10-pin-c25f3e7e.md`](CR-31-upg10-pin-c25f3e7e.md) |
