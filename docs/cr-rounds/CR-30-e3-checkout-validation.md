@@ -37,6 +37,20 @@ END_PLATFORM_GAP
 
 The step uses `pluginsdk.ValidationError` so the message survives. A custom code would hit the 500 replacement and the shopper would lose the sentence.
 
+```text
+PLATFORM_GAP
+title: SSR checkout does not confirm the Stripe PaymentIntent
+blocking: no
+where: themes/default/templates/checkout_payment.html and checkout_confirm.html; internal/interfaces/http/storefront/storefront_checkout.go StartCheckout HTML path
+need: the confirm page must receive client_secret and confirm the PaymentIntent in the browser. Today the secret is copied only into the JSON body of POST /api/v1/checkout
+proposal: pass client_secret from the checkout context into the confirm template and confirm it with Stripe.js. Leave the PaymentIntent create call as it is
+test: guest POST /checkout/confirm with method stripe renders a confirm step; after the test card, payment_intent.succeeded moves that payment from pending to completed
+evidence: internal/interfaces/http/storefront/checkout.go:134 writes client_secret only on the JSON response. storefront_checkout.go:332 stores the order and the pending notice and does not read client_secret. themes/ has no client_secret and no Stripe.js. checkout_payment.html:66 is a disabled placeholder. stripepay.Provider.Initiate sets Pending and returns ClientSecret for a later Stripe.js confirm (provider.go:80).
+END_PLATFORM_GAP
+```
+
+Workaround, not a core patch: the maintainer checklist confirms the PaymentIntent with `stripe payment_intents confirm <pi_id> --payment-method=pm_card_visa` and records `payments.status` after the webhook. A dashboard click that attaches a card was not verified.
+
 ## Verification results
 
 | Item | Result |
@@ -77,7 +91,7 @@ The step uses `pluginsdk.ValidationError` so the message survives. A custom code
 - Add-to-cart stays `approved`-only. Reorder of an `ordered` design through that route is an E4 decision
 - Race between the step and order creation is E4
 - Guest cart merge still copies `metaldogs.design_id` without hooks. The step is what catches it
-- Stripe test mode and the SSR pages are not verified
+- Stripe test mode and the SSR pages are not verified. The pages create a pending PaymentIntent and do not confirm a card. See the second `PLATFORM_GAP` (`blocking: no`) and the checklist
 
 ## Follow-ups
 
