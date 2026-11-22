@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,9 +21,8 @@ import (
 
 func TestCheckout_DesignSale(t *testing.T) {
 	db := openCheckoutDB(t)
-	enabled, enabledApp := serveCheckout(t, db, true, nil)
-	disabled, disabledApp := serveCheckout(t, db, false, nil)
-	broken, _ := serveCheckout(t, db, true, struct{}{})
+	enabled, enabledApp, _ := serveCheckout(t, db, true, nil)
+	disabled, disabledApp, _ := serveCheckout(t, db, false, nil)
 	if disabledApp != nil {
 		t.Fatal("disabled checkout server registered the plugin")
 	}
@@ -179,17 +179,47 @@ func TestCheckout_DesignSale(t *testing.T) {
 	t.Run("cart port failure", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 11)
 		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
+		faulty, _, plugged := serveCheckout(t, db, true, nil)
+		plugged.FailCartGetForTest(errors.New("cart get failed"))
 		before := takeSaleSnap(t, db, variantM)
-		status, body := postCheckout(t, broken, cartID)
-		if status != http.StatusInternalServerError {
-			t.Fatalf("status=%d body=%s", status, body)
-		}
-		code, message := checkoutError(t, body)
-		if code != "internal" || message != "internal server error" {
-			t.Fatalf("code=%q message=%q body=%s", code, message, body)
-		}
+		status, body := postCheckout(t, faulty, cartID)
+		assertRetryableRefusal(t, status, body)
 		assertSaleUnchanged(t, db, before, variantM)
 	})
+
+	t.Run("catalog failure", func(t *testing.T) {
+		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 12)
+		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
+		faulty, _, plugged := serveCheckout(t, db, true, nil)
+		plugged.FailCatalogFindForTest(errors.New("catalog down"))
+		before := takeSaleSnap(t, db, variantM)
+		status, body := postCheckout(t, faulty, cartID)
+		assertRetryableRefusal(t, status, body)
+		assertSaleUnchanged(t, db, before, variantM)
+	})
+
+	t.Run("design store failure", func(t *testing.T) {
+		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 13)
+		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
+		faulty, _, plugged := serveCheckout(t, db, true, nil)
+		svc := plugged.DesignService()
+		if svc == nil || svc.Designs == nil {
+			t.Fatal("design store not wired")
+		}
+		svc.Designs = designGetErrorRepo{DesignRepository: svc.Designs}
+		before := takeSaleSnap(t, db, variantM)
+		status, body := postCheckout(t, faulty, cartID)
+		assertRetryableRefusal(t, status, body)
+		assertSaleUnchanged(t, db, before, variantM)
+	})
+}
+
+type designGetErrorRepo struct {
+	ports.DesignRepository
+}
+
+func (designGetErrorRepo) GetByID(context.Context, string) (domain.Design, bool, error) {
+	return domain.Design{}, false, errors.New("design store down")
 }
 
 func refuseStatus(t *testing.T, db *sql.DB, srv *httptest.Server, variantID, status string, version int) {
@@ -214,23 +244,25 @@ func openCheckoutDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func serveCheckout(t *testing.T, db *sql.DB, enable bool, cartPort any) (*httptest.Server, *plugin.App) {
+func serveCheckout(t *testing.T, db *sql.DB, enable bool, cartPort any) (*httptest.Server, *plugin.App, *metaldogs.Plugin) {
 	t.Helper()
 	app := testApp(t, enable)
 	app.Bootstrap = &plugin.Bootstrap{DB: db}
 	extReg := extensionapp.NewRegistry()
 	app.SetExtensionRegistry(extReg)
 	var pluginApp *plugin.App
+	var plugged *metaldogs.Plugin
 	if enable {
 		reg := plugin.NewRegistry(app.Logger)
-		reg.Register(pluginsdk.Adapt(metaldogs.New()))
+		plugged = metaldogs.New()
+		reg.Register(pluginsdk.Adapt(plugged))
 		summary := reg.InitAll(app)
 		if summary.Failed > 0 || summary.Initialized != 1 {
 			t.Fatalf("InitAll summary = %+v", summary)
 		}
 		pluginApp = app
 	}
-	return openStorefront(t, db, extReg, pluginApp, cartPort, true), pluginApp
+	return openStorefront(t, db, extReg, pluginApp, cartPort, true), pluginApp, plugged
 }
 
 func postCheckout(t *testing.T, srv *httptest.Server, cartID string) (int, []byte) {
@@ -256,6 +288,17 @@ func assertDesignRefused(t *testing.T, status int, body []byte) {
 	}
 	code, message := checkoutError(t, body)
 	if code != "validation" || message != "Design no longer available" {
+		t.Fatalf("code=%q message=%q body=%s", code, message, body)
+	}
+}
+
+func assertRetryableRefusal(t *testing.T, status int, body []byte) {
+	t.Helper()
+	if status != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	code, message := checkoutError(t, body)
+	if code != "internal" || message != "internal server error" {
 		t.Fatalf("code=%q message=%q body=%s", code, message, body)
 	}
 }
