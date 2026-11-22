@@ -206,28 +206,13 @@ func lineDesignID(line extapi.CartLineView) (string, bool) {
 }
 
 func designCartIssue(now time.Time, variantID, designID string, present bool, d domain.Design, found bool) (extapi.CartValidationIssue, bool) {
-	issue := extapi.CartValidationIssue{VariantID: variantID}
-	if !present || strings.TrimSpace(designID) == "" {
-		issue.Code = ports.DesignRequiredCode
-		issue.Message = "design required"
-		return issue, true
+	issue, blocked := validateDesignLine(designLineInput{
+		Now: now, DesignID: designID, Present: present, Design: d, Found: found,
+	})
+	if !blocked {
+		return extapi.CartValidationIssue{}, false
 	}
-	if !found {
-		issue.Code = ports.DesignNotFoundCode
-		issue.Message = "design not found"
-		return issue, true
-	}
-	if d.Status == domain.DesignExpired || !d.ExpiresAt.After(now) {
-		issue.Code = ports.DesignExpiredCode
-		issue.Message = "design has expired"
-		return issue, true
-	}
-	if d.Status != domain.DesignApproved {
-		issue.Code = ports.DesignNotApprovedCode
-		issue.Message = "design is not approved"
-		return issue, true
-	}
-	return extapi.CartValidationIssue{}, false
+	return extapi.CartValidationIssue{VariantID: variantID, Code: issue.Code, Message: issue.Message}, true
 }
 
 func teeLinesToValidate(proposed []extapi.CartLineView, persisted map[string]int, persistedFound bool, tees map[string]struct{}) map[string]struct{} {

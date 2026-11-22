@@ -336,7 +336,7 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 | `422` | `unprocessable` | Malformed JSON, unknown fields, trailing data after the object, `variant_id` missing or not a UUID, variant is not part of the custom tee |
 | `503` | `unavailable` | Design service or session-cart port is not configured |
 
-`cart.validate` (plugin enabled) fails the mutation when the `cart` payload is present and is not a cart view (logged as `metaldogs.cart.validate.payload`). It blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is no longer `approved` (`metaldogs.design_not_approved`, "design is not approved"). A variant whose parent is outside the catalog read scope, or whose loaded slug is blank, is `metaldogs.product_unavailable` ("product is not available") — not a skip. That issue uses the same line scope as the design checks: a new or changed line, and every such line when the cart snapshot is unchanged (cart read and checkout). Changing, adding, or removing a different line does not raise it for an unchanged line. The cart API surfaces a blocking issue as `422` `cart_validation_failed`. The hook does not check ownership. A loaded product with a different slug is left alone. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
+`cart.validate` (plugin enabled) fails the mutation when the `cart` payload is present and is not a cart view (logged as `metaldogs.cart.validate.payload`). It blocks a custom-tee line with no design id (`metaldogs.design_required`, "design required"), an unknown or removed design (`metaldogs.design_not_found`, "design not found"), an expired design (`metaldogs.design_expired`, "design has expired"), or a design that is neither `approved` nor `ordered` (`metaldogs.design_not_approved`, "design is not approved"). A variant whose parent is outside the catalog read scope, or whose loaded slug is blank, is `metaldogs.product_unavailable` ("product is not available") — not a skip. That issue uses the same line scope as the design checks: a new or changed line, and every such line when the cart snapshot is unchanged (cart read and checkout). Changing, adding, or removing a different line does not raise it for an unchanged line. The cart API surfaces a blocking issue as `422` `cart_validation_failed`. The hook does not check ownership. A loaded product with a different slug is left alone. `metaldogs.design_mismatch` is reserved for a template-to-product check and is not emitted until X2. With the plugin enabled and no design store, a custom-tee line with no design id still blocks, and a custom-tee line that has a design id blocks as not found.
 
 ### Limits
 
@@ -346,6 +346,32 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 - `cart.validate` reads the design id of the line being added from the `pending_line` hook key (plugin-only fields are already redacted to the registrant). Stored line extensions cover later reads, when `pending_line` is absent. The route does not write `metaldogs.design_id` before `AddItem`. `UpdatedBy` on the write is the cart's customer id when that id is set, otherwise `guest`. Two concurrent adds of different designs on the same cart and size can still both pass. E3 re-validates at checkout.
 - A failed `AddItem` after `EnsureStorefrontCart` calls `DiscardEmptyGuestCart` with that cart id only when the Ensure snapshot had no lines and no customer id. The cookie set for a new empty guest cart is cleared. A failed add on a cart that already has lines, or on an empty customer cart, leaves that cart in place. Invalid design and an unreadable variant are refused before `EnsureStorefrontCart`, so they do not create a cart.
 - Variant-to-product checks use one `CatalogPort.FindVariants` call and `extapi.ClassifyProductSlug`. Match runs the design checks. A different loaded slug is skipped. Unknown (parent outside read scope, or a blank loaded slug) is a blocking issue on the same lines as those design checks.
+
+## Checkout (E3)
+
+`POST /api/v1/checkout` runs the plugin step `metaldogs_design_sale` at `before:reserve_inventory` when the plugin is enabled. The step loads the cart with `Host.Cart()` and the plugin clock, and applies `validateDesignLine` (the same sale check as `cart.validate`) to every custom-tee line (slug `mdogs-tee`). `approved` and `ordered` designs that have not expired pass. A loaded product with another slug is ignored. An unknown product (parent outside the catalog read, or a blank slug) fails the step. The step is absent when the plugin is disabled. Checkout does not call `cart.validate`.
+
+The step returns `pluginsdk.ValidationError("Design no longer available", WithClientCode("plugin.metaldogs.design_unavailable"), WithDetails(...))`. `details.lines` lists every failing line as `{variant_id, code}`. The line code is the sale-check code without the `metaldogs.` prefix: `design_required`, `design_not_found`, `design_expired`, `design_not_approved`, `product_unavailable`. `details.retryable` is `false`. The cart hook still emits the prefixed codes. A cart, catalog, or design-store failure, or a missing cart id, returns `pluginsdk.UnavailableError("Checkout validation unavailable", WithClientCode("plugin.metaldogs.validation_unavailable"), WithDetails({"retryable": true}))`. The cause is logged as `metaldogs.checkout.unavailable` and is not copied into the body. A design refusal is one `metaldogs.checkout.design_refused` line: cart id, variant ids, and those line codes. Shopanda maps the step error in `internal/platform/httpx/response.go`: client code becomes `error.code`, details are kept, validation stays `422`, unavailable stays `503`. The workflow wrap (`checkout: step %q failed: %w`) does not replace that body.
+
+Measured by `TestCheckout_DesignSale` on an isolated database, manual payment, no network. A passing checkout is `201` and `data.order` contains the line. A logged-in cart (non-empty `customer_id`) is refused with the same body as a guest cart. Two failing lines are both listed.
+
+| HTTP | `error.code` | `error.message` | When |
+| --- | --- | --- | --- |
+| `201` | — | — | Every custom-tee line passes, or the cart has no custom-tee line. `data.order.id` is set. The same design on two sizes is two lines |
+| `422` | `plugin.metaldogs.design_unavailable` | `Design no longer available` | A custom-tee line fails the sale check (no design id, missing or removed design, expired, not `approved` or `ordered`) or the product classification is unknown. `details.lines` has one entry per failing line. `details.retryable` is `false`. No order row and no reservation |
+| `503` | `plugin.metaldogs.validation_unavailable` | `Checkout validation unavailable` | The cart port, catalog, or design store cannot be read, or the cart id is missing. `details.retryable` is `true`. The cause stays in the log. No order row and no reservation |
+
+Captured from `TestCheckout_DesignSale` (two bad lines, then a cart-port failure):
+
+```json
+{"data":null,"error":{"code":"plugin.metaldogs.design_unavailable","message":"Design no longer available","details":{"lines":[{"code":"design_expired","variant_id":"a1d29108-fbeb-4f27-9bfc-b0691a58b3fb"},{"code":"design_not_approved","variant_id":"c971f21d-35b6-47cb-a357-55986aa421f5"}],"retryable":false}}}
+```
+
+```json
+{"data":null,"error":{"code":"plugin.metaldogs.validation_unavailable","message":"Checkout validation unavailable","details":{"retryable":true}}}
+```
+
+`POST /checkout/confirm` shows `apperror.Message` for this `422` and for this `503` (`storefrontCheckoutErrorMessage`). SSR confirm (PR-1598) renders Stripe.js on `checkout_confirm` after POST then 303 then GET. That path has no recorded maintainer walkthrough. Stripe test mode is not part of the measurement. Checklist: [`docs/runbooks/checkout-manual-verification.md`](../runbooks/checkout-manual-verification.md).
 
 ## Safe delivery
 

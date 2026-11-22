@@ -8,18 +8,27 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
+	checkoutApp "github.com/akarso/shopanda/internal/application/checkout"
 	"github.com/akarso/shopanda/internal/application/composition"
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
 	"github.com/akarso/shopanda/internal/application/hooks"
 	appPricing "github.com/akarso/shopanda/internal/application/pricing"
+	"github.com/akarso/shopanda/internal/domain/identity"
 	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/domain/payment"
 	domainPricing "github.com/akarso/shopanda/internal/domain/pricing"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/domain/shipping"
+	"github.com/akarso/shopanda/internal/infrastructure/flatrate"
+	"github.com/akarso/shopanda/internal/infrastructure/manualpay"
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
 	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
+	"github.com/akarso/shopanda/internal/platform/auth"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -30,6 +39,9 @@ import (
 )
 
 var teeSKUs = []string{"MDOGS-TEE-S", "MDOGS-TEE-M", "MDOGS-TEE-L", "MDOGS-TEE-XL", "MDOGS-TEE-XXL"}
+
+// testCustomerHeader is read only by the checkout harness. Production checkout uses the session.
+const testCustomerHeader = "X-Test-Customer-ID"
 
 // E1 seed stays draft with stock 0, so the harness publishes the tee and sets stock.
 func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
@@ -130,6 +142,13 @@ func setTeeStock(t *testing.T, db *sql.DB, qty int) {
 
 func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App) *httptest.Server {
 	t.Helper()
+	return openStorefront(t, db, extReg, pluginApp, false)
+}
+
+// openStorefront serves the cart API. checkout adds POST /api/v1/checkout with
+// the plugin's registered steps, manual payment, and flat-rate shipping.
+func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, checkout bool) *httptest.Server {
+	t.Helper()
 	products, err := postgres.NewProductRepo(db)
 	if err != nil {
 		t.Fatal(err)
@@ -223,18 +242,90 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 			t.Fatal(err)
 		}
 	}
+	if checkout {
+		orders, err := postgres.NewOrderRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservations, err := postgres.NewReservationRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shipments, err := postgres.NewShippingRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payments, err := postgres.NewPaymentRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shipReg := shipping.NewProviderRegistry()
+		shipReg.Register(flatrate.NewProvider(shared.MustNewMoney(1500, "PLN")))
+		payReg := payment.NewProviderRegistry()
+		payReg.Register(manualpay.NewProvider())
+		createOrder := checkoutApp.NewCreateOrderStep(orders, variants, nil, nil, products, components, prices)
+		if pluginApp != nil {
+			createOrder = checkoutApp.NewCreateOrderStep(orders, variants, nil, values, products, components, prices)
+		}
+		coreSteps := []checkoutApp.Step{
+			checkoutApp.NewValidateCartStep(variants, products, components, stock),
+			checkoutApp.NewRecalculatePricingStep(pipeline),
+			checkoutApp.NewReserveInventoryStep(reservations, products, variants, components),
+			createOrder,
+			checkoutApp.NewSelectShippingStep(shipReg, shipments),
+			checkoutApp.NewInitiatePaymentStep(payReg, payments),
+		}
+		var pluginRegs []checkoutApp.PluginStepRegistration
+		if pluginApp != nil {
+			for _, reg := range pluginApp.CheckoutStepRegistrations() {
+				step, ok := reg.Step.(checkoutApp.Step)
+				if !ok {
+					t.Fatalf("checkout step %T", reg.Step)
+				}
+				pluginRegs = append(pluginRegs, checkoutApp.PluginStepRegistration{Step: step, Position: reg.Position})
+			}
+		}
+		steps, err := checkoutApp.MergePluginSteps(coreSteps, pluginRegs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow := checkoutApp.NewWorkflow(steps, bus, log)
+		checkoutSvc := checkoutApp.NewService(carts, workflow, log)
+		start := storefront.NewCheckoutHandler(checkoutSvc, extensionapp.AsValueAPI(values)).StartCheckout()
+		// POST /api/v1/checkout reads auth.IdentityFrom. The harness has no session middleware.
+		mux.Handle("POST /api/v1/checkout", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if customerID := strings.TrimSpace(r.Header.Get(testCustomerHeader)); customerID != "" {
+				ident, err := identity.NewIdentity(customerID, identity.RoleCustomer)
+				if err != nil {
+					http.Error(w, "bad test customer", http.StatusBadRequest)
+					return
+				}
+				r = r.WithContext(auth.WithIdentity(r.Context(), ident))
+			}
+			start(w, r)
+		}))
+	}
 
 	stores, err := postgres.NewStoreRepo(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedPLNStore(t, stores)
+	if checkout {
+		ensurePLNStore(t, stores)
+	} else {
+		seedPLNStore(t, stores)
+	}
 	srv := httptest.NewServer(httpshared.StoreMiddleware(stores, log)(mux))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
 func cartDo(t *testing.T, srv *httptest.Server, method, path string, body any) (int, []byte) {
+	t.Helper()
+	return cartDoAs(t, srv, method, path, body, "")
+}
+
+func cartDoAs(t *testing.T, srv *httptest.Server, method, path string, body any, customerID string) (int, []byte) {
 	t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -251,6 +342,9 @@ func cartDo(t *testing.T, srv *httptest.Server, method, path string, body any) (
 	req.Host = catalogPLNHost
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if customerID != "" {
+		req.Header.Set(testCustomerHeader, customerID)
 	}
 	resp, err := srv.Client().Do(req)
 	if err != nil {

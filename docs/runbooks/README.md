@@ -11,6 +11,7 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 | [`generation-job-stuck-or-failed.md`](generation-job-stuck-or-failed.md) | Jobs not progressing, failure-rate alert, customer stuck on progress screen | C4, G5 |
 | [`ai-provider-outage-and-cost-cap.md`](ai-provider-outage-and-cost-cap.md) | Provider errors, rate limits, cost cap reached | C4, O3 |
 | [`template-publishing.md`](template-publishing.md) | Adding, changing, publishing, or retiring templates | G2, X1 |
+| [`checkout-manual-verification.md`](checkout-manual-verification.md) | Maintainer checklist before treating guest SSR checkout and Stripe test mode as done | E3 |
 | [`order-without-design-snapshot.md`](order-without-design-snapshot.md) | Reconciliation alert; paid order with design line but no snapshot | E4 |
 | [`manual-pod-fulfillment.md`](manual-pod-fulfillment.md) | Fulfilling an order by hand (M3 default; automation fallback) | P1 |
 | [`pod-submission-failed.md`](pod-submission-failed.md) | Automated submission failed or stale | P2, P4 |
