@@ -1,6 +1,7 @@
 package metaldogs_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -63,9 +64,14 @@ func TestSnapshotOrder_FlagOffRegistersNothing(t *testing.T) {
 
 func TestSnapshotOrder_FlagOnRegistersOrderCreated(t *testing.T) {
 	t.Parallel()
+	var buf bytes.Buffer
 	app := testApp(t, true)
+	app.Logger = logger.NewWithWriter(&buf, "info")
 	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
 	p := initMetalDogs(t, app)
+	if !strings.Contains(buf.String(), "metaldogs.snapshot_order_design.unbound_order_source") {
+		t.Fatalf("unbound source warning missing: %s", buf.String())
+	}
 	if p.OrderSource() == nil {
 		t.Fatal("flag on must wire an order source")
 	}
@@ -324,6 +330,54 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		}
 		if got.ArtworkChecksum == "" {
 			t.Fatal("artwork checksum empty")
+		}
+	})
+
+	t.Run("duplicate enqueue is one job", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-enqueue-dup", "prompt-enqueue-dup", true)
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
+			t.Fatal(err)
+		}
+		jobID := metaldogs.SnapshotOrderJobID(orderID)
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE id = $1`, jobID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("jobs=%d", n)
+		}
+		worker := platformjobs.NewWorker(queue, logger.NewWithWriter(io.Discard, "error"), time.Millisecond)
+		if err := integration.RegisterSyncJobHandlers(app, worker); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE jobs SET run_at = NOW() WHERE id = $1 AND status = 'pending'`, jobID); err != nil {
+			t.Fatal(err)
+		}
+		worker.ProcessOne(ctx)
+		var jobStatus string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
+			t.Fatal(err)
+		}
+		if jobStatus != "done" {
+			t.Fatalf("status=%s", jobStatus)
+		}
+		var snapsN int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1`, orderID).Scan(&snapsN); err != nil {
+			t.Fatal(err)
+		}
+		if snapsN != 1 {
+			t.Fatalf("snapshots=%d", snapsN)
+		}
+		if got, _ := designStatus(t, designs, seed.Design.ID); got != domain.DesignOrdered {
+			t.Fatalf("status=%s", got)
 		}
 	})
 

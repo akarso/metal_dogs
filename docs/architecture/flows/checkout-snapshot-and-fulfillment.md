@@ -134,7 +134,9 @@ sequenceDiagram
 
 `snapshot_order_design` is registered with `RegisterOnEvent` on `order.created`. That path builds the queue row in `NewSyncJobEnvelope`, which sets the job id with `id.New()`. `pluginsdk.WithJobID` is an `EnqueueOption` on `SyncJobs.Enqueue` only. `SyncJobOption` (what `RegisterOnEvent` accepts) sets `MaxRetries` and nothing else. `HookAPI.Register` covers cart hooks only (`pkg/extapi/hooks.go`); there is no order hook that could enqueue with a chosen id.
 
-Two `order.created` events for one order therefore insert two jobs. The snapshot write is still one row: `INSERT … ON CONFLICT (order_id, variant_id) DO NOTHING`, and `approved → ordered` does nothing when the design is already `ordered`. `EnqueueSnapshotOrder` does use UUID v5 over the order id and `WithJobID`; the event path does not call it.
+Two `order.created` events for one order therefore insert two jobs. The snapshot write is still one row: `INSERT … ON CONFLICT (order_id, variant_id) DO NOTHING`, and `approved → ordered` does nothing when the design is already `ordered`. `EnqueueSnapshotOrder` does use UUID v5 over the order id and `WithJobID`; the event path does not call it. Two calls of `EnqueueSnapshotOrder` for one order id are one queue row.
+
+`plugins.metaldogs.order_snapshot.enabled` stays false until E4b supplies an `OrderSource` adapter. E4a still registers the job when the flag is on, against an empty in-memory source, and logs `metaldogs.snapshot_order_design.unbound_order_source` once at boot. That source has no orders, so the job succeeds and writes nothing.
 
 Closing the gap on the platform: a `SyncJobOption` (or enqueue option used by the event trigger) that derives the job id from the payload, for example UUID v5 over `order_id`.
 
