@@ -19,6 +19,10 @@ CR-30 is not this bump. E3's record is not in this branch.
 
 `c25f3e7e` is the tip of `upstream/dev` and an ancestor of `upstream/main`. It is on both. It is not only on `dev`. `git rev-parse <pin>^{tree}`, `upstream/dev^{tree}`, and `upstream/main^{tree}` are the same object (`7d330fb4`).
 
+### Docs link guard
+
+`PREVIOUS_PIN_FULL_SHA` in `.github/scripts/check-product-docs-links.sh` is the previous published pin on `origin/main` (`72785f27…`). The full SHA is only in that script: this file is in the scan set. `40e0d571` was the intermediate merge on this branch. It was never that guard.
+
 ### Two-step merge
 
 1. `5505327e` merged `40e0d571` (PR-1598, including PR-1597). Conflicts from that step are in the first table below.
