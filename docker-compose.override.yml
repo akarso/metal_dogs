@@ -1,0 +1,5 @@
+# Host-side go test / ./app need a published port (override if 5432 is taken).
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}:5432"

@@ -9,6 +9,7 @@ This directory is the source of truth for product scope, architecture, decisions
 | [`PROJECT_DESCRIPTION.md`](PROJECT_DESCRIPTION.md) | Product concept, principles, domain concepts, open questions | Product decisions |
 | [`ROADMAP.md`](ROADMAP.md) | Tracks, vertical slices, milestones, dependency graph, definition of done | Every CR round |
 | [`UPSTREAM_PIN.md`](UPSTREAM_PIN.md) | Pinned Shopanda commit + remotes + branch policy | Every Shopanda upgrade slice |
+| [`PRODUCT_OWNED.md`](PRODUCT_OWNED.md) | Upstream manifest of owned, hook, and companion paths | Shopanda pin that changes the manifest |
 | [`GOVULN_BASELINE.md`](GOVULN_BASELINE.md) | Fail-closed govuln allowlist (CI) | New baseline exceptions |
 | [`COMMERCIAL.md`](COMMERCIAL.md) | GPL vs B2B commercial boundary (inherited) | Licensing changes |
 | [`guides/`](guides/README.md), [`diagrams/`](diagrams/README.md) | Stubs → pinned upstream Shopanda docs | Pin bump |

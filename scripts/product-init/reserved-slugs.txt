@@ -4,10 +4,10 @@ checkoutdemo
 core
 example
 exportdemo
+extref
 importdemo
 integrationdemo
 maildemo
-metaldogs
 pimdemo
 promodemo
 sitekit

@@ -46,7 +46,7 @@ DSN-gated feature tests (skip when unset; required in CI `integration` job):
 
 ```bash
 docker compose up -d postgres
-# Default publish is 127.0.0.1:5432; if busy: SHOPANDA_DATABASE_HOST_PORT=5433 docker compose up -d postgres
+# Default publish is 127.0.0.1:5432 via docker-compose.override.yml; if busy: SHOPANDA_DATABASE_HOST_PORT=5433 docker compose up -d postgres
 export SHOPANDA_TEST_DSN='postgres://shopanda:changeme@127.0.0.1:5432/shopanda?sslmode=disable'
 go test ./plugins/metaldogs/... -count=1
 # Metal Dogs DSN canaries (needs jq) — decoupled from Shopanda integration suite:

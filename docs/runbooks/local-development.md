@@ -76,6 +76,8 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 # GET /api/v1/admin/customizer/health → depths (jobs.read)
 # F4 assets use platform media (local SignedURL or S3). Recommended local:
 #   SHOPANDA_MEDIA_LOCAL_BASE_PATH=./var/media   # not under a static web root
+#   Upstream .env.example says ./public/media. The product line is in
+#   .env.example.product — copy it into .env. Nothing merges that file.
 #   SHOPANDA_MEDIA_LOCAL_SIGN_SECRET="$(openssl rand -base64 32)"  # required outside DEV
 # Never FileServer base_path / base_url — private/blobs keys live there too.
 # First private Save may chmod the media root (and ancestors) to 0700.
@@ -87,7 +89,7 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 #   (--out: no non-dot entries; outputs photo.ext.png + report.json)
 ```
 
-For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/d9ccc21c48eac4b60d33795286d7d36877014fe4/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
+For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/72785f27e1f82cf18dbdb2322a3f6309bfd8cead/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
 
 ### Why stock `.env.example` alone fails
 
@@ -109,7 +111,7 @@ bash .github/scripts/check-product-docs-links.sh
 
 ### DSN-gated feature tests (F2)
 
-Compose publishes Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}`. Default password is `changeme` (same as compose service defaults).
+`docker-compose.override.yml` publishes Postgres on `127.0.0.1:${SHOPANDA_DATABASE_HOST_PORT:-5432}`. Upstream `docker-compose.yml` does not. Default password is `changeme` (same as compose service defaults).
 
 ```bash
 docker compose up -d postgres
