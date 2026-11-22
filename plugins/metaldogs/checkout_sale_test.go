@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,19 +251,27 @@ func serveCheckout(t *testing.T, db *sql.DB, enable bool, cartPort any) (*httpte
 	app.Bootstrap = &plugin.Bootstrap{DB: db}
 	extReg := extensionapp.NewRegistry()
 	app.SetExtensionRegistry(extReg)
-	var pluginApp *plugin.App
-	var plugged *metaldogs.Plugin
-	if enable {
-		reg := plugin.NewRegistry(app.Logger)
-		plugged = metaldogs.New()
-		reg.Register(pluginsdk.Adapt(plugged))
-		summary := reg.InitAll(app)
-		if summary.Failed > 0 || summary.Initialized != 1 {
-			t.Fatalf("InitAll summary = %+v", summary)
+	reg := plugin.NewRegistry(app.Logger)
+	plugged := metaldogs.New()
+	reg.Register(pluginsdk.Adapt(plugged))
+	summary := reg.InitAll(app)
+	if !enable {
+		if summary.Initialized != 0 || summary.Failed != 1 {
+			t.Fatalf("disabled InitAll summary = %+v", summary)
 		}
-		pluginApp = app
+		entries := reg.Entries()
+		if len(entries) != 1 || entries[0].Err == nil || !strings.Contains(entries[0].Err.Error(), "disabled") {
+			t.Fatalf("disabled init entries = %+v", entries)
+		}
+		if regs := app.CheckoutStepRegistrations(); len(regs) != 0 {
+			t.Fatalf("disabled checkout steps = %+v", regs)
+		}
+		return openStorefront(t, db, extReg, nil, cartPort, true), nil, nil
 	}
-	return openStorefront(t, db, extReg, pluginApp, cartPort, true), pluginApp, plugged
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll summary = %+v", summary)
+	}
+	return openStorefront(t, db, extReg, app, cartPort, true), app, plugged
 }
 
 func postCheckout(t *testing.T, srv *httptest.Server, cartID string) (int, []byte) {
