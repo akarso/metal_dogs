@@ -8,4 +8,4 @@
 #       max_attempts_per_design: 3
 #       cooldown_seconds: 30
 #     order_snapshot:            # or order_snapshot_enabled; env SHOPANDA_PLUGINS_METALDOGS_ORDER_SNAPSHOT_ENABLED
-#       enabled: false           # when false, snapshot_order_design is not registered. Keep false until E4b: E4a wires an empty in-memory OrderSource, so a live flag writes no snapshots (boot warns metaldogs.snapshot_order_design.unbound_order_source).
+#       enabled: false           # when false, snapshot jobs are not registered. When true with no OrderSource bound (until E4b), snapshot_order_design fails closed and shows failed in jobs:list.

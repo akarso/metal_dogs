@@ -15,6 +15,10 @@ import (
 
 const SnapshotOrderJobName = "snapshot_order_design"
 
+// SnapshotOrderDispatchJobName is the order.created job that only enqueues the snapshot.
+// RegisterOnEvent cannot set a job id, so this job stays short and the snapshot id is UUID v5.
+const SnapshotOrderDispatchJobName = "dispatch_snapshot_order"
+
 // snapshotOrderNamespace is the UUID v5 namespace for snapshot_order_design job ids.
 var snapshotOrderNamespace = uuid.MustParse("0e4a0000-0000-4000-8000-0000000000e4")
 
@@ -27,13 +31,26 @@ func registerSnapshotOrder(reg *pluginsdk.SyncJobs, p *Plugin) error {
 	if p == nil {
 		return fmt.Errorf("metaldogs snapshot: plugin required")
 	}
-	// RegisterOnEvent has no job id. The platform envelope uses id.New().
-	return reg.RegisterOnEvent(SnapshotOrderJobName, extapi.EventOrderCreated, p.snapshotOrderHandler())
+	if err := reg.RegisterManual(SnapshotOrderJobName, p.snapshotOrderHandler()); err != nil {
+		return err
+	}
+	return reg.RegisterOnEvent(SnapshotOrderDispatchJobName, extapi.EventOrderCreated, p.snapshotOrderDispatchHandler())
+}
+
+func (p *Plugin) snapshotOrderDispatchHandler() extapi.SyncJobHandler {
+	return func(ctx context.Context, job extapi.SyncJobContext) error {
+		return p.EnqueueSnapshotOrder(ctx, orderIDFromSnapshotPayload(job.Payload))
+	}
 }
 
 func (p *Plugin) snapshotOrderHandler() extapi.SyncJobHandler {
 	return func(ctx context.Context, job extapi.SyncJobContext) error {
 		orderID := orderIDFromSnapshotPayload(job.Payload)
+		if p == nil || p.orderSource == nil {
+			err := fmt.Errorf("metaldogs snapshot: order source is not bound")
+			logSnapshot(job, "failed", orderID, "", "", err)
+			return err
+		}
 		db := job.DB
 		if db == nil && p != nil && p.host != nil {
 			if bound, ok := p.host.BootstrapDB(); ok {
@@ -73,8 +90,7 @@ func (p *Plugin) snapshotOrderHandler() extapi.SyncJobHandler {
 	}
 }
 
-// EnqueueSnapshotOrder queues snapshot_order_design with a UUID v5 job id.
-// order.created does not call this: RegisterOnEvent cannot pass WithJobID.
+// EnqueueSnapshotOrder queues snapshot_order_design once per order (UUID v5 job id).
 func (p *Plugin) EnqueueSnapshotOrder(ctx context.Context, orderID string) error {
 	if p == nil || p.jobs == nil {
 		return fmt.Errorf("metaldogs snapshot enqueue: plugin not initialised")

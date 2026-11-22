@@ -9,7 +9,6 @@ import (
 
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
-	"github.com/akarso/shopanda/plugins/metaldogs/adapters/memory"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
@@ -221,19 +220,11 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		p.noteSyncJob(generateJobName)
 	}
 	if settings.OrderSnapshotEnabled {
-		if p.orderSource == nil {
-			// E4a has no core adapter. An empty source still registers the job so tests can seed it; production must stay off until E4b.
-			p.orderSource = memory.NewOrderSource()
-			if log != nil {
-				log.Warn("metaldogs.snapshot_order_design.unbound_order_source", map[string]interface{}{
-					"setting": "plugins.metaldogs.order_snapshot.enabled",
-				})
-			}
-		}
 		if err := registerSnapshotOrder(syncAPI, p); err != nil {
 			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
 		}
 		p.noteSyncJob(SnapshotOrderJobName)
+		p.noteSyncJob(SnapshotOrderDispatchJobName)
 	}
 	return nil
 }

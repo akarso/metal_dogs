@@ -1,7 +1,6 @@
 package metaldogs_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -56,40 +55,43 @@ func TestSnapshotOrder_FlagOffRegistersNothing(t *testing.T) {
 	app := testApp(t, true)
 	initMetalDogs(t, app)
 	for _, sj := range app.SyncJobs() {
-		if sj.Job.Name == metaldogs.SnapshotOrderJobName || strings.Contains(sj.JobType, "snapshot_order_design") {
+		if sj.Job.Name == metaldogs.SnapshotOrderJobName || sj.Job.Name == metaldogs.SnapshotOrderDispatchJobName {
 			t.Fatalf("flag off registered %+v", sj)
 		}
 	}
 }
 
-func TestSnapshotOrder_FlagOnRegistersOrderCreated(t *testing.T) {
+func TestSnapshotOrder_FlagOnRegistersManualAndDispatcher(t *testing.T) {
 	t.Parallel()
-	var buf bytes.Buffer
 	app := testApp(t, true)
-	app.Logger = logger.NewWithWriter(&buf, "info")
 	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
 	p := initMetalDogs(t, app)
-	if !strings.Contains(buf.String(), "metaldogs.snapshot_order_design.unbound_order_source") {
-		t.Fatalf("unbound source warning missing: %s", buf.String())
+	if p.OrderSource() != nil {
+		t.Fatal("flag on must not bind an order source")
 	}
-	if p.OrderSource() == nil {
-		t.Fatal("flag on must wire an order source")
-	}
-	var found bool
+	var manual, event bool
 	for _, sj := range app.SyncJobs() {
-		if sj.Job.Name != metaldogs.SnapshotOrderJobName {
-			continue
-		}
-		found = true
-		if sj.JobType != "integration.sync.metaldogs.snapshot_order_design" {
-			t.Fatalf("type %s", sj.JobType)
-		}
-		if sj.Job.Trigger.Kind != extapi.SyncTriggerEvent || sj.Job.Trigger.EventName != extapi.EventOrderCreated {
-			t.Fatalf("trigger %+v", sj.Job.Trigger)
+		switch sj.Job.Name {
+		case metaldogs.SnapshotOrderJobName:
+			manual = true
+			if sj.JobType != "integration.sync.metaldogs.snapshot_order_design" {
+				t.Fatalf("type %s", sj.JobType)
+			}
+			if sj.Job.Trigger.Kind != extapi.SyncTriggerManual {
+				t.Fatalf("snapshot trigger %+v", sj.Job.Trigger)
+			}
+		case metaldogs.SnapshotOrderDispatchJobName:
+			event = true
+			if sj.JobType != "integration.sync.metaldogs.dispatch_snapshot_order" {
+				t.Fatalf("type %s", sj.JobType)
+			}
+			if sj.Job.Trigger.Kind != extapi.SyncTriggerEvent || sj.Job.Trigger.EventName != extapi.EventOrderCreated {
+				t.Fatalf("dispatch trigger %+v", sj.Job.Trigger)
+			}
 		}
 	}
-	if !found {
-		t.Fatal("snapshot_order_design not registered")
+	if !manual || !event {
+		t.Fatalf("manual=%v event=%v", manual, event)
 	}
 }
 
@@ -115,7 +117,8 @@ func TestSnapshotOrder_Job(t *testing.T) {
 	}
 	clock := testutil.NewFakeClock(time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC))
 	p.SetSnapshotClock(clock)
-	src := p.OrderSource().(*memory.OrderSource)
+	src := memory.NewOrderSource()
+	p.SetOrderSource(src)
 	handler := findSnapshotHandler(t, app)
 	snaps := postgres.NewOrderDesignSnapshotRepo(db)
 	designs := postgres.NewDesignRepo(db)
@@ -407,8 +410,10 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate order.created is two jobs and one snapshot", func(t *testing.T) {
-		if _, err := db.ExecContext(ctx, `DELETE FROM jobs WHERE type = $1`, "integration.sync.metaldogs.snapshot_order_design"); err != nil {
+	t.Run("duplicate order.created is one snapshot job", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, `DELETE FROM jobs WHERE type = $1 OR type = $2`,
+			"integration.sync.metaldogs.snapshot_order_design",
+			"integration.sync.metaldogs.dispatch_snapshot_order"); err != nil {
 			t.Fatal(err)
 		}
 		seed := seedApprovedDesign(t, db, cat, "tee-dup-event", "prompt-dup-event", true)
@@ -430,6 +435,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		dispatchType := "integration.sync.metaldogs.dispatch_snapshot_order"
 		deadline := time.Now().Add(2 * time.Second)
 		var n int
 		var sample string
@@ -438,7 +444,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 				SELECT count(*) FROM jobs
 				WHERE type = $1
 				  AND payload->'payload'->'data'->>'order_id' = $2
-			`, "integration.sync.metaldogs.snapshot_order_design", orderID).Scan(&n); err != nil {
+			`, dispatchType, orderID).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
 			if n >= 2 || time.Now().After(deadline) {
@@ -450,8 +456,8 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			_ = db.QueryRowContext(ctx, `
 				SELECT coalesce(payload::text, '') FROM jobs
 				WHERE type = $1 ORDER BY created_at DESC LIMIT 1
-			`, "integration.sync.metaldogs.snapshot_order_design").Scan(&sample)
-			t.Fatalf("jobs=%d payload=%s", n, sample)
+			`, dispatchType).Scan(&sample)
+			t.Fatalf("dispatcher jobs=%d payload=%s", n, sample)
 		}
 		worker := platformjobs.NewWorker(queue, log, time.Millisecond)
 		if err := integration.RegisterSyncJobHandlers(app, worker); err != nil {
@@ -462,29 +468,92 @@ func TestSnapshotOrder_Job(t *testing.T) {
 				UPDATE jobs SET run_at = NOW()
 				WHERE type = $1 AND status = 'pending'
 				  AND payload->'payload'->'data'->>'order_id' = $2
-			`, "integration.sync.metaldogs.snapshot_order_design", orderID); err != nil {
+			`, dispatchType, orderID); err != nil {
 				t.Fatal(err)
 			}
 			worker.ProcessOne(ctx)
 		}
-		var snapsN, distinct, notDone int
+		jobID := metaldogs.SnapshotOrderJobID(orderID)
+		var snapJobs int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE id = $1`, jobID).Scan(&snapJobs); err != nil {
+			t.Fatal(err)
+		}
+		if snapJobs != 1 {
+			t.Fatalf("snapshot jobs=%d", snapJobs)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE jobs SET run_at = NOW() WHERE id = $1 AND status = 'pending'`, jobID); err != nil {
+			t.Fatal(err)
+		}
+		worker.ProcessOne(ctx)
+		var snapsN int
+		var jobStatus string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
+			t.Fatal(err)
+		}
 		if err := db.QueryRowContext(ctx, `
 			SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1
 		`, orderID).Scan(&snapsN); err != nil {
 			t.Fatal(err)
 		}
+		var dispatchNotDone int
 		if err := db.QueryRowContext(ctx, `
-			SELECT count(DISTINCT id), count(*) FILTER (WHERE status <> 'done')
+			SELECT count(*) FILTER (WHERE status <> 'done')
 			FROM jobs
 			WHERE type = $1 AND payload->'payload'->'data'->>'order_id' = $2
-		`, "integration.sync.metaldogs.snapshot_order_design", orderID).Scan(&distinct, &notDone); err != nil {
+		`, dispatchType, orderID).Scan(&dispatchNotDone); err != nil {
 			t.Fatal(err)
 		}
-		if snapsN != 1 || distinct != 2 || notDone != 0 {
-			t.Fatalf("snapshots=%d jobs=%d not_done=%d", snapsN, distinct, notDone)
+		if snapsN != 1 || jobStatus != "done" || dispatchNotDone != 0 {
+			t.Fatalf("snapshots=%d snapshot_status=%s dispatch_not_done=%d", snapsN, jobStatus, dispatchNotDone)
 		}
 		if status, _ := designStatus(t, designs, seed.Design.ID); status != domain.DesignOrdered {
 			t.Fatalf("status=%s", status)
+		}
+	})
+
+	t.Run("unbound order source ends failed", func(t *testing.T) {
+		p.SetOrderSource(nil)
+		t.Cleanup(func() { p.SetOrderSource(src) })
+		orderID := uuid.NewString()
+		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
+			t.Fatal(err)
+		}
+		jobID := metaldogs.SnapshotOrderJobID(orderID)
+		worker := platformjobs.NewWorker(queue, logger.NewWithWriter(io.Discard, "error"), time.Millisecond)
+		if err := integration.RegisterSyncJobHandlers(app, worker); err != nil {
+			t.Fatal(err)
+		}
+		driveSnapshotUntilFailed(t, db, worker, jobID)
+		listed, err := queue.List(ctx, platformjobs.ListFilter{
+			Type:   "integration.sync.metaldogs.snapshot_order_design",
+			Status: platformjobs.StatusFailed,
+			Limit:  50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen bool
+		for _, row := range listed {
+			if row.ID == jobID {
+				seen = true
+			}
+		}
+		if !seen {
+			t.Fatalf("jobs:list missed %s", jobID)
+		}
+		var lastError sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT last_error FROM jobs WHERE id = $1`, jobID).Scan(&lastError); err != nil {
+			t.Fatal(err)
+		}
+		if !lastError.Valid || !strings.Contains(lastError.String, "order source is not bound") {
+			t.Fatalf("last_error=%v", lastError)
+		}
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1`, orderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("snapshots=%d", n)
 		}
 	})
 

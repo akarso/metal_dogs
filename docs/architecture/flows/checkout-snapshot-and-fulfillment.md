@@ -96,9 +96,9 @@ sequenceDiagram
     API-->>Shop: ok, or 422 plugin.metaldogs.design_unavailable with the failing lines and no order
     Shop->>Shop: create order (extension values copied to order line)
     Shop->>Ev: order.created
-    Ev->>API: handler
-    API->>Q: enqueue snapshot_order_design (new job id per event)
-    W->>W: for each line with design_id: upsert snapshot by order_line_id
+    Ev->>Q: dispatch_snapshot_order (new id per event)
+    W->>Q: enqueue snapshot_order_design once (UUID v5 of the order id)
+    W->>W: for each line with design_id: insert snapshot by (order_id, variant_id)
     W->>API: design → ordered, assets retention = keep
     Shop->>Ev: payment.confirmed
     Ev->>API: handler → fulfilment pending
@@ -125,20 +125,16 @@ sequenceDiagram
 | --- | --- |
 | Order always references the exact approved artwork | `DesignVersion` frozen at approval with checksum; snapshot copies version fields; assets referenced by a snapshot are excluded from retention until fulfilment completes |
 | Later template or prompt changes do not affect orders | Designs pin `template_version`; templates are versioned and immutable once published; snapshots copy the version number |
-| One snapshot per order line | Unique `(order_id, variant_id)`; insert is `ON CONFLICT DO NOTHING`. A repeated `order.created` is a second job (see Event delivery), not a second row |
+| One snapshot per order line | Unique `(order_id, variant_id)`; insert is `ON CONFLICT DO NOTHING`. A repeated `order.created` is a second dispatcher job and the same snapshot job (see Event delivery) |
 | Snapshot eventually exists even if the event is lost | Scheduler reconciliation sweep queries Shopanda orders with `metaldogs.design_id` lines lacking snapshots and re-enqueues |
 | No double POD orders | `submit_fulfillment` idempotent on `snapshot_id`; provider idempotency key = snapshot id where supported; status `submitting` lock |
 | Operator can always fulfil by hand | P1 manual path and runbook independent of P2 automation |
 
 ## Event delivery
 
-`snapshot_order_design` is registered with `RegisterOnEvent` on `order.created`. That path builds the queue row in `NewSyncJobEnvelope`, which sets the job id with `id.New()`. `pluginsdk.WithJobID` is an `EnqueueOption` on `SyncJobs.Enqueue` only. `SyncJobOption` (what `RegisterOnEvent` accepts) sets `MaxRetries` and nothing else. `HookAPI.Register` covers cart hooks only (`pkg/extapi/hooks.go`); there is no order hook that could enqueue with a chosen id.
+`RegisterOnEvent` cannot set a job id. `NewSyncJobEnvelope` uses `id.New()`, and `pluginsdk.WithJobID` applies only to `SyncJobs.Enqueue`. `snapshot_order_design` is registered with `RegisterManual`. `dispatch_snapshot_order` is `RegisterOnEvent` on `order.created` and only calls `EnqueueSnapshotOrder`, which enqueues with `WithJobID` set to the UUID v5 of the order id. Two events insert two dispatcher jobs and one snapshot job. The snapshot write is one row: `INSERT … ON CONFLICT (order_id, variant_id) DO NOTHING`. `approved → ordered` does nothing when the design is already `ordered`.
 
-Two `order.created` events for one order therefore insert two jobs. The snapshot write is still one row: `INSERT … ON CONFLICT (order_id, variant_id) DO NOTHING`, and `approved → ordered` does nothing when the design is already `ordered`. `EnqueueSnapshotOrder` does use UUID v5 over the order id and `WithJobID`; the event path does not call it. Two calls of `EnqueueSnapshotOrder` for one order id are one queue row.
-
-`plugins.metaldogs.order_snapshot.enabled` stays false until E4b supplies an `OrderSource` adapter. E4a still registers the job when the flag is on, against an empty in-memory source, and logs `metaldogs.snapshot_order_design.unbound_order_source` once at boot. That source has no orders, so the job succeeds and writes nothing.
-
-Closing the gap on the platform: a `SyncJobOption` (or enqueue option used by the event trigger) that derives the job id from the payload, for example UUID v5 over `order_id`.
+`plugins.metaldogs.order_snapshot.enabled` stays false until an `OrderSource` adapter is bound. With the flag on and no source bound, the snapshot handler returns an error. The job retries and ends `failed`, visible in `jobs:list --type=integration.sync.metaldogs.snapshot_order_design --status=failed`. E4a does not bind a source. Tests inject the in-memory fake through `SetOrderSource`.
 
 ## Open items to verify (tracked in ROADMAP §1)
 

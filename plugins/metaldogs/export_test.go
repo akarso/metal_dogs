@@ -17,6 +17,12 @@ func (p *Plugin) OrderSource() ports.OrderSource {
 	return p.orderSource
 }
 
+func (p *Plugin) SetOrderSource(src ports.OrderSource) {
+	if p != nil {
+		p.orderSource = src
+	}
+}
+
 func (p *Plugin) SetSnapshotClock(c ports.Clock) {
 	if p != nil {
 		p.snapshotClock = c

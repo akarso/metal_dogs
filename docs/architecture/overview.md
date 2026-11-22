@@ -50,6 +50,7 @@ flowchart TB
     subgraph worker["app worker"]
         gen[integration.sync.metaldogs.generate]
         prod[integration.sync.metaldogs.prepare_production_artwork]
+        disp[integration.sync.metaldogs.dispatch_snapshot_order]
         snap[integration.sync.metaldogs.snapshot_order_design]
         ful[integration.sync.metaldogs.submit_fulfillment]
     end

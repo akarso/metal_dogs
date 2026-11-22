@@ -177,6 +177,6 @@ sequenceDiagram
 ## Limits of this checkout step
 
 - A line in the cart does not extend `expires_at`. The design can expire after add and before pay. Retention stays O2.
-- The add-to-cart route still accepts only `approved`. Buying an `ordered` design again through that route is an E4 decision.
+- The add-to-cart route accepts only `approved`. An `ordered` design is re-ordered through `CloneDraft`. This route returns `409` `invalid_transition`.
 - The step runs before reserve and order creation. A design that changes after the step and before the order row is E4 (snapshot plus reconciliation).
 - Guest checkout on the SSR pages with Stripe test mode is not recorded. SSR confirm exists upstream (PR-1598). The maintainer checklist is [`docs/runbooks/checkout-manual-verification.md`](../../runbooks/checkout-manual-verification.md).
