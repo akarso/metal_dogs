@@ -172,3 +172,45 @@ func TestDesignRepo_ReplaceSource_ConcurrentExclusive(t *testing.T) {
 		t.Fatalf("loser asset %+v ok=%v err=%v", la, ok, err)
 	}
 }
+
+func TestDesignRepo_GetByID_NoSoftDelete(t *testing.T) {
+	db := testutil.OpenIsolated(t, "designs_nosoftdelete")
+	designs := postgres.NewDesignRepo(db)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+
+	var cols int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'metaldogs_designs'
+		  AND column_name = 'deleted_at'`).Scan(&cols); err != nil {
+		t.Fatal(err)
+	}
+	if cols != 0 {
+		t.Fatalf("deleted_at columns=%d", cols)
+	}
+
+	sum := sha256.Sum256([]byte("token-bytes-for-no-soft-delete-test"))
+	id := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	d := domain.Design{
+		ID: id, TemplateID: "cccccccc-cccc-4ccc-8ddd-cccccccccccc", TemplateVersion: 1,
+		Status: domain.DesignApproved, Texts: map[string]string{},
+		SourceAssetID: "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaaa", OwnerTokenHash: sum[:],
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := designs.Insert(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := designs.GetByID(ctx, id)
+	if err != nil || !ok || got.Status != domain.DesignApproved {
+		t.Fatalf("got=%+v ok=%v err=%v", got, ok, err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM metaldogs_designs WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err = designs.GetByID(ctx, id)
+	if err != nil || ok {
+		t.Fatalf("after delete ok=%v err=%v", ok, err)
+	}
+}

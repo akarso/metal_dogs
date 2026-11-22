@@ -101,7 +101,7 @@ func TestCartValidation_DesignLines(t *testing.T) {
 	t.Run("design no longer approved", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 6)
 		cartID := addDesignLine(t, srv, design.ID, token, variantM)
-		if _, err := db.ExecContext(context.Background(), `UPDATE metaldogs_designs SET status = 'ordered' WHERE id = $1`, design.ID); err != nil {
+		if _, err := db.ExecContext(context.Background(), `UPDATE metaldogs_designs SET status = 'preview_ready' WHERE id = $1`, design.ID); err != nil {
 			t.Fatal(err)
 		}
 		issues := cartValidationIssues(t, srv, cartID)
@@ -114,6 +114,17 @@ func TestCartValidation_DesignLines(t *testing.T) {
 		}
 		if items := cartItems(t, srv, cartID); len(items) != 1 || items[0].Quantity != 1 {
 			t.Fatalf("quantity changed: %+v", items)
+		}
+	})
+
+	t.Run("ordered design stays valid", func(t *testing.T) {
+		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 16)
+		cartID := addDesignLine(t, srv, design.ID, token, variantM)
+		if _, err := db.ExecContext(context.Background(), `UPDATE metaldogs_designs SET status = 'ordered' WHERE id = $1`, design.ID); err != nil {
+			t.Fatal(err)
+		}
+		if issues := cartValidationIssues(t, srv, cartID); len(issues) != 0 {
+			t.Fatalf("issues=%+v", issues)
 		}
 	})
 

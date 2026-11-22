@@ -134,6 +134,7 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		unknown := id.New()
 		expired, expiredToken := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(-time.Hour), 2)
 		draft, draftToken := insertCartDesign(t, db, domain.DesignDraft, time.Now().UTC().Add(24*time.Hour), 3)
+		ordered, orderedToken := insertCartDesign(t, db, domain.DesignOrdered, time.Now().UTC().Add(24*time.Hour), 9)
 		draftBefore := getDesign(t, srv, draft.ID, draftToken)
 
 		cases := []struct {
@@ -151,6 +152,7 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 			{name: "unknown id", id: unknown, token: token, variant: variantM, want: http.StatusNotFound, code: "not_found"},
 			{name: "expired", id: expired.ID, token: expiredToken, variant: variantM, want: http.StatusNotFound, code: "not_found"},
 			{name: "not approved", id: draft.ID, token: draftToken, variant: variantM, want: http.StatusConflict, code: "invalid_transition"},
+			{name: "ordered", id: ordered.ID, token: orderedToken, variant: variantM, want: http.StatusConflict, code: "invalid_transition"},
 			{name: "invalid variant", id: approved.ID, token: token, body: `{"variant_id":"nope"}`, want: http.StatusUnprocessableEntity, code: "unprocessable"},
 			{name: "missing variant", id: approved.ID, token: token, body: `{}`, want: http.StatusUnprocessableEntity, code: "unprocessable"},
 			{name: "bad json", id: approved.ID, token: token, body: `{`, want: http.StatusUnprocessableEntity, code: "unprocessable"},
