@@ -50,7 +50,7 @@ Round 1 could not return a plugin code or a line list, and SSR confirm did not e
 
 - `plugins/metaldogs/design_line_test.go` — shared rule, including `ordered` and a missing row
 - `plugins/metaldogs/cart_validate_test.go`, `cart_validation_test.go` — hook uses the shared rule; an `ordered` design stays valid on the cart
-- `plugins/metaldogs/checkout_sale_test.go` — `POST /api/v1/checkout`: approved, two sizes, `ordered`, expired, deleted, draft, `preview_ready`, missing design id, two bad lines, another product, cart/catalog/design-store failures, plugin disabled. Refusals assert no new order and no stock change
+- `plugins/metaldogs/checkout_sale_test.go` — `POST /api/v1/checkout`: approved, two sizes, `ordered`, expired, deleted, draft, `preview_ready`, missing design id, two bad lines, logged-in customer, another product, cart/catalog/design-store failures, plugin disabled. Refusals assert no new order and no stock change. `assertRefusalLogged` checks the structured refusal line (cart id, variant ids, line codes). A 503 body is `plugin.metaldogs.validation_unavailable` with `retryable: true` and does not contain the internal error text
 - `plugins/metaldogs/cart_add_test.go` — add route still returns `409` `invalid_transition` for `ordered`
 
 ## Flags / migrations / rollback
@@ -61,7 +61,7 @@ Round 1 could not return a plugin code or a line list, and SSR confirm did not e
 ## Documentation updated
 
 - [x] `docs/ROADMAP.md`: E3 **DONE** (CR-30). Manual verification called out as not recorded. Known limits listed. §1 extension-field row notes the checkout contract test and that SSR/Stripe are not recorded
-- [x] `docs/architecture/api.md`: checkout status, code, and body as measured, including the missing line list
+- [x] `docs/architecture/api.md`: checkout status, plugin code, details.lines and retryable as measured (round 2)
 - [x] `docs/architecture/flows/design-to-order.md`: step, shared validator, refusal before reserve. `checkout-snapshot-and-fulfillment.md` points at the same step
 - [x] `docs/architecture/overview.md` and `domain-model.md`: unchanged. The step was already named. Checkout does not set `ordered`; E4 still does
 - [x] No new ADR. ADR-0002 stays Proposed. Accepting it would treat SSR checkout as confirmed, and the checklist is empty
