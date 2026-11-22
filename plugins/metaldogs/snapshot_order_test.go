@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/akarso/shopanda/internal/application/integration"
 	platformjobs "github.com/akarso/shopanda/internal/domain/jobs"
+	domainorder "github.com/akarso/shopanda/internal/domain/order"
 	infraPostgres "github.com/akarso/shopanda/internal/infrastructure/postgres"
+	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
@@ -350,27 +353,130 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate enqueue one job", func(t *testing.T) {
+	t.Run("duplicate order.created is two jobs and one snapshot", func(t *testing.T) {
 		if _, err := db.ExecContext(ctx, `DELETE FROM jobs WHERE type = $1`, "integration.sync.metaldogs.snapshot_order_design"); err != nil {
 			t.Fatal(err)
 		}
+		seed := seedApprovedDesign(t, db, cat, "tee-dup-event", "prompt-dup-event", true)
 		orderID := uuid.NewString()
-		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		log := logger.NewWithWriter(io.Discard, "error")
+		if err := integration.RegisterSyncJobEventTriggers(app, app.Bus, queue, log); err != nil {
 			t.Fatal(err)
 		}
-		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
-			t.Fatal(err)
+		for i := 0; i < 2; i++ {
+			if err := app.Bus.Publish(ctx, event.Event{
+				Name: extapi.EventOrderCreated,
+				ID:   uuid.NewString(),
+				Data: domainorder.OrderCreatedData{OrderID: orderID, ItemCount: 1},
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
-		jobID := metaldogs.SnapshotOrderJobID(orderID)
+		deadline := time.Now().Add(2 * time.Second)
 		var n int
-		var status string
-		if err := db.QueryRowContext(ctx, `SELECT count(*), min(status) FROM jobs WHERE id = $1`, jobID).Scan(&n, &status); err != nil {
+		var sample string
+		for {
+			if err := db.QueryRowContext(ctx, `
+				SELECT count(*) FROM jobs
+				WHERE type = $1
+				  AND payload->'payload'->'data'->>'order_id' = $2
+			`, "integration.sync.metaldogs.snapshot_order_design", orderID).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n >= 2 || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if n != 2 {
+			_ = db.QueryRowContext(ctx, `
+				SELECT coalesce(payload::text, '') FROM jobs
+				WHERE type = $1 ORDER BY created_at DESC LIMIT 1
+			`, "integration.sync.metaldogs.snapshot_order_design").Scan(&sample)
+			t.Fatalf("jobs=%d payload=%s", n, sample)
+		}
+		worker := platformjobs.NewWorker(queue, log, time.Millisecond)
+		if err := integration.RegisterSyncJobHandlers(app, worker); err != nil {
 			t.Fatal(err)
 		}
-		if n != 1 || status != "pending" {
-			t.Fatalf("jobs=%d status=%s", n, status)
+		for i := 0; i < 4; i++ {
+			if _, err := db.ExecContext(ctx, `
+				UPDATE jobs SET run_at = NOW()
+				WHERE type = $1 AND status = 'pending'
+				  AND payload->'payload'->'data'->>'order_id' = $2
+			`, "integration.sync.metaldogs.snapshot_order_design", orderID); err != nil {
+				t.Fatal(err)
+			}
+			worker.ProcessOne(ctx)
+		}
+		var snapsN, distinct, notDone int
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1
+		`, orderID).Scan(&snapsN); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx, `
+			SELECT count(DISTINCT id), count(*) FILTER (WHERE status <> 'done')
+			FROM jobs
+			WHERE type = $1 AND payload->'payload'->'data'->>'order_id' = $2
+		`, "integration.sync.metaldogs.snapshot_order_design", orderID).Scan(&distinct, &notDone); err != nil {
+			t.Fatal(err)
+		}
+		if snapsN != 1 || distinct != 2 || notDone != 0 {
+			t.Fatalf("snapshots=%d jobs=%d not_done=%d", snapsN, distinct, notDone)
+		}
+		if status, _ := designStatus(t, designs, seed.Design.ID); status != domain.DesignOrdered {
+			t.Fatalf("status=%s", status)
 		}
 	})
+
+	t.Run("commit failure names the design that failed", func(t *testing.T) {
+		first := seedApprovedDesign(t, db, cat, "tee-commit-a", "prompt-commit-a", false)
+		second := seedApprovedDesign(t, db, cat, "tee-commit-b", "prompt-commit-b", false)
+		if _, err := db.ExecContext(ctx, `UPDATE metaldogs_designs SET status = $2 WHERE id = $1`, second.Design.ID, domain.DesignExpired); err != nil {
+			t.Fatal(err)
+		}
+		orderID := uuid.NewString()
+		v1, v2 := uuid.NewString(), uuid.NewString()
+		at := clock.Now()
+		lineA := snapshotFromSeed(t, orderID, v1, "TEE-A", first, at)
+		lineB := snapshotFromSeed(t, orderID, v2, "TEE-B", second, at)
+		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{lineA, lineB}, at)
+		var de *ports.SnapshotDesignError
+		if !errors.As(err, &de) || de.DesignID != second.Design.ID {
+			t.Fatalf("%v", err)
+		}
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1`, orderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("snapshots=%d", n)
+		}
+		if status, _ := designStatus(t, designs, first.Design.ID); status != domain.DesignApproved {
+			t.Fatalf("first status=%s", status)
+		}
+	})
+}
+
+func snapshotFromSeed(t *testing.T, orderID, variantID, sku string, seed seeded, at time.Time) domain.OrderDesignSnapshot {
+	t.Helper()
+	snap, err := domain.NewOrderDesignSnapshot(
+		orderID, variantID, seed.Design.ID, seed.Version.ID, sku,
+		seed.Template.Slug, seed.Template.Version, seed.Version.Texts,
+		seed.Version.Provider, seed.Version.Model, seed.Version.PromptVersion,
+		seed.ArtworkID, seed.ArtworkChecksum,
+		"", "",
+		at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
 }
 
 func eventPayload(orderID string) map[string]interface{} {

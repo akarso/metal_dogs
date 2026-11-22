@@ -7,7 +7,21 @@ import (
 
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
+
+func (p *Plugin) OrderSource() ports.OrderSource {
+	if p == nil {
+		return nil
+	}
+	return p.orderSource
+}
+
+func (p *Plugin) SetSnapshotClock(c ports.Clock) {
+	if p != nil {
+		p.snapshotClock = c
+	}
+}
 
 // Host.Cart returns a bound port only for the SDK *cartPort, so a failing Get wraps the host instead of BindCartPort.
 func (p *Plugin) FailCartGetForTest(err error) {

@@ -27,6 +27,7 @@ func registerSnapshotOrder(reg *pluginsdk.SyncJobs, p *Plugin) error {
 	if p == nil {
 		return fmt.Errorf("metaldogs snapshot: plugin required")
 	}
+	// RegisterOnEvent has no job id. The platform envelope uses id.New().
 	return reg.RegisterOnEvent(SnapshotOrderJobName, extapi.EventOrderCreated, p.snapshotOrderHandler())
 }
 
@@ -73,7 +74,7 @@ func (p *Plugin) snapshotOrderHandler() extapi.SyncJobHandler {
 }
 
 // EnqueueSnapshotOrder queues snapshot_order_design with a UUID v5 job id.
-// RegisterOnEvent's platform enqueue id is random; this path uses WithJobID.
+// order.created does not call this: RegisterOnEvent cannot pass WithJobID.
 func (p *Plugin) EnqueueSnapshotOrder(ctx context.Context, orderID string) error {
 	if p == nil || p.jobs == nil {
 		return fmt.Errorf("metaldogs snapshot enqueue: plugin not initialised")

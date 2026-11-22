@@ -64,7 +64,7 @@ func (p *Plugin) Needs() []pluginsdk.Capability {
 }
 
 // New returns the Metal Dogs plugin.
-func New() *Plugin { return &Plugin{} }
+func New() *Plugin { return &Plugin{snapshotClock: ports.SystemClock{}} }
 
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
@@ -230,21 +230,6 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		p.noteSyncJob(SnapshotOrderJobName)
 	}
 	return nil
-}
-
-// OrderSource is the in-memory order source wired when order snapshots are enabled.
-func (p *Plugin) OrderSource() ports.OrderSource {
-	if p == nil {
-		return nil
-	}
-	return p.orderSource
-}
-
-// SetSnapshotClock replaces the clock used when writing snapshots.
-func (p *Plugin) SetSnapshotClock(c ports.Clock) {
-	if p != nil {
-		p.snapshotClock = c
-	}
 }
 
 func (p *Plugin) noteSyncJob(name string) {

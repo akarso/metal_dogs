@@ -53,10 +53,10 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 	}
 	for _, s := range snapshots {
 		if err := s.Validate(); err != nil {
-			return nil, err
+			return nil, snapshotDesignErr(s.DesignID, err)
 		}
 		if err := requireUUIDOrderID(s.OrderID); err != nil {
-			return nil, err
+			return nil, snapshotDesignErr(s.DesignID, err)
 		}
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -74,10 +74,10 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 			SELECT status FROM metaldogs_designs WHERE id = $1 FOR UPDATE
 		`, id).Scan(&status)
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("metaldogs snapshot: design %s not found", id)
+			return nil, snapshotDesignErr(id, fmt.Errorf("metaldogs snapshot: design %s not found", id))
 		}
 		if err != nil {
-			return nil, fmt.Errorf("metaldogs snapshot: lock design %s: %w", id, err)
+			return nil, snapshotDesignErr(id, fmt.Errorf("metaldogs snapshot: lock design %s: %w", id, err))
 		}
 		switch status {
 		case domain.DesignApproved:
@@ -87,18 +87,18 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 				WHERE id = $3 AND status = $4
 			`, domain.DesignOrdered, at, id, domain.DesignApproved)
 			if err != nil {
-				return nil, fmt.Errorf("metaldogs snapshot: order design %s: %w", id, err)
+				return nil, snapshotDesignErr(id, fmt.Errorf("metaldogs snapshot: order design %s: %w", id, err))
 			}
 			n, err := res.RowsAffected()
 			if err != nil {
-				return nil, err
+				return nil, snapshotDesignErr(id, err)
 			}
 			if n != 1 {
-				return nil, fmt.Errorf("metaldogs snapshot: design %s status changed", id)
+				return nil, snapshotDesignErr(id, fmt.Errorf("metaldogs snapshot: design %s status changed", id))
 			}
 		case domain.DesignOrdered:
 		default:
-			return nil, fmt.Errorf("metaldogs snapshot: design %s status %s", id, status)
+			return nil, snapshotDesignErr(id, fmt.Errorf("metaldogs snapshot: design %s status %s", id, status))
 		}
 	}
 
@@ -106,7 +106,7 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 	for i, s := range snapshots {
 		ok, err := insertOrderDesignSnapshot(ctx, tx, s)
 		if err != nil {
-			return nil, err
+			return nil, snapshotDesignErr(s.DesignID, err)
 		}
 		written[i] = ok
 	}
@@ -114,6 +114,13 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 		return nil, fmt.Errorf("metaldogs order_design_snapshots commit: %w", err)
 	}
 	return written, nil
+}
+
+func snapshotDesignErr(designID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ports.SnapshotDesignError{DesignID: designID, Err: err}
 }
 
 func designIDs(snapshots []domain.OrderDesignSnapshot) []string {

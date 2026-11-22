@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -48,7 +49,7 @@ type SnapshotOrder struct {
 
 // Execute loads the order and commits every design line, or writes nothing.
 func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]SnapshotLineOutcome, error) {
-	if s == nil || s.Orders == nil || s.Designs == nil || s.Versions == nil || s.Templates == nil || s.Snapshots == nil {
+	if s == nil || s.Orders == nil || s.Designs == nil || s.Versions == nil || s.Templates == nil || s.Snapshots == nil || s.Clock == nil {
 		return nil, &SnapshotOrderError{Err: fmt.Errorf("metaldogs snapshot: dependencies required")}
 	}
 	orderID = strings.TrimSpace(orderID)
@@ -59,10 +60,7 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 	if err != nil {
 		return nil, &SnapshotOrderError{OrderID: orderID, Err: fmt.Errorf("metaldogs snapshot: lines: %w", err)}
 	}
-	now := time.Now().UTC()
-	if s.Clock != nil {
-		now = s.Clock.Now().UTC()
-	}
+	now := s.Clock.Now().UTC()
 	var snaps []domain.OrderDesignSnapshot
 	for _, line := range lines {
 		designID := strings.TrimSpace(line.DesignID)
@@ -80,12 +78,7 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 	}
 	written, err := s.Snapshots.CommitOrder(ctx, snaps, now)
 	if err != nil {
-		return nil, &SnapshotOrderError{
-			OrderID:   orderID,
-			VariantID: snaps[0].VariantID,
-			DesignID:  snaps[0].DesignID,
-			Err:       err,
-		}
+		return nil, commitOrderError(orderID, snaps, err)
 	}
 	out := make([]SnapshotLineOutcome, len(snaps))
 	for i, snap := range snaps {
@@ -93,6 +86,31 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 		out[i] = SnapshotLineOutcome{VariantID: snap.VariantID, DesignID: snap.DesignID, Written: ok}
 	}
 	return out, nil
+}
+
+func commitOrderError(orderID string, snaps []domain.OrderDesignSnapshot, err error) *SnapshotOrderError {
+	line := &SnapshotOrderError{OrderID: orderID, Err: err}
+	var de *ports.SnapshotDesignError
+	if !errors.As(err, &de) || de == nil || de.DesignID == "" {
+		return line
+	}
+	line.DesignID = de.DesignID
+	line.VariantID = variantForDesign(snaps, de.DesignID)
+	return line
+}
+
+func variantForDesign(snaps []domain.OrderDesignSnapshot, designID string) string {
+	variant := ""
+	for _, s := range snaps {
+		if s.DesignID != designID {
+			continue
+		}
+		if variant != "" && variant != s.VariantID {
+			return ""
+		}
+		variant = s.VariantID
+	}
+	return variant
 }
 
 func (s *SnapshotOrder) build(ctx context.Context, orderID string, line ports.OrderLine, designID string, now time.Time) (domain.OrderDesignSnapshot, error) {

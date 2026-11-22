@@ -14,6 +14,22 @@ var ErrSnapshotNotFound = errors.New("order design snapshot not found")
 // ErrInvalidOrderID means orderID is not a UUID, so it is not queried.
 var ErrInvalidOrderID = errors.New("order id is not a uuid")
 
+// SnapshotDesignError is a CommitOrder failure tied to one design.
+// DesignID is empty when the failing line is not known.
+type SnapshotDesignError struct {
+	DesignID string
+	Err      error
+}
+
+func (e *SnapshotDesignError) Error() string {
+	if e == nil || e.Err == nil {
+		return "snapshot design failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *SnapshotDesignError) Unwrap() error { return e.Err }
+
 // OrderDesignSnapshotRepository stores one immutable snapshot per order line.
 type OrderDesignSnapshotRepository interface {
 	// Insert writes the row. A duplicate (order_id, variant_id) writes nothing
