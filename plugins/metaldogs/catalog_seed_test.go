@@ -627,6 +627,18 @@ func newCatalogStorefront(t *testing.T, db *sql.DB) *httptest.Server {
 	return srv
 }
 
+func ensurePLNStore(t *testing.T, stores *postgres.StoreRepo) {
+	t.Helper()
+	existing, err := stores.FindByCode(context.Background(), "pl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existing != nil {
+		return
+	}
+	seedPLNStore(t, stores)
+}
+
 func seedPLNStore(t *testing.T, stores *postgres.StoreRepo) {
 	t.Helper()
 	s, err := store.NewStore(id.New(), "pl", "Poland", "PLN", "PL", "pl", catalogPLNHost)

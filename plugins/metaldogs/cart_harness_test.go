@@ -11,12 +11,18 @@ import (
 	"testing"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
+	checkoutApp "github.com/akarso/shopanda/internal/application/checkout"
 	"github.com/akarso/shopanda/internal/application/composition"
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
 	"github.com/akarso/shopanda/internal/application/hooks"
 	appPricing "github.com/akarso/shopanda/internal/application/pricing"
 	"github.com/akarso/shopanda/internal/domain/inventory"
+	"github.com/akarso/shopanda/internal/domain/payment"
 	domainPricing "github.com/akarso/shopanda/internal/domain/pricing"
+	"github.com/akarso/shopanda/internal/domain/shared"
+	"github.com/akarso/shopanda/internal/domain/shipping"
+	"github.com/akarso/shopanda/internal/infrastructure/flatrate"
+	"github.com/akarso/shopanda/internal/infrastructure/manualpay"
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
 	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
@@ -130,6 +136,14 @@ func setTeeStock(t *testing.T, db *sql.DB, qty int) {
 
 func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App) *httptest.Server {
 	t.Helper()
+	return openStorefront(t, db, extReg, pluginApp, nil, false)
+}
+
+// openStorefront serves the cart API. checkout adds POST /api/v1/checkout with
+// the plugin's registered steps, manual payment, and flat-rate shipping.
+// cartPort replaces the real cart port when non-nil (plugin must be non-nil).
+func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, cartPort any, checkout bool) *httptest.Server {
+	t.Helper()
 	products, err := postgres.NewProductRepo(db)
 	if err != nil {
 		t.Fatal(err)
@@ -219,16 +233,75 @@ func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registr
 		if err := pluginApp.BindCatalogPort(pluginsdk.NewCatalogPort(products, variants)); err != nil {
 			t.Fatal(err)
 		}
-		if err := pluginApp.BindCartPort(pluginsdk.NewCartPort(cartSvc)); err != nil {
+		boundCart := cartPort
+		if boundCart == nil {
+			boundCart = pluginsdk.NewCartPort(cartSvc)
+		}
+		if err := pluginApp.BindCartPort(boundCart); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if checkout {
+		orders, err := postgres.NewOrderRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reservations, err := postgres.NewReservationRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shipments, err := postgres.NewShippingRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payments, err := postgres.NewPaymentRepo(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shipReg := shipping.NewProviderRegistry()
+		shipReg.Register(flatrate.NewProvider(shared.MustNewMoney(1500, "PLN")))
+		payReg := payment.NewProviderRegistry()
+		payReg.Register(manualpay.NewProvider())
+		createOrder := checkoutApp.NewCreateOrderStep(orders, variants, nil, nil, products, components, prices)
+		if pluginApp != nil {
+			createOrder = checkoutApp.NewCreateOrderStep(orders, variants, nil, values, products, components, prices)
+		}
+		coreSteps := []checkoutApp.Step{
+			checkoutApp.NewValidateCartStep(variants, products, components, stock),
+			checkoutApp.NewRecalculatePricingStep(pipeline),
+			checkoutApp.NewReserveInventoryStep(reservations, products, variants, components),
+			createOrder,
+			checkoutApp.NewSelectShippingStep(shipReg, shipments),
+			checkoutApp.NewInitiatePaymentStep(payReg, payments),
+		}
+		var pluginRegs []checkoutApp.PluginStepRegistration
+		if pluginApp != nil {
+			for _, reg := range pluginApp.CheckoutStepRegistrations() {
+				step, ok := reg.Step.(checkoutApp.Step)
+				if !ok {
+					t.Fatalf("checkout step %T", reg.Step)
+				}
+				pluginRegs = append(pluginRegs, checkoutApp.PluginStepRegistration{Step: step, Position: reg.Position})
+			}
+		}
+		steps, err := checkoutApp.MergePluginSteps(coreSteps, pluginRegs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow := checkoutApp.NewWorkflow(steps, bus, log)
+		checkoutSvc := checkoutApp.NewService(carts, workflow, log)
+		mux.Handle("POST /api/v1/checkout", storefront.NewCheckoutHandler(checkoutSvc, extensionapp.AsValueAPI(values)).StartCheckout())
 	}
 
 	stores, err := postgres.NewStoreRepo(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedPLNStore(t, stores)
+	if checkout {
+		ensurePLNStore(t, stores)
+	} else {
+		seedPLNStore(t, stores)
+	}
 	srv := httptest.NewServer(httpshared.StoreMiddleware(stores, log)(mux))
 	t.Cleanup(srv.Close)
 	return srv

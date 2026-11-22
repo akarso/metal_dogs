@@ -119,6 +119,7 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 	if err := registerCartValidation(h.Hooks(p.Name()), p); err != nil {
 		return fmt.Errorf("metaldogs plugin: cart validation: %w", err)
 	}
+	registerDesignCheckout(h, p)
 
 	registerCLICommands(h, p)
 
