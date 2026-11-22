@@ -89,11 +89,11 @@ sequenceDiagram
     UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer, session cookie)
     Note over API: Response is cart_url /cart. The cart id stays in the cookie
     API->>Shop: trusted plugin write of metaldogs.design_id on AddItem only
-    Shop->>Shop: cart.validate (approved, unexpired, present). No ownership check
+    Shop->>Shop: cart.validate via ValidateDesignLine. No ownership check
     API-->>UI: 200 cart_url
     UI->>Shop: redirect /cart → /checkout (SSR, guest session cart)
-    Shop->>API: checkout step validate designs
-    API-->>Shop: ok
+    Shop->>API: metaldogs_design_sale before reserve_inventory
+    API-->>Shop: ok, or 422 "Design no longer available" with no order
     Shop->>Shop: create order (extension values copied to order line)
     Shop->>Ev: order.created
     Ev->>API: handler
@@ -132,6 +132,6 @@ sequenceDiagram
 
 ## Open items to verify (tracked in ROADMAP §1)
 
-- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). Snapshot mode copies it to the order line in core; E4 consumes that copy. E2 does not run checkout.
+- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). E3 contract-tests `POST /api/v1/checkout` with manual payment (CR-30). Snapshot mode copies the field onto the order line in core; E4 consumes that copy. Guest SSR checkout and Stripe test mode are not recorded.
 - Event names `order.created` / `payment.confirmed` and whether handlers run synchronously within the order transaction (affects whether an outbox is needed).
 - Shopanda API for updating shipment/tracking from a plugin.

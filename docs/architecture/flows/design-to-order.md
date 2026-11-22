@@ -54,7 +54,7 @@ flowchart TB
 
     subgraph shopanda[Shopanda core]
         h1[Cart line with extension metaldogs.design_id]
-        h2[Checkout step re-validates designs]
+        h2[Checkout step: shared sale check before reserve]
         h3[Order created]
         h4[Event: order.created]
     end
@@ -139,13 +139,18 @@ sequenceDiagram
     Note over Shop: Public cart API, SSR cart, and admin values cannot set this field (403)
     API-->>UI: 200 {cart_url: "/cart"} and Set-Cookie
     UI->>Shop: redirect to /cart (guest session cart)
-    Cust->>Shop: checkout (guest), pay via Stripe
-    Shop->>Shop: cart.validate blocks a custom tee with a missing, unknown, expired, or unapproved design. A parent outside read scope blocks. A loaded other product is untouched. Ownership is not re-checked
-    Shop->>Shop: checkout copies snapshot-mode metaldogs.design_id onto the order line
-    Shop->>API: checkout step (E3): designs still approved?
-    API-->>Shop: ok
-    Shop->>Shop: create immutable order
-    Shop-->>API: event order.created
+    Note over Shop: cart.validate already ran on the cart change. Checkout does not call it
+    Cust->>Shop: guest checkout
+    Shop->>API: metaldogs_design_sale at before:reserve_inventory
+    Note over API: ValidateDesignLine, plugin clock. approved or ordered, unexpired, passes. Other loaded products are ignored
+    alt a custom-tee line fails, or the product classification is unknown
+        API-->>Shop: validation error
+        Shop-->>Cust: 422 validation, "Design no longer available". No reservation and no order
+    else no custom-tee line, or every custom-tee line passes
+        API-->>Shop: ok
+        Shop->>Shop: reserve stock, create order, copy metaldogs.design_id onto the order line
+        Shop-->>API: event order.created
+    end
     Note over API,Q: continues in checkout-snapshot-and-fulfillment.md
 ```
 
@@ -165,5 +170,13 @@ sequenceDiagram
 | Add to cart | variant is not the custom tee, or the body is invalid | `422` `unprocessable` | Pick a size of `mdogs-tee` |
 | Add to cart | that size already has another design, or a custom-tee line with no design id | `409` `conflict`; cart unchanged | Remove the line, then add again |
 | Add to cart | another client sets `metaldogs.design_id` | `403` `forbidden_plugin_only_field`; nothing stored | Use this route |
-| Cart read or line change | custom tee missing, unknown, expired, or no longer approved | Blocking cart issue | Fix or remove that line. Other products still change |
-| Checkout | design expired/deleted | Shopanda error mapped: "Design no longer available" | Return to customizer |
+| Cart read or line change | custom tee missing, unknown, expired, or neither `approved` nor `ordered` | Blocking cart issue. Same `ValidateDesignLine` rules as checkout | Fix or remove that line. Other products still change |
+| Checkout | custom-tee line missing, unknown, expired, deleted, or not `approved` or `ordered` | API `422` `validation`, message "Design no longer available". No line list. No reservation and no order | Return to the customizer and add the design again |
+| Checkout | cart, catalog, or design store cannot be read | API `500` `internal`, message "internal server error" | Retry. Nothing was reserved or ordered |
+
+## Limits of this checkout step
+
+- A line in the cart does not extend `expires_at`. The design can expire after add and before pay. Retention stays O2.
+- The add-to-cart route still accepts only `approved`. Buying an `ordered` design again through that route is an E4 decision.
+- The step runs before reserve and order creation. A design that changes after the step and before the order row is E4 (snapshot plus reconciliation).
+- Guest checkout on the SSR pages and Stripe test mode are not recorded. The maintainer checklist is [`docs/runbooks/checkout-manual-verification.md`](../../runbooks/checkout-manual-verification.md).

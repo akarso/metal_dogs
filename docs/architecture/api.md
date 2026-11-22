@@ -349,18 +349,23 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 
 ## Checkout (E3)
 
-`POST /api/v1/checkout` runs the plugin step `metaldogs_design_sale` at `before:reserve_inventory` when the plugin is enabled. The step loads the cart with `Host.Cart()` and the plugin clock, and applies the same sale check as `cart.validate` to every custom-tee line (slug `mdogs-tee`). `approved` and `ordered` designs that have not expired pass. A loaded product with another slug is ignored. An unknown product (parent outside the catalog read, or a blank slug) fails the step. The step is absent when the plugin is disabled.
+`POST /api/v1/checkout` runs the plugin step `metaldogs_design_sale` at `before:reserve_inventory` when the plugin is enabled. The step loads the cart with `Host.Cart()` and the plugin clock, and applies `ValidateDesignLine` (the same sale check as `cart.validate`) to every custom-tee line (slug `mdogs-tee`). `approved` and `ordered` designs that have not expired pass. A loaded product with another slug is ignored. An unknown product (parent outside the catalog read, or a blank slug) fails the step. The step is absent when the plugin is disabled. Checkout does not call `cart.validate`.
 
-Shopanda turns a plugin step error into HTTP in `internal/platform/httpx/response.go` (`JSONError`, `StatusFromCode`). The workflow wraps the error (`checkout: step %q failed: %w` in `internal/application/checkout/workflow.go`) and `errors.As` still finds `*apperror.Error`. The JSON body has only `error.code` and `error.message`. A code whose status is 500 is replaced with `internal` / `internal server error`, so a distinct code such as `metaldogs.design_unavailable` cannot be returned without dropping the message. There is no field for a per-line list. The step therefore returns a validation error, and the message is the client contract. Granular issue codes stay on the cart hook; they are not in this response.
+Shopanda turns a plugin step error into HTTP in `internal/platform/httpx/response.go` (`JSONError`, `StatusFromCode`). `ErrorBody` has `code` and `message` only. The workflow wraps the error (`checkout: step %q failed: %w` in `internal/application/checkout/workflow.go`) and `errors.As` still finds `*apperror.Error`. A code whose status is 500 is replaced with `internal` / `internal server error`, so `metaldogs.design_unavailable` cannot be returned without dropping the message. `apperror.Error` has no line list. The step returns `pluginsdk.ValidationError("Design no longer available")`. Granular issue codes stay on the cart hook.
+
+Measured by `TestCheckout_DesignSale` on an isolated database, manual payment, no network. A passing checkout is `201` and `data.order` contains the line. Two failing lines return the same body as one failing line.
 
 | HTTP | `error.code` | `error.message` | When |
 | --- | --- | --- | --- |
-| `422` | `validation` | `Design no longer available` | A custom-tee line fails the sale check (no design id, missing or removed design, expired, not `approved` or `ordered`) or the product classification is unknown. No order row and no reservation |
+| `201` | — | — | Every custom-tee line passes, or the cart has no custom-tee line. `data.order.id` is set. The same design on two sizes is two lines |
+| `422` | `validation` | `Design no longer available` | A custom-tee line fails the sale check (no design id, missing or removed design, expired, not `approved` or `ordered`) or the product classification is unknown. One body for every failing line. No order row and no reservation |
 | `500` | `internal` | `internal server error` | The cart port, catalog, or design store cannot be read, or the cart payload is missing. Retry. No order row and no reservation |
 
 ```json
 {"data":null,"error":{"code":"validation","message":"Design no longer available"}}
 ```
+
+The SSR payment page (`POST /checkout/confirm`) is written to show `apperror.Message` for this `422` (`storefrontCheckoutErrorMessage`). A `500` from this step becomes "Sorry, something went wrong. Please try again later." Neither path has a recorded maintainer walkthrough. Stripe test mode is not part of the measurement. Checklist: [`docs/runbooks/checkout-manual-verification.md`](../runbooks/checkout-manual-verification.md).
 
 ## Safe delivery
 
