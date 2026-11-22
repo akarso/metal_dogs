@@ -9,13 +9,25 @@
 
 - Checkout step `metaldogs_design_sale` at `before:reserve_inventory`, registered only when the plugin is enabled
 - One sale rule, `ValidateDesignLine`, used by `cart.validate` and by the step. `approved` or `ordered`, and not expired, passes. A missing row is not found (the design store has no soft-delete). Other loaded products are ignored. An unknown product fails closed
-- A failing custom-tee line stops checkout before stock reservation and before the order row. The client body is the message `Design no longer available`
+- A failing custom-tee line stops checkout before stock reservation and before the order row. Round 1 returned only the message `Design no longer available`. Round 2 returns the code, the lines, and `retryable`
 - The add-to-cart route still accepts only `approved`
 - No new migration and no new flag
 
-## Error contract
+## Round 2 (2026-11-22)
 
-Measured by `TestCheckout_DesignSale` (`POST /api/v1/checkout`, manual payment, isolated database). Written in [`docs/architecture/api.md`](../architecture/api.md).
+PR-1597 (`c25f3e7e`, shopanda#650) carries a plugin client code, `details`, and HTTP 503 on a checkout step error. The step now returns that instead of a message-only `422` and a masked `500`. PR-1598 adds SSR Stripe confirmation (`checkout_confirm`, POST then 303 then GET, `GET /checkout/payment/return`). The maintainer checklist is still empty, so this round does not record a Stripe test-mode run.
+
+| HTTP | `error.code` | `error.message` | When |
+| --- | --- | --- | --- |
+| `201` | — | — | Sale check passes, or the cart has no custom-tee line. `data.order.id` is set |
+| `422` | `plugin.metaldogs.design_unavailable` | `Design no longer available` | One or more custom-tee lines fail, or product classification is unknown. `details.lines` lists every `{variant_id, code}`. `details.retryable` is `false`. No order and no reservation |
+| `503` | `plugin.metaldogs.validation_unavailable` | `Checkout validation unavailable` | Cart port, catalog, or design store cannot be read, or the cart id is missing. `details.retryable` is `true`. The cause is only in the log |
+
+One refusal logs `metaldogs.checkout.design_refused` (cart id, variant ids, line codes). A logged-in cart is refused the same way as a guest cart. Captured bodies are in [`docs/architecture/api.md`](../architecture/api.md).
+
+## Error contract (round 1, superseded)
+
+Measured by `TestCheckout_DesignSale` (`POST /api/v1/checkout`, manual payment, isolated database) before PR-1597 was on this branch. Round 2 replaces this table.
 
 | HTTP | `error.code` | `error.message` | When |
 | --- | --- | --- | --- |
@@ -23,33 +35,7 @@ Measured by `TestCheckout_DesignSale` (`POST /api/v1/checkout`, manual payment, 
 | `422` | `validation` | `Design no longer available` | One or more custom-tee lines fail, or product classification is unknown. Same body either way. No order and no reservation |
 | `500` | `internal` | `internal server error` | Cart port, catalog, or design store cannot be read. No order and no reservation |
 
-```text
-PLATFORM_GAP
-title: Checkout step error has no distinct code and no line list
-blocking: no
-where: plugins/metaldogs/checkout_sale.go designCheckoutStep.Execute
-need: HTTP error body that keeps a plugin code (metaldogs.design_unavailable) and a per-line list (line or variant id plus design_required, design_not_found, design_expired, design_not_approved, product_unavailable)
-proposal: extend ErrorBody with an optional details list, and let a non-500 code pass through JSONError unchanged
-test: a checkout step returns that code and two line entries; POST /api/v1/checkout responds 422 with both fields still present
-evidence: internal/platform/httpx/response.go ErrorBody is code+message; JSONError replaces any 500 with internal/internal server error. pkg/pluginsdk.ValidationError only takes a message. TestCheckout_DesignSale two bad lines asserts code validation and message Design no longer available.
-END_PLATFORM_GAP
-```
-
-The step uses `pluginsdk.ValidationError` so the message survives. A custom code would hit the 500 replacement and the shopper would lose the sentence.
-
-```text
-PLATFORM_GAP
-title: SSR checkout does not confirm the Stripe PaymentIntent
-blocking: no
-where: themes/default/templates/checkout_payment.html and checkout_confirm.html; internal/interfaces/http/storefront/storefront_checkout.go StartCheckout HTML path
-need: the confirm page must receive client_secret and confirm the PaymentIntent in the browser. Today the secret is copied only into the JSON body of POST /api/v1/checkout
-proposal: pass client_secret from the checkout context into the confirm template and confirm it with Stripe.js. Leave the PaymentIntent create call as it is
-test: guest POST /checkout/confirm with method stripe renders a confirm step; after the test card, payment_intent.succeeded moves that payment from pending to completed
-evidence: internal/interfaces/http/storefront/checkout.go:134 writes client_secret only on the JSON response. storefront_checkout.go:332 stores the order and the pending notice and does not read client_secret. themes/ has no client_secret and no Stripe.js. checkout_payment.html:66 is a disabled placeholder. stripepay.Provider.Initiate sets Pending and returns ClientSecret for a later Stripe.js confirm (provider.go:80).
-END_PLATFORM_GAP
-```
-
-Workaround, not a core patch: the maintainer checklist confirms the PaymentIntent with `stripe payment_intents confirm <pi_id> --payment-method=pm_card_visa` and records `payments.status` after the webhook. A dashboard click that attaches a card was not verified.
+Round 1 could not return a plugin code or a line list, and SSR confirm did not exist yet. Both are closed by PR-1597 and PR-1598. The checklist still has to be filled by the maintainer. It does not claim that Stripe test mode was run.
 
 ## Verification results
 
@@ -86,12 +72,11 @@ Workaround, not a core patch: the maintainer checklist confirms the PaymentInten
 
 ## Accepted gaps
 
-- HTTP body is the message only. See the `PLATFORM_GAP` block above (`blocking: no`)
 - Expiry between add and pay is unchanged (O2)
 - Add-to-cart stays `approved`-only. Reorder of an `ordered` design through that route is an E4 decision
 - Race between the step and order creation is E4
 - Guest cart merge still copies `metaldogs.design_id` without hooks. The step is what catches it
-- Stripe test mode and the SSR pages are not verified. The pages create a pending PaymentIntent and do not confirm a card. See the second `PLATFORM_GAP` (`blocking: no`) and the checklist
+- Stripe test mode on the SSR pages is not verified. SSR confirm exists upstream (PR-1598). The checklist record is empty
 
 ## Follow-ups
 

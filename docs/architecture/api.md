@@ -351,21 +351,27 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 
 `POST /api/v1/checkout` runs the plugin step `metaldogs_design_sale` at `before:reserve_inventory` when the plugin is enabled. The step loads the cart with `Host.Cart()` and the plugin clock, and applies `ValidateDesignLine` (the same sale check as `cart.validate`) to every custom-tee line (slug `mdogs-tee`). `approved` and `ordered` designs that have not expired pass. A loaded product with another slug is ignored. An unknown product (parent outside the catalog read, or a blank slug) fails the step. The step is absent when the plugin is disabled. Checkout does not call `cart.validate`.
 
-Shopanda turns a plugin step error into HTTP in `internal/platform/httpx/response.go` (`JSONError`, `StatusFromCode`). `ErrorBody` has `code` and `message` only. The workflow wraps the error (`checkout: step %q failed: %w` in `internal/application/checkout/workflow.go`) and `errors.As` still finds `*apperror.Error`. A code whose status is 500 is replaced with `internal` / `internal server error`, so `metaldogs.design_unavailable` cannot be returned without dropping the message. `apperror.Error` has no line list. The step returns `pluginsdk.ValidationError("Design no longer available")`. Granular issue codes stay on the cart hook.
+The step returns `pluginsdk.ValidationError("Design no longer available", WithClientCode("plugin.metaldogs.design_unavailable"), WithDetails(...))`. `details.lines` lists every failing line as `{variant_id, code}`. The line code is the sale-check code without the `metaldogs.` prefix: `design_required`, `design_not_found`, `design_expired`, `design_not_approved`, `product_unavailable`. `details.retryable` is `false`. The cart hook still emits the prefixed codes. A cart, catalog, or design-store failure, or a missing cart id, returns `pluginsdk.UnavailableError("Checkout validation unavailable", WithClientCode("plugin.metaldogs.validation_unavailable"), WithDetails({"retryable": true}))`. The cause is logged as `metaldogs.checkout.unavailable` and is not copied into the body. A design refusal is one `metaldogs.checkout.design_refused` line: cart id, variant ids, and those line codes. Shopanda maps the step error in `internal/platform/httpx/response.go`: client code becomes `error.code`, details are kept, validation stays `422`, unavailable stays `503`. The workflow wrap (`checkout: step %q failed: %w`) does not replace that body.
 
-Measured by `TestCheckout_DesignSale` on an isolated database, manual payment, no network. A passing checkout is `201` and `data.order` contains the line. Two failing lines return the same body as one failing line.
+Measured by `TestCheckout_DesignSale` on an isolated database, manual payment, no network. A passing checkout is `201` and `data.order` contains the line. A logged-in cart (non-empty `customer_id`) is refused with the same body as a guest cart. Two failing lines are both listed.
 
 | HTTP | `error.code` | `error.message` | When |
 | --- | --- | --- | --- |
 | `201` | — | — | Every custom-tee line passes, or the cart has no custom-tee line. `data.order.id` is set. The same design on two sizes is two lines |
-| `422` | `validation` | `Design no longer available` | A custom-tee line fails the sale check (no design id, missing or removed design, expired, not `approved` or `ordered`) or the product classification is unknown. One body for every failing line. No order row and no reservation |
-| `500` | `internal` | `internal server error` | The cart port, catalog, or design store cannot be read, or the cart payload is missing. Retry. No order row and no reservation |
+| `422` | `plugin.metaldogs.design_unavailable` | `Design no longer available` | A custom-tee line fails the sale check (no design id, missing or removed design, expired, not `approved` or `ordered`) or the product classification is unknown. `details.lines` has one entry per failing line. `details.retryable` is `false`. No order row and no reservation |
+| `503` | `plugin.metaldogs.validation_unavailable` | `Checkout validation unavailable` | The cart port, catalog, or design store cannot be read, or the cart id is missing. `details.retryable` is `true`. The cause stays in the log. No order row and no reservation |
+
+Captured from `TestCheckout_DesignSale` (two bad lines, then a cart-port failure):
 
 ```json
-{"data":null,"error":{"code":"validation","message":"Design no longer available"}}
+{"data":null,"error":{"code":"plugin.metaldogs.design_unavailable","message":"Design no longer available","details":{"lines":[{"code":"design_expired","variant_id":"a1d29108-fbeb-4f27-9bfc-b0691a58b3fb"},{"code":"design_not_approved","variant_id":"c971f21d-35b6-47cb-a357-55986aa421f5"}],"retryable":false}}}
 ```
 
-The SSR payment page (`POST /checkout/confirm`) is written to show `apperror.Message` for this `422` (`storefrontCheckoutErrorMessage`). A `500` from this step becomes "Sorry, something went wrong. Please try again later." Neither path has a recorded maintainer walkthrough. Stripe test mode is not part of the measurement. Checklist: [`docs/runbooks/checkout-manual-verification.md`](../runbooks/checkout-manual-verification.md).
+```json
+{"data":null,"error":{"code":"plugin.metaldogs.validation_unavailable","message":"Checkout validation unavailable","details":{"retryable":true}}}
+```
+
+`POST /checkout/confirm` shows `apperror.Message` for this `422` and for this `503` (`storefrontCheckoutErrorMessage`). SSR confirm (PR-1598) renders Stripe.js on `checkout_confirm` after POST then 303 then GET. That path has no recorded maintainer walkthrough. Stripe test mode is not part of the measurement. Checklist: [`docs/runbooks/checkout-manual-verification.md`](../runbooks/checkout-manual-verification.md).
 
 ## Safe delivery
 

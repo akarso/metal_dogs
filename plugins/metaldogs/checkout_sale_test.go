@@ -1,6 +1,7 @@
 package metaldogs_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
+	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs"
@@ -22,8 +24,8 @@ import (
 
 func TestCheckout_DesignSale(t *testing.T) {
 	db := openCheckoutDB(t)
-	enabled, enabledApp, _ := serveCheckout(t, db, true, nil)
-	disabled, disabledApp, _ := serveCheckout(t, db, false, nil)
+	enabled, enabledApp, _, saleLog := serveCheckout(t, db, true)
+	disabled, disabledApp, _, _ := serveCheckout(t, db, false)
 	if disabledApp != nil {
 		t.Fatal("disabled checkout server registered the plugin")
 	}
@@ -91,8 +93,9 @@ func TestCheckout_DesignSale(t *testing.T) {
 		}
 		before := takeSaleSnap(t, db, variantM)
 		status, body := postCheckout(t, enabled, cartID)
-		assertDesignRefused(t, status, body)
+		assertDesignRefused(t, status, body, refusedLine{VariantID: variantM, Code: "design_expired"})
 		assertSaleUnchanged(t, db, before, variantM)
+		assertRefusalLogged(t, saleLog, cartID, []string{variantM}, []string{"design_expired"}, design.ID)
 		status, body = postCheckout(t, disabled, cartID)
 		if status != http.StatusCreated {
 			t.Fatalf("plugin disabled status=%d body=%s", status, body)
@@ -107,16 +110,16 @@ func TestCheckout_DesignSale(t *testing.T) {
 		}
 		before := takeSaleSnap(t, db, variantM)
 		status, body := postCheckout(t, enabled, cartID)
-		assertDesignRefused(t, status, body)
+		assertDesignRefused(t, status, body, refusedLine{VariantID: variantM, Code: "design_not_found"})
 		assertSaleUnchanged(t, db, before, variantM)
 	})
 
 	t.Run("draft", func(t *testing.T) {
-		refuseStatus(t, db, enabled, variantM, "draft", 6)
+		refuseStatus(t, db, enabled, variantM, "draft", "design_not_approved", 6)
 	})
 
 	t.Run("preview_ready", func(t *testing.T) {
-		refuseStatus(t, db, enabled, variantM, "preview_ready", 7)
+		refuseStatus(t, db, enabled, variantM, "preview_ready", "design_not_approved", 7)
 	})
 
 	t.Run("missing design id", func(t *testing.T) {
@@ -128,7 +131,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		}
 		before := takeSaleSnap(t, db, variantM)
 		status, body := postCheckout(t, enabled, cartID)
-		assertDesignRefused(t, status, body)
+		assertDesignRefused(t, status, body, refusedLine{VariantID: variantM, Code: "design_required"})
 		assertSaleUnchanged(t, db, before, variantM)
 	})
 
@@ -148,8 +151,29 @@ func TestCheckout_DesignSale(t *testing.T) {
 		}
 		before := takeSaleSnap(t, db, variantM, variantL)
 		status, body = postCheckout(t, enabled, cartID)
-		assertDesignRefused(t, status, body)
+		assertDesignRefused(t, status, body,
+			refusedLine{VariantID: variantM, Code: "design_expired"},
+			refusedLine{VariantID: variantL, Code: "design_not_approved"},
+		)
 		assertSaleUnchanged(t, db, before, variantM, variantL)
+		assertRefusalLogged(t, saleLog, cartID, []string{variantM, variantL}, []string{"design_expired", "design_not_approved"}, left.ID, right.ID)
+	})
+
+	t.Run("logged-in customer", func(t *testing.T) {
+		const customerID = "6f1b9c2e-7a34-4d1e-9c80-0a1b2c3d4e5f"
+		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 14)
+		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
+		if _, err := db.ExecContext(context.Background(), `UPDATE carts SET customer_id = $2 WHERE id = $1`, cartID, customerID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(context.Background(), `UPDATE metaldogs_designs SET expires_at = now() - interval '1 hour' WHERE id = $1`, design.ID); err != nil {
+			t.Fatal(err)
+		}
+		before := takeSaleSnap(t, db, variantM)
+		status, body := postCheckoutAs(t, enabled, cartID, customerID)
+		assertDesignRefused(t, status, body, refusedLine{VariantID: variantM, Code: "design_expired"})
+		assertSaleUnchanged(t, db, before, variantM)
+		assertRefusalLogged(t, saleLog, cartID, []string{variantM}, []string{"design_expired"}, design.ID, customerID)
 	})
 
 	t.Run("other product", func(t *testing.T) {
@@ -180,29 +204,29 @@ func TestCheckout_DesignSale(t *testing.T) {
 	t.Run("cart port failure", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 11)
 		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
-		faulty, _, plugged := serveCheckout(t, db, true, nil)
+		faulty, _, plugged, _ := serveCheckout(t, db, true)
 		plugged.FailCartGetForTest(errors.New("cart get failed"))
 		before := takeSaleSnap(t, db, variantM)
 		status, body := postCheckout(t, faulty, cartID)
-		assertRetryableRefusal(t, status, body)
+		assertRetryableRefusal(t, status, body, "cart get failed")
 		assertSaleUnchanged(t, db, before, variantM)
 	})
 
 	t.Run("catalog failure", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 12)
 		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
-		faulty, _, plugged := serveCheckout(t, db, true, nil)
+		faulty, _, plugged, _ := serveCheckout(t, db, true)
 		plugged.FailCatalogFindForTest(errors.New("catalog down"))
 		before := takeSaleSnap(t, db, variantM)
 		status, body := postCheckout(t, faulty, cartID)
-		assertRetryableRefusal(t, status, body)
+		assertRetryableRefusal(t, status, body, "catalog down")
 		assertSaleUnchanged(t, db, before, variantM)
 	})
 
 	t.Run("design store failure", func(t *testing.T) {
 		design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), 13)
 		cartID := addDesignLine(t, enabled, design.ID, token, variantM)
-		faulty, _, plugged := serveCheckout(t, db, true, nil)
+		faulty, _, plugged, _ := serveCheckout(t, db, true)
 		svc := plugged.DesignService()
 		if svc == nil || svc.Designs == nil {
 			t.Fatal("design store not wired")
@@ -210,7 +234,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		svc.Designs = designGetErrorRepo{DesignRepository: svc.Designs}
 		before := takeSaleSnap(t, db, variantM)
 		status, body := postCheckout(t, faulty, cartID)
-		assertRetryableRefusal(t, status, body)
+		assertRetryableRefusal(t, status, body, "design store down")
 		assertSaleUnchanged(t, db, before, variantM)
 	})
 }
@@ -223,7 +247,7 @@ func (designGetErrorRepo) GetByID(context.Context, string) (domain.Design, bool,
 	return domain.Design{}, false, errors.New("design store down")
 }
 
-func refuseStatus(t *testing.T, db *sql.DB, srv *httptest.Server, variantID, status string, version int) {
+func refuseStatus(t *testing.T, db *sql.DB, srv *httptest.Server, variantID, status, code string, version int) {
 	t.Helper()
 	design, token := insertCartDesign(t, db, domain.DesignApproved, time.Now().UTC().Add(24*time.Hour), version)
 	cartID := addDesignLine(t, srv, design.ID, token, variantID)
@@ -232,7 +256,7 @@ func refuseStatus(t *testing.T, db *sql.DB, srv *httptest.Server, variantID, sta
 	}
 	before := takeSaleSnap(t, db, variantID)
 	got, body := postCheckout(t, srv, cartID)
-	assertDesignRefused(t, got, body)
+	assertDesignRefused(t, got, body, refusedLine{VariantID: variantID, Code: code})
 	assertSaleUnchanged(t, db, before, variantID)
 }
 
@@ -245,9 +269,11 @@ func openCheckoutDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func serveCheckout(t *testing.T, db *sql.DB, enable bool, cartPort any) (*httptest.Server, *plugin.App, *metaldogs.Plugin) {
+func serveCheckout(t *testing.T, db *sql.DB, enable bool) (*httptest.Server, *plugin.App, *metaldogs.Plugin, *bytes.Buffer) {
 	t.Helper()
 	app := testApp(t, enable)
+	logBuf := &bytes.Buffer{}
+	app.Logger = logger.NewWithWriter(logBuf, "info")
 	app.Bootstrap = &plugin.Bootstrap{DB: db}
 	extReg := extensionapp.NewRegistry()
 	app.SetExtensionRegistry(extReg)
@@ -266,17 +292,22 @@ func serveCheckout(t *testing.T, db *sql.DB, enable bool, cartPort any) (*httpte
 		if regs := app.CheckoutStepRegistrations(); len(regs) != 0 {
 			t.Fatalf("disabled checkout steps = %+v", regs)
 		}
-		return openStorefront(t, db, extReg, nil, cartPort, true), nil, nil
+		return openStorefront(t, db, extReg, nil, true), nil, nil, logBuf
 	}
 	if summary.Failed > 0 || summary.Initialized != 1 {
 		t.Fatalf("InitAll summary = %+v", summary)
 	}
-	return openStorefront(t, db, extReg, app, cartPort, true), app, plugged
+	return openStorefront(t, db, extReg, app, true), app, plugged, logBuf
 }
 
 func postCheckout(t *testing.T, srv *httptest.Server, cartID string) (int, []byte) {
 	t.Helper()
-	return cartDo(t, srv, http.MethodPost, "/api/v1/checkout", map[string]any{
+	return postCheckoutAs(t, srv, cartID, "")
+}
+
+func postCheckoutAs(t *testing.T, srv *httptest.Server, cartID, customerID string) (int, []byte) {
+	t.Helper()
+	return cartDoAs(t, srv, http.MethodPost, "/api/v1/checkout", map[string]any{
 		"cart_id":       cartID,
 		"contact_email": "guest@example.com",
 		"address": map[string]string{
@@ -287,43 +318,143 @@ func postCheckout(t *testing.T, srv *httptest.Server, cartID string) (int, []byt
 			"postcode":   "00-001",
 			"country":    "PL",
 		},
-	})
+	}, customerID)
 }
 
-func assertDesignRefused(t *testing.T, status int, body []byte) {
+type refusedLine struct {
+	VariantID string `json:"variant_id"`
+	Code      string `json:"code"`
+}
+
+func assertDesignRefused(t *testing.T, status int, body []byte, want ...refusedLine) {
 	t.Helper()
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
-	code, message := checkoutError(t, body)
-	if code != "validation" || message != "Design no longer available" {
-		t.Fatalf("code=%q message=%q body=%s", code, message, body)
+	env := checkoutError(t, body)
+	if env.Error.Code != "plugin.metaldogs.design_unavailable" || env.Error.Message != "Design no longer available" {
+		t.Fatalf("code=%q message=%q body=%s", env.Error.Code, env.Error.Message, body)
+	}
+	if env.Error.Details.Retryable == nil || *env.Error.Details.Retryable {
+		t.Fatalf("retryable=%v body=%s", env.Error.Details.Retryable, body)
+	}
+	if len(env.Error.Details.Lines) != len(want) {
+		t.Fatalf("lines=%v want=%v body=%s", env.Error.Details.Lines, want, body)
+	}
+	for i, line := range want {
+		if env.Error.Details.Lines[i] != line {
+			t.Fatalf("line %d = %+v want %+v body=%s", i, env.Error.Details.Lines[i], line, body)
+		}
 	}
 }
 
-func assertRetryableRefusal(t *testing.T, status int, body []byte) {
+func assertRetryableRefusal(t *testing.T, status int, body []byte, secret string) {
 	t.Helper()
-	if status != http.StatusInternalServerError {
+	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
-	code, message := checkoutError(t, body)
-	if code != "internal" || message != "internal server error" {
-		t.Fatalf("code=%q message=%q body=%s", code, message, body)
+	env := checkoutError(t, body)
+	if env.Error.Code != "plugin.metaldogs.validation_unavailable" || env.Error.Message != "Checkout validation unavailable" {
+		t.Fatalf("code=%q message=%q body=%s", env.Error.Code, env.Error.Message, body)
+	}
+	if env.Error.Details.Retryable == nil || !*env.Error.Details.Retryable {
+		t.Fatalf("retryable=%v body=%s", env.Error.Details.Retryable, body)
+	}
+	if len(env.Error.Details.Lines) != 0 {
+		t.Fatalf("lines=%v body=%s", env.Error.Details.Lines, body)
+	}
+	if secret != "" && bytes.Contains(body, []byte(secret)) {
+		t.Fatalf("internal error leaked: %s", body)
+	}
+	if bytes.Contains(body, []byte("checkout: step")) {
+		t.Fatalf("workflow wrap leaked: %s", body)
 	}
 }
 
-func checkoutError(t *testing.T, body []byte) (string, string) {
+type checkoutErrorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Details struct {
+			Lines     []refusedLine `json:"lines"`
+			Retryable *bool         `json:"retryable"`
+		} `json:"details"`
+	} `json:"error"`
+}
+
+func checkoutError(t *testing.T, body []byte) checkoutErrorBody {
 	t.Helper()
-	var env struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var env checkoutErrorBody
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatalf("error body: %v %s", err, body)
 	}
-	return env.Error.Code, env.Error.Message
+	return env
+}
+
+func assertRefusalLogged(t *testing.T, buf *bytes.Buffer, cartID string, variantIDs, codes []string, absent ...string) {
+	t.Helper()
+	var matched int
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if line == "" || !strings.Contains(line, "metaldogs.checkout.design_refused") {
+			continue
+		}
+		var entry struct {
+			Event   string         `json:"event"`
+			Context map[string]any `json:"context"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line: %v %s", err, line)
+		}
+		if entry.Context["cart_id"] != cartID {
+			continue
+		}
+		matched++
+		if got := stringList(t, entry.Context["variant_ids"]); !sameStrings(got, variantIDs) {
+			t.Fatalf("variant_ids=%v want %v line=%s", got, variantIDs, line)
+		}
+		if got := stringList(t, entry.Context["codes"]); !sameStrings(got, codes) {
+			t.Fatalf("codes=%v want %v line=%s", got, codes, line)
+		}
+		if _, ok := entry.Context["customer_id"]; ok {
+			t.Fatalf("customer_id logged: %s", line)
+		}
+		for _, secret := range absent {
+			if secret != "" && strings.Contains(line, secret) {
+				t.Fatalf("log contains %q: %s", secret, line)
+			}
+		}
+	}
+	if matched != 1 {
+		t.Fatalf("refusal log lines for %s = %d\n%s", cartID, matched, buf.String())
+	}
+}
+
+func stringList(t *testing.T, raw any) []string {
+	t.Helper()
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("list = %#v", raw)
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i], ok = item.(string)
+		if !ok {
+			t.Fatalf("item %d = %#v", i, item)
+		}
+	}
+	return out
+}
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func orderVariantIDs(t *testing.T, body []byte) []string {

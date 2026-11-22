@@ -9,7 +9,7 @@ import (
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 )
 
-// BindCartPort cannot inject a failing Get: an attributed Host.Cart accepts only the SDK cart adapter, so any other CartPort is reported unwired.
+// FailCartGetForTest makes Host.Cart().Get fail. BindCartPort accepts only the SDK cart adapter, so a substitute port stays unwired.
 func (p *Plugin) FailCartGetForTest(err error) {
 	if p == nil {
 		return

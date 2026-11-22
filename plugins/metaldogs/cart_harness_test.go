@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	cartApp "github.com/akarso/shopanda/internal/application/cart"
@@ -16,6 +17,7 @@ import (
 	extensionapp "github.com/akarso/shopanda/internal/application/extension"
 	"github.com/akarso/shopanda/internal/application/hooks"
 	appPricing "github.com/akarso/shopanda/internal/application/pricing"
+	"github.com/akarso/shopanda/internal/domain/identity"
 	"github.com/akarso/shopanda/internal/domain/inventory"
 	"github.com/akarso/shopanda/internal/domain/payment"
 	domainPricing "github.com/akarso/shopanda/internal/domain/pricing"
@@ -26,6 +28,7 @@ import (
 	"github.com/akarso/shopanda/internal/infrastructure/postgres"
 	httpshared "github.com/akarso/shopanda/internal/interfaces/http/shared"
 	"github.com/akarso/shopanda/internal/interfaces/http/storefront"
+	"github.com/akarso/shopanda/internal/platform/auth"
 	"github.com/akarso/shopanda/internal/platform/config"
 	"github.com/akarso/shopanda/internal/platform/event"
 	"github.com/akarso/shopanda/internal/platform/logger"
@@ -36,6 +39,9 @@ import (
 )
 
 var teeSKUs = []string{"MDOGS-TEE-S", "MDOGS-TEE-M", "MDOGS-TEE-L", "MDOGS-TEE-XL", "MDOGS-TEE-XXL"}
+
+// testCustomerHeader is read only by the checkout harness. Production checkout uses the session.
+const testCustomerHeader = "X-Test-Customer-ID"
 
 // E1 seed stays draft with stock 0, so the harness publishes the tee and sets stock.
 func newDesignCartServer(t *testing.T) (*httptest.Server, *sql.DB) {
@@ -136,13 +142,12 @@ func setTeeStock(t *testing.T, db *sql.DB, qty int) {
 
 func newStorefrontAndCart(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App) *httptest.Server {
 	t.Helper()
-	return openStorefront(t, db, extReg, pluginApp, nil, false)
+	return openStorefront(t, db, extReg, pluginApp, false)
 }
 
 // openStorefront serves the cart API. checkout adds POST /api/v1/checkout with
 // the plugin's registered steps, manual payment, and flat-rate shipping.
-// cartPort replaces the real cart port when non-nil (plugin must be non-nil).
-func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, cartPort any, checkout bool) *httptest.Server {
+func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, pluginApp *plugin.App, checkout bool) *httptest.Server {
 	t.Helper()
 	products, err := postgres.NewProductRepo(db)
 	if err != nil {
@@ -233,11 +238,7 @@ func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, plu
 		if err := pluginApp.BindCatalogPort(pluginsdk.NewCatalogPort(products, variants)); err != nil {
 			t.Fatal(err)
 		}
-		boundCart := cartPort
-		if boundCart == nil {
-			boundCart = pluginsdk.NewCartPort(cartSvc)
-		}
-		if err := pluginApp.BindCartPort(boundCart); err != nil {
+		if err := pluginApp.BindCartPort(pluginsdk.NewCartPort(cartSvc)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -290,7 +291,19 @@ func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, plu
 		}
 		workflow := checkoutApp.NewWorkflow(steps, bus, log)
 		checkoutSvc := checkoutApp.NewService(carts, workflow, log)
-		mux.Handle("POST /api/v1/checkout", storefront.NewCheckoutHandler(checkoutSvc, extensionapp.AsValueAPI(values)).StartCheckout())
+		start := storefront.NewCheckoutHandler(checkoutSvc, extensionapp.AsValueAPI(values)).StartCheckout()
+		// POST /api/v1/checkout reads auth.IdentityFrom. The harness has no session middleware.
+		mux.Handle("POST /api/v1/checkout", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if customerID := strings.TrimSpace(r.Header.Get(testCustomerHeader)); customerID != "" {
+				ident, err := identity.NewIdentity(customerID, identity.RoleCustomer)
+				if err != nil {
+					http.Error(w, "bad test customer", http.StatusBadRequest)
+					return
+				}
+				r = r.WithContext(auth.WithIdentity(r.Context(), ident))
+			}
+			start(w, r)
+		}))
 	}
 
 	stores, err := postgres.NewStoreRepo(db)
@@ -309,6 +322,11 @@ func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, plu
 
 func cartDo(t *testing.T, srv *httptest.Server, method, path string, body any) (int, []byte) {
 	t.Helper()
+	return cartDoAs(t, srv, method, path, body, "")
+}
+
+func cartDoAs(t *testing.T, srv *httptest.Server, method, path string, body any, customerID string) (int, []byte) {
+	t.Helper()
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -324,6 +342,9 @@ func cartDo(t *testing.T, srv *httptest.Server, method, path string, body any) (
 	req.Host = catalogPLNHost
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if customerID != "" {
+		req.Header.Set(testCustomerHeader, customerID)
 	}
 	resp, err := srv.Client().Do(req)
 	if err != nil {
