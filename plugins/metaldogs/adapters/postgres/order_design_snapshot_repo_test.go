@@ -3,6 +3,8 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +44,13 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 	written, err := repo.Insert(ctx, lineM)
 	if err != nil || !written {
 		t.Fatalf("insert written=%v err=%v", written, err)
+	}
+	spaced := lineM
+	spaced.VariantID = "99999999-9999-4999-8999-999999999990"
+	spaced.SKU = "  "
+	written, err = repo.Insert(ctx, spaced)
+	if err == nil || written {
+		t.Fatalf("whitespace sku written=%v err=%v", written, err)
 	}
 	clash := lineM
 	clash.SKU = "TEE-BLK-M-TAMPERED"
@@ -114,10 +123,35 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 		t.Fatalf("missing line: %v", err)
 	}
 
-	if _, err := db.ExecContext(ctx, `
-		UPDATE metaldogs_order_design_snapshots SET sku = 'nope' WHERE order_id = $1 AND variant_id = $2
-	`, orderID, variantM); err == nil {
-		t.Fatal("sku update must fail")
+	frozen := []struct {
+		column string
+		value  any
+		cast   string
+	}{
+		{"order_id", "99999999-9999-4999-8999-999999999999", ""},
+		{"variant_id", "tampered-variant", ""},
+		{"design_id", "99999999-9999-4999-8999-999999999991", ""},
+		{"design_version_id", "99999999-9999-4999-8999-999999999992", ""},
+		{"sku", "nope", ""},
+		{"template_slug", "tampered", ""},
+		{"template_version", 99, ""},
+		{"texts", `{"dog_name":"Azor"}`, "::jsonb"},
+		{"provider", "tampered", ""},
+		{"model", "tampered-model", ""},
+		{"prompt_version", "tampered-prompt", ""},
+		{"artwork_asset_id", "99999999-9999-4999-8999-999999999993", ""},
+		{"artwork_checksum", "sha256:tampered", ""},
+		{"created_at", at.Add(time.Hour), ""},
+	}
+	for _, u := range frozen {
+		q := fmt.Sprintf(
+			`UPDATE metaldogs_order_design_snapshots SET %s = $3%s WHERE order_id = $1 AND variant_id = $2`,
+			u.column, u.cast,
+		)
+		_, err = db.ExecContext(ctx, q, orderID, variantM, u.value)
+		if err == nil || !strings.Contains(err.Error(), "append-only") {
+			t.Fatalf("%s update: %v", u.column, err)
+		}
 	}
 	if _, err := db.ExecContext(ctx, `
 		UPDATE metaldogs_order_design_snapshots
@@ -139,6 +173,28 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("rows after refused delete: %d", n)
+	}
+	unchanged, ok, err := repo.Get(ctx, orderID, variantM)
+	if err != nil || !ok {
+		t.Fatalf("row after refused updates ok=%v err=%v", ok, err)
+	}
+	if unchanged.SKU != lineM.SKU || unchanged.ArtworkChecksum != lineM.ArtworkChecksum ||
+		unchanged.ProductionChecksum != "sha256:production" || !unchanged.CreatedAt.Equal(at) {
+		t.Fatalf("refused updates changed the row: %+v", unchanged)
+	}
+
+	if _, ok, err := repo.Get(ctx, "not-a-uuid", variantM); !errors.Is(err, ports.ErrInvalidOrderID) || ok {
+		t.Fatalf("get bad order id ok=%v err=%v", ok, err)
+	}
+	if _, err := repo.ListByOrder(ctx, "not-a-uuid"); !errors.Is(err, ports.ErrInvalidOrderID) {
+		t.Fatalf("list bad order id: %v", err)
+	}
+	if err := repo.FillProduction(ctx, "not-a-uuid", variantM, prodID, "sha256:production"); !errors.Is(err, ports.ErrInvalidOrderID) {
+		t.Fatalf("fill bad order id: %v", err)
+	}
+	upper, ok, err := repo.Get(ctx, strings.ToUpper(orderID), variantM)
+	if err != nil || !ok || upper.SKU != lineM.SKU {
+		t.Fatalf("uppercase order id ok=%v err=%v sku=%q", ok, err, upper.SKU)
 	}
 
 	var prev014, snap015 time.Time

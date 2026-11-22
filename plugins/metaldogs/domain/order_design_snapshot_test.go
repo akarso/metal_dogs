@@ -80,4 +80,9 @@ func TestOrderDesignSnapshot_FillProductionOnce(t *testing.T) {
 	if _, err := filled.FillProduction("77777777-7777-4777-8777-777777777777", "sha256:other"); !errors.Is(err, domain.ErrProductionAlreadySet) {
 		t.Fatalf("second fill: %v", err)
 	}
+	spaced := s
+	spaced.SKU = "  "
+	if err := spaced.Validate(); err == nil {
+		t.Fatal("whitespace sku must fail Validate")
+	}
 }

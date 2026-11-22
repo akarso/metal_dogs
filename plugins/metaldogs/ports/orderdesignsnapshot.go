@@ -10,6 +10,9 @@ import (
 // ErrSnapshotNotFound means no OrderDesignSnapshot exists for the line key.
 var ErrSnapshotNotFound = errors.New("order design snapshot not found")
 
+// ErrInvalidOrderID means orderID is not a UUID, so it is not queried.
+var ErrInvalidOrderID = errors.New("order id is not a uuid")
+
 // OrderDesignSnapshotRepository stores one immutable snapshot per order line.
 type OrderDesignSnapshotRepository interface {
 	// Insert writes the row. A duplicate (order_id, variant_id) writes nothing

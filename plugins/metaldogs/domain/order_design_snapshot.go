@@ -44,55 +44,53 @@ func NewOrderDesignSnapshot(
 	productionAssetID, productionChecksum string,
 	createdAt time.Time,
 ) (OrderDesignSnapshot, error) {
-	orderID = strings.TrimSpace(orderID)
-	variantID = strings.TrimSpace(variantID)
-	designID = strings.TrimSpace(designID)
-	designVersionID = strings.TrimSpace(designVersionID)
-	sku = strings.TrimSpace(sku)
-	templateSlug = strings.TrimSpace(templateSlug)
-	provider = strings.TrimSpace(provider)
-	model = strings.TrimSpace(model)
-	promptVersion = strings.TrimSpace(promptVersion)
-	artworkAssetID = strings.TrimSpace(artworkAssetID)
-	artworkChecksum = strings.TrimSpace(artworkChecksum)
-	productionAssetID = strings.TrimSpace(productionAssetID)
-	productionChecksum = strings.TrimSpace(productionChecksum)
-	if orderID == "" || variantID == "" || designID == "" || designVersionID == "" || sku == "" {
-		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: order, variant, design, version, and sku required")
-	}
-	if templateSlug == "" || templateVersion < 1 {
-		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: template slug and version required")
-	}
-	if provider == "" || model == "" || promptVersion == "" {
-		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: provider, model, and prompt_version required")
-	}
-	if artworkAssetID == "" || artworkChecksum == "" {
-		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: artwork asset and checksum required")
-	}
-	if (productionAssetID == "") != (productionChecksum == "") {
-		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: production asset and checksum are set together")
-	}
-	if createdAt.IsZero() {
-		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: created_at required")
-	}
-	return OrderDesignSnapshot{
-		OrderID:            orderID,
-		VariantID:          variantID,
-		DesignID:           designID,
-		DesignVersionID:    designVersionID,
-		SKU:                sku,
-		TemplateSlug:       templateSlug,
+	s := OrderDesignSnapshot{
+		OrderID:            strings.TrimSpace(orderID),
+		VariantID:          strings.TrimSpace(variantID),
+		DesignID:           strings.TrimSpace(designID),
+		DesignVersionID:    strings.TrimSpace(designVersionID),
+		SKU:                strings.TrimSpace(sku),
+		TemplateSlug:       strings.TrimSpace(templateSlug),
 		TemplateVersion:    templateVersion,
 		Texts:              copyTexts(texts),
-		Provider:           provider,
-		Model:              model,
-		PromptVersion:      promptVersion,
-		ArtworkAssetID:     artworkAssetID,
-		ArtworkChecksum:    artworkChecksum,
-		ProductionAssetID:  productionAssetID,
-		ProductionChecksum: productionChecksum,
+		Provider:           strings.TrimSpace(provider),
+		Model:              strings.TrimSpace(model),
+		PromptVersion:      strings.TrimSpace(promptVersion),
+		ArtworkAssetID:     strings.TrimSpace(artworkAssetID),
+		ArtworkChecksum:    strings.TrimSpace(artworkChecksum),
+		ProductionAssetID:  strings.TrimSpace(productionAssetID),
+		ProductionChecksum: strings.TrimSpace(productionChecksum),
 		CreatedAt:          createdAt.UTC(),
-	}, nil
+	}
+	if err := s.Validate(); err != nil {
+		return OrderDesignSnapshot{}, err
+	}
+	return s, nil
+}
+
+// Validate checks the invariants NewOrderDesignSnapshot enforces after trimming.
+func (s OrderDesignSnapshot) Validate() error {
+	if strings.TrimSpace(s.OrderID) == "" || strings.TrimSpace(s.VariantID) == "" ||
+		strings.TrimSpace(s.DesignID) == "" || strings.TrimSpace(s.DesignVersionID) == "" ||
+		strings.TrimSpace(s.SKU) == "" {
+		return fmt.Errorf("order design snapshot: order, variant, design, version, and sku required")
+	}
+	if strings.TrimSpace(s.TemplateSlug) == "" || s.TemplateVersion < 1 {
+		return fmt.Errorf("order design snapshot: template slug and version required")
+	}
+	if strings.TrimSpace(s.Provider) == "" || strings.TrimSpace(s.Model) == "" || strings.TrimSpace(s.PromptVersion) == "" {
+		return fmt.Errorf("order design snapshot: provider, model, and prompt_version required")
+	}
+	if strings.TrimSpace(s.ArtworkAssetID) == "" || strings.TrimSpace(s.ArtworkChecksum) == "" {
+		return fmt.Errorf("order design snapshot: artwork asset and checksum required")
+	}
+	if (strings.TrimSpace(s.ProductionAssetID) == "") != (strings.TrimSpace(s.ProductionChecksum) == "") {
+		return fmt.Errorf("order design snapshot: production asset and checksum are set together")
+	}
+	if s.CreatedAt.IsZero() {
+		return fmt.Errorf("order design snapshot: created_at required")
+	}
+	return nil
 }
 
 // FillProduction returns a copy with production artwork set.

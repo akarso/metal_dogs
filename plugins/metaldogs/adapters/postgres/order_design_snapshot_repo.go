@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -30,13 +33,8 @@ const orderDesignSnapshotColumns = `
 `
 
 func (r *OrderDesignSnapshotRepo) Insert(ctx context.Context, s domain.OrderDesignSnapshot) (bool, error) {
-	if s.OrderID == "" || s.VariantID == "" || s.DesignID == "" || s.DesignVersionID == "" || s.SKU == "" ||
-		s.TemplateSlug == "" || s.TemplateVersion < 1 || s.ArtworkAssetID == "" || s.ArtworkChecksum == "" ||
-		s.Provider == "" || s.Model == "" || s.PromptVersion == "" || s.CreatedAt.IsZero() {
-		return false, fmt.Errorf("metaldogs order_design_snapshots: required fields missing")
-	}
-	if (s.ProductionAssetID == "") != (s.ProductionChecksum == "") {
-		return false, fmt.Errorf("metaldogs order_design_snapshots: production pair")
+	if err := s.Validate(); err != nil {
+		return false, err
 	}
 	texts, err := json.Marshal(s.Texts)
 	if err != nil {
@@ -82,6 +80,9 @@ func (r *OrderDesignSnapshotRepo) Get(ctx context.Context, orderID, variantID st
 	if orderID == "" || variantID == "" {
 		return domain.OrderDesignSnapshot{}, false, nil
 	}
+	if err := requireUUIDOrderID(orderID); err != nil {
+		return domain.OrderDesignSnapshot{}, false, err
+	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT `+orderDesignSnapshotColumns+`
 		FROM metaldogs_order_design_snapshots
@@ -93,6 +94,9 @@ func (r *OrderDesignSnapshotRepo) Get(ctx context.Context, orderID, variantID st
 func (r *OrderDesignSnapshotRepo) ListByOrder(ctx context.Context, orderID string) ([]domain.OrderDesignSnapshot, error) {
 	if orderID == "" {
 		return nil, nil
+	}
+	if err := requireUUIDOrderID(orderID); err != nil {
+		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT `+orderDesignSnapshotColumns+`
@@ -151,6 +155,14 @@ func (r *OrderDesignSnapshotRepo) FillProduction(ctx context.Context, orderID, v
 		return nil
 	}
 	return domain.ErrProductionAlreadySet
+}
+
+func requireUUIDOrderID(orderID string) error {
+	parsed, err := uuid.Parse(orderID)
+	if err != nil || parsed.String() != strings.ToLower(orderID) {
+		return ports.ErrInvalidOrderID
+	}
+	return nil
 }
 
 func scanOrderDesignSnapshot(row designScanner) (domain.OrderDesignSnapshot, bool, error) {
