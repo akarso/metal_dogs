@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Paths that differ from the pinned SHA must be listed here, after the
-# docs/PRODUCT_OWNED.md manifest exempts owned, companion, and hook rows
-# whose expect holds. Unlisted diffs fail. Keep the list in sync with
-# docs/architecture/overview.md.
+# docs/PRODUCT_OWNED.md manifest exempts owned and companion rows, and hook
+# rows whose expect holds and whose file still matches the pin. For
+# .gitignore only the lines outside the marker block are compared to the pin.
+# Unlisted diffs fail. Keep the list in sync with docs/architecture/overview.md.
 # Ignored trees (product content, not this list): plugins/metaldogs, docs,
-# markdown, .github/workflows, .scratch.
+# .github/workflows, .scratch. Other markdown is not ignored.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -24,8 +25,17 @@ ALLOWLIST=(
   .github/scripts/check-product-docs-links.sh # hardened product-doc links; .github/scripts is outside the manifest
   .github/scripts/check-upstream-deviations.sh # this list
   .github/scripts/run-metaldogs-integration-tests.sh # Metal Dogs DSN suite; .github/scripts is outside the manifest
+  ci-samples/README.md # relative guide/runbook links rewritten to the pin blob
   cmd/api/register_plugins_metaldogs_test.go # registration tests; manifest owns register_products.go only
+  plugins/b2b/README.md # relative guide link rewritten to the pin blob
+  plugins/example/README.md # relative guide link rewritten to the pin blob
+  plugins/pimdemo/README.md # relative guide link rewritten to the pin blob
+  plugins/sitekit/README.md # relative guide link rewritten to the pin blob
+  plugins/slotsdemo/README.md # relative guide link rewritten to the pin blob
+  plugins/warehousedemo/README.md # relative guide link rewritten to the pin blob
+  scripts/product-init/seed/ci-samples/README.md # seed copy of ci-samples/README.md
   storefront/.gitkeep # empty storefront dir; storefront is outside the manifest
+  storefront/README.md # product storefront narrative; storefront is outside the manifest
 )
 
 mapfile -t dirty < <(
@@ -34,7 +44,6 @@ mapfile -t dirty < <(
     ':!docs' \
     ':!.github/workflows' \
     ':!.scratch' \
-    ':!*.md' \
     | sort -u
 )
 
@@ -47,14 +56,16 @@ else
   : >"${dirty_file}"
 fi
 
-python3 - "${ROOT}" "${ROOT}/docs/PRODUCT_OWNED.md" "${dirty_file}" >"${remain_file}" <<'PY'
+python3 - "${ROOT}" "${ROOT}/docs/PRODUCT_OWNED.md" "${dirty_file}" "${PIN}" >"${remain_file}" <<'PY'
 import fnmatch
 import pathlib
+import subprocess
 import sys
 
 root = pathlib.Path(sys.argv[1])
 manifest = pathlib.Path(sys.argv[2])
 dirty_paths = pathlib.Path(sys.argv[3]).read_text(encoding="utf-8").splitlines()
+pin = sys.argv[4]
 text = manifest.read_text(encoding="utf-8").splitlines()
 
 in_section = False
@@ -94,18 +105,56 @@ def matches(path: str, row_path: str) -> bool:
         return fnmatch.fnmatch(path, row_path)
     return path == row_path
 
+MARKER_START = "# >>> shopanda-product-gitignore"
+MARKER_END = "# <<< shopanda-product-gitignore"
+
+def outside_marker_block(text: str):
+    lines = text.splitlines()
+    starts = [i for i, ln in enumerate(lines) if ln == MARKER_START]
+    ends = [i for i, ln in enumerate(lines) if ln == MARKER_END]
+    if not starts and not ends:
+        return lines
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        return None
+    return lines[: starts[0]] + lines[ends[0] + 1 :]
+
+def pin_text(rel: str):
+    r = subprocess.run(
+        ["git", "show", f"{pin}:{rel}"],
+        cwd=root,
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        return None
+    return r.stdout.decode("utf-8")
+
+def matches_pin_outside_expect(rel: str, expect: str) -> bool:
+    if expect == "gitignore_markers":
+        current = (root / rel).read_text(encoding="utf-8")
+        pinned = pin_text(rel)
+        if pinned is None:
+            return False
+        return outside_marker_block(current) == outside_marker_block(pinned)
+    r = subprocess.run(
+        ["git", "diff", "--quiet", pin, "HEAD", "--", rel],
+        cwd=root,
+    )
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1:
+        return False
+    raise SystemExit(f"ERROR: git diff --quiet failed for {rel} (exit {r.returncode})")
+
 def hook_ok(rel: str, expect: str) -> bool:
     p = root / rel
     if expect == "exists":
-        return p.is_file()
-    if expect == "gitignore_markers":
+        holds = p.is_file()
+    elif expect == "gitignore_markers":
         if not p.is_file():
             return False
-        start = "# >>> shopanda-product-gitignore"
-        end = "# <<< shopanda-product-gitignore"
         lines = p.read_text(encoding="utf-8").splitlines()
-        starts = [i for i, ln in enumerate(lines) if ln == start]
-        ends = [i for i, ln in enumerate(lines) if ln == end]
+        starts = [i for i, ln in enumerate(lines) if ln == MARKER_START]
+        ends = [i for i, ln in enumerate(lines) if ln == MARKER_END]
         if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
             return False
         frag = root / ".gitignore.product"
@@ -115,16 +164,18 @@ def hook_ok(rel: str, expect: str) -> bool:
             else []
         )
         between = [ln.rstrip("\r") for ln in lines[starts[0] + 1 : ends[0]]]
-        return between == frag_lines
-    if not p.is_file():
+        holds = between == frag_lines
+    elif not p.is_file():
         return False
-    body = p.read_text(encoding="utf-8")
-    if expect.startswith("contains:"):
-        return expect[len("contains:") :] in body
-    if expect.startswith("contains_all:"):
+    elif expect.startswith("contains:"):
+        holds = expect[len("contains:") :] in p.read_text(encoding="utf-8")
+    elif expect.startswith("contains_all:"):
         needles = expect[len("contains_all:") :].split("|")
-        return all(n and n in body for n in needles)
-    raise SystemExit(f"ERROR: unknown hook expect {expect!r} for {rel}")
+        body = p.read_text(encoding="utf-8")
+        holds = all(n and n in body for n in needles)
+    else:
+        raise SystemExit(f"ERROR: unknown hook expect {expect!r} for {rel}")
+    return holds and matches_pin_outside_expect(rel, expect)
 
 def exempt(path: str) -> bool:
     for row_path, kind, expect in rows:
@@ -190,4 +241,4 @@ if [[ "${#unlisted[@]}" -gt 0 || "${#stale[@]}" -gt 0 ]]; then
   exit 1
 fi
 
-echo "upstream-deviations OK (pin ${PIN:0:12}, ${#ALLOWLIST[@]} listed path(s); manifest exempts owned/companion/satisfied hooks)"
+echo "upstream-deviations OK (pin ${PIN:0:12}, ${#ALLOWLIST[@]} listed path(s); manifest exempts owned/companion/hooks that match the pin)"

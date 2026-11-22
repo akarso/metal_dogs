@@ -51,6 +51,5 @@ shopanda
 #   bash scripts/ci/apply-product-gitignore.sh
 # >>> shopanda-product-gitignore
 /app
-# Metal Dogs local AssetStore root (F4)
 .vscode/
 # <<< shopanda-product-gitignore
