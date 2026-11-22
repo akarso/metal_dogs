@@ -2,6 +2,8 @@
 
 Product repository for the Metal Dogs store. This tree is a **fork of [Shopanda](https://github.com/akarso/shopanda)** with Metal Dogs–specific code under `plugins/metaldogs/` and `storefront/`, and product documentation under `docs/`.
 
+`.env.example.product` and `configs/config.example.product.yaml` hold Metal Dogs example lines. Copy them into `.env` and `config.yaml` by hand. Nothing loads or merges those companions.
+
 | | |
 | --- | --- |
 | Product docs | [`docs/README.md`](docs/README.md) · [`docs/ROADMAP.md`](docs/ROADMAP.md) |

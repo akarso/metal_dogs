@@ -46,7 +46,7 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
    - **`cmd/api/register_products.go`** — keep the product registration (owned). Do not add product plugins to `register_plugins.go`.
    - **Hook rows and other upstream-owned files** (`Makefile`, `docker-compose.yml`, `.env.example`, `configs/config.example.yaml`, `scripts/ci/docs-policy.sh` and its seed copy, `scripts/product-init/reserved-slugs.txt`, `scripts/product-init/product-init_test.sh`) — take upstream. Save the product text first; do not drop it.
    - **`.gitignore`** — take upstream, then `bash scripts/ci/apply-product-gitignore.sh`. Product lines live in `.gitignore.product`. Without that file the script clears the marker section.
-   - **`.github/scripts/*` and `.cursor/rules/*`** — not in the manifest. Keep the product copies and list them under upstream deviations.
+   - **`.github/scripts/*` and `.cursor/rules/*`** — not in the manifest. `run-integration-tests.sh` stays the upstream wrapper (`scripts/ci/integration.sh`). Keep the other product scripts and the cursor rule, and list them under upstream deviations.
    - Anything else: prefer upstream unless it is still listed under "Upstream deviations" in `docs/architecture/overview.md`.
 4. Update the pin **everywhere** (not only `UPSTREAM_PIN.md`). Pin SHAs are hardcoded in product-facing markdown that links upstream guides. Use a portable rewrite (no GNU `sed -i` / `xargs -r`):
 
