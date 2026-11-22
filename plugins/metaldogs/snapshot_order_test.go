@@ -41,6 +41,9 @@ func TestSnapshotOrderJobID_IsV5(t *testing.T) {
 	if id != metaldogs.SnapshotOrderJobID("  "+orderID+"  ") {
 		t.Fatalf("trim mismatch %s", id)
 	}
+	if id != metaldogs.SnapshotOrderJobID(strings.ToUpper(orderID)) {
+		t.Fatalf("case mismatch %s", id)
+	}
 	parsed, err := uuid.Parse(id)
 	if err != nil || parsed.Version() != 5 {
 		t.Fatalf("id %s version %d err %v", id, parsed.Version(), err)
@@ -346,7 +349,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
 			t.Fatal(err)
 		}
-		if err := p.EnqueueSnapshotOrder(ctx, orderID); err != nil {
+		if err := p.EnqueueSnapshotOrder(ctx, strings.ToUpper(orderID)); err != nil {
 			t.Fatal(err)
 		}
 		jobID := metaldogs.SnapshotOrderJobID(orderID)

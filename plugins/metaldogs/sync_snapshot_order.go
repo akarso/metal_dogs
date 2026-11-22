@@ -11,6 +11,7 @@ import (
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 const SnapshotOrderJobName = "snapshot_order_design"
@@ -23,8 +24,13 @@ const SnapshotOrderDispatchJobName = "dispatch_snapshot_order"
 var snapshotOrderNamespace = uuid.MustParse("0e4a0000-0000-4000-8000-0000000000e4")
 
 // SnapshotOrderJobID is the UUID v5 of orderID. Two enqueues of one order share it.
+// A parseable id is hashed in canonical form, so letter case does not split the job.
 func SnapshotOrderJobID(orderID string) string {
-	return uuid.NewSHA1(snapshotOrderNamespace, []byte(strings.TrimSpace(orderID))).String()
+	id := strings.TrimSpace(orderID)
+	if parsed, err := uuid.Parse(id); err == nil {
+		id = parsed.String()
+	}
+	return uuid.NewSHA1(snapshotOrderNamespace, []byte(id)).String()
 }
 
 func registerSnapshotOrder(reg *pluginsdk.SyncJobs, p *Plugin) error {
@@ -72,11 +78,7 @@ func (p *Plugin) snapshotOrderHandler() extapi.SyncJobHandler {
 		}
 		outcomes, err := svc.Execute(ctx, orderID)
 		if err != nil {
-			line := &application.SnapshotOrderError{OrderID: orderID}
-			if se, ok := err.(*application.SnapshotOrderError); ok && se != nil {
-				line = se
-			}
-			logSnapshot(job, "failed", line.OrderID, line.VariantID, line.DesignID, err)
+			logSnapshotFailure(job, orderID, err)
 			return err
 		}
 		for _, line := range outcomes {
@@ -95,9 +97,9 @@ func (p *Plugin) EnqueueSnapshotOrder(ctx context.Context, orderID string) error
 	if p == nil || p.jobs == nil {
 		return fmt.Errorf("metaldogs snapshot enqueue: plugin not initialised")
 	}
-	orderID = strings.TrimSpace(orderID)
-	if orderID == "" {
-		return fmt.Errorf("metaldogs snapshot enqueue: order id required")
+	orderID, err := canonicalSnapshotOrderID(orderID)
+	if err != nil {
+		return fmt.Errorf("metaldogs snapshot enqueue: %w", err)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -105,6 +107,18 @@ func (p *Plugin) EnqueueSnapshotOrder(ctx context.Context, orderID string) error
 	return p.jobs.EnqueueManual(ctx, SnapshotOrderJobName, SnapshotOrderJobID(orderID), map[string]interface{}{
 		"order_id": orderID,
 	})
+}
+
+func canonicalSnapshotOrderID(orderID string) (string, error) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return "", fmt.Errorf("order id required")
+	}
+	parsed, err := uuid.Parse(orderID)
+	if err != nil {
+		return "", ports.ErrInvalidOrderID
+	}
+	return parsed.String(), nil
 }
 
 func orderIDFromSnapshotPayload(payload map[string]interface{}) string {
@@ -124,6 +138,24 @@ func orderIDFromSnapshotPayload(payload map[string]interface{}) string {
 func stringField(v interface{}) string {
 	s, _ := v.(string)
 	return strings.TrimSpace(s)
+}
+
+func logSnapshotFailure(job extapi.SyncJobContext, orderID string, err error) {
+	se, ok := err.(*application.SnapshotOrderError)
+	if !ok || se == nil {
+		logSnapshot(job, "failed", orderID, "", "", err)
+		return
+	}
+	if se.OrderID != "" {
+		orderID = se.OrderID
+	}
+	if len(se.FailedLines) > 0 {
+		for _, line := range se.FailedLines {
+			logSnapshot(job, "failed", orderID, line.VariantID, line.DesignID, err)
+		}
+		return
+	}
+	logSnapshot(job, "failed", orderID, se.VariantID, se.DesignID, err)
 }
 
 func logSnapshot(job extapi.SyncJobContext, kind, orderID, variantID, designID string, err error) {

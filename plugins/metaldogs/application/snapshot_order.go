@@ -20,12 +20,14 @@ type SnapshotLineOutcome struct {
 	Written   bool
 }
 
-// SnapshotOrderError is a failed snapshot for one line. The order is unchanged.
+// SnapshotOrderError is a failed snapshot. The order is unchanged.
+// FailedLines lists every design line when the commit rolls back; otherwise VariantID and DesignID name the single line.
 type SnapshotOrderError struct {
-	OrderID   string
-	VariantID string
-	DesignID  string
-	Err       error
+	OrderID     string
+	VariantID   string
+	DesignID    string
+	FailedLines []SnapshotLineOutcome
+	Err         error
 }
 
 func (e *SnapshotOrderError) Error() string {
@@ -89,7 +91,7 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 }
 
 func commitOrderError(orderID string, snaps []domain.OrderDesignSnapshot, err error) *SnapshotOrderError {
-	line := &SnapshotOrderError{OrderID: orderID, Err: err}
+	line := &SnapshotOrderError{OrderID: orderID, Err: err, FailedLines: failedSnapshotLines(snaps)}
 	var de *ports.SnapshotDesignError
 	if !errors.As(err, &de) || de == nil || de.DesignID == "" {
 		return line
@@ -97,6 +99,17 @@ func commitOrderError(orderID string, snaps []domain.OrderDesignSnapshot, err er
 	line.DesignID = de.DesignID
 	line.VariantID = variantForDesign(snaps, de.DesignID)
 	return line
+}
+
+func failedSnapshotLines(snaps []domain.OrderDesignSnapshot) []SnapshotLineOutcome {
+	if len(snaps) == 0 {
+		return nil
+	}
+	out := make([]SnapshotLineOutcome, len(snaps))
+	for i, s := range snaps {
+		out[i] = SnapshotLineOutcome{VariantID: s.VariantID, DesignID: s.DesignID}
+	}
+	return out
 }
 
 func variantForDesign(snaps []domain.OrderDesignSnapshot, designID string) string {

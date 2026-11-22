@@ -23,6 +23,9 @@ func TestCommitOrderError_NamesFailingDesign(t *testing.T) {
 	if err.DesignID != "d-second" || err.VariantID != "v-second" || err.OrderID != orderID {
 		t.Fatalf("%+v", err)
 	}
+	if len(err.FailedLines) != 2 || err.FailedLines[0].DesignID != "d-first" || err.FailedLines[1].VariantID != "v-second" {
+		t.Fatalf("rolled back lines %+v", err.FailedLines)
+	}
 
 	same := []domain.OrderDesignSnapshot{
 		{VariantID: "v-m", DesignID: "d-same"},
@@ -35,9 +38,12 @@ func TestCommitOrderError_NamesFailingDesign(t *testing.T) {
 	if err.DesignID != "d-same" || err.VariantID != "" {
 		t.Fatalf("shared design %+v", err)
 	}
+	if len(err.FailedLines) != 2 || err.FailedLines[0].VariantID != "v-m" || err.FailedLines[1].VariantID != "v-l" {
+		t.Fatalf("shared lines %+v", err.FailedLines)
+	}
 
 	err = commitOrderError(orderID, snaps, fmt.Errorf("metaldogs order_design_snapshots begin: down"))
-	if err.DesignID != "" || err.VariantID != "" || err.OrderID != orderID {
+	if err.DesignID != "" || err.VariantID != "" || err.OrderID != orderID || len(err.FailedLines) != 2 {
 		t.Fatalf("unknown line %+v", err)
 	}
 	if !errors.Is(err, err.Err) {
