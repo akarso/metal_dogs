@@ -44,5 +44,5 @@ The GitLab sample installs **jq** and **Node 22** before calling `scripts/ci/*`.
 Delete the workflow files, or never copy them. `make check` / `bash scripts/ci/unit.sh`
 still work locally.
 
-See [PRODUCT_SITES](https://github.com/akarso/shopanda/blob/72785f27e1f82cf18dbdb2322a3f6309bfd8cead/docs/guides/PRODUCT_SITES.md) and
-[product-ci-samples runbook](https://github.com/akarso/shopanda/blob/72785f27e1f82cf18dbdb2322a3f6309bfd8cead/docs/runbooks/product-ci-samples.md).
+See [PRODUCT_SITES](https://github.com/akarso/shopanda/blob/40e0d57130336d6a4994e086770a99af006fa226/docs/guides/PRODUCT_SITES.md) and
+[product-ci-samples runbook](https://github.com/akarso/shopanda/blob/40e0d57130336d6a4994e086770a99af006fa226/docs/runbooks/product-ci-samples.md).
