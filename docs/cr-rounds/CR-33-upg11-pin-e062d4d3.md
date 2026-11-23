@@ -43,7 +43,7 @@ No conflict under `internal/`, `pkg/`, or `cmd/api`. Those paths match the pin e
 
 `themes/default` is unchanged in this range. The product does not override those templates.
 
-`plugins/metaldogs` is unchanged. It does not call `Lines`, `LinesForOrders`, `ListCreatedSince`, or `WithEventJobID`.
+`plugins/metaldogs` production code is unchanged. It does not call `Lines`, `LinesForOrders`, `ListCreatedSince`, or `WithEventJobID`. `orderIDFromSnapshotPayload` already reads a top-level `order_id` and falls back to `data.order_id`. The feature test counted dispatcher jobs under `payload->'payload'->'data'`. The pin stores a flattened event payload, so that count was 0 while the job row existed. The three queries in `snapshot_order_test.go` now use `payload->'payload'->>'order_id'`.
 
 ### Allowlist after this bump
 
