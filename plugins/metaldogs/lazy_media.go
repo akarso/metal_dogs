@@ -16,6 +16,8 @@ type lazyAssetStore struct {
 	host pluginsdk.Host
 }
 
+var _ ports.DispositionSigner = lazyAssetStore{}
+
 func (s lazyAssetStore) open() (ports.AssetStore, error) {
 	if s.host == nil {
 		return nil, fmt.Errorf("metaldogs: media storage not registered (enable core storagelocal or storages3)")
@@ -65,6 +67,18 @@ func (s lazyAssetStore) SignedGetURL(ctx context.Context, key string, ttl time.D
 		return "", err
 	}
 	return st.SignedGetURL(ctx, key, ttl)
+}
+
+func (s lazyAssetStore) SignedGetURLDisposition(ctx context.Context, key string, ttl time.Duration, disp ports.SignedDisposition) (string, error) {
+	st, err := s.open()
+	if err != nil {
+		return "", err
+	}
+	signer, ok := st.(ports.DispositionSigner)
+	if !ok {
+		return "", fmt.Errorf("metaldogs: asset store does not sign explicit disposition")
+	}
+	return signer.SignedGetURLDisposition(ctx, key, ttl, disp)
 }
 
 func (s lazyAssetStore) Delete(ctx context.Context, key string) error {

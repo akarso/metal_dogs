@@ -401,7 +401,7 @@ Registered only when the plugin is enabled and `plugins.metaldogs.order_snapshot
 }
 ```
 
-`production` is JSON `null` when `production_asset_id` is empty. An existing order with no snapshot rows is `200` and `"lines":[]`. The URL TTL is 300s (`OrderArtworkTTL`), not caller-controlled, and still capped by `MaxSignedGetTTL` (15m). `expires_at` is that deadline. Inline disposition is only for `.jpg` / `.jpeg` / `.png` / `.webp`; any other key (production `.pdf` in the test) is an attachment. The body has no storage key.
+`production` is JSON `null` when `production_asset_id` is empty. An existing order with no snapshot rows is `200` and `"lines":[]`. The URL TTL is 300s (`OrderArtworkTTL`), not caller-controlled, and still capped by `MaxSignedGetTTL` (15m). `expires_at` is that deadline. Approved artwork is inline only for `.jpg` / `.jpeg` / `.png` / `.webp`. Production artwork is always an attachment, including a `.png` key. The body has no storage key.
 
 The shell command `metaldogs:order-artwork <order_id>` prints the same JSON (actor `cli`, channel `cli`). It does not check `metaldogs.snapshots.read`. Flag off: the command is not registered, and the handler exits non-zero with `plugins.metaldogs.order_snapshot.enabled is false`.
 

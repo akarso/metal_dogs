@@ -15,7 +15,7 @@ Requires `plugins.metaldogs.order_snapshot.enabled` true (default false; same fl
 
 Both surfaces call `OrderArtworkAccess`. Each issued URL is one row in `metaldogs_artwork_access_log` (migration `016`): `order_id`, `variant_id`, `kind` (`approved` or `production`), `actor`, `channel` (`admin` or `cli`), `requested_at`. The table is append-only. A row has no URL and no storage key. A failed log write returns no URL. The process log for the call is `metaldogs.order_artwork.access` with `order_id` and `actor` only. Do not paste the signed URL into a ticket.
 
-TTL is fixed at 300 seconds (`OrderArtworkTTL`), under the 15-minute `MaxSignedGetTTL` cap. `expires_at` is in the JSON. After that the URL no longer fetches the bytes. Disposition follows the existing signed-GET rule: inline for `.jpg`, `.jpeg`, `.png`, `.webp`; any other extension (a production `.pdf`) is an attachment. The body never contains a storage key.
+TTL is fixed at 300 seconds (`OrderArtworkTTL`), under the 15-minute `MaxSignedGetTTL` cap. `expires_at` is in the JSON. After that the URL no longer fetches the bytes. Approved artwork is inline for `.jpg`, `.jpeg`, `.png`, `.webp`. The production URL is always a download, including when the file is a `.png`. The body never contains a storage key. `metaldogs.order_artwork.access` at error means signing or the audit write failed. A non-UUID order id is the same event at info, and the command prints `order id is not a uuid`.
 
 Permission `metaldogs.snapshots.read` is registered for role `admin` only, and only while the flag is on.
 

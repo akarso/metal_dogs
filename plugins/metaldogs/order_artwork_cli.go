@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/akarso/shopanda/pkg/pluginsdk"
-	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
@@ -35,37 +34,24 @@ func (p *Plugin) runOrderArtwork(ctx pluginsdk.CLIContext, args []string) error 
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		return fmt.Errorf("%s: order_id required", CommandOrderArtwork)
 	}
-	db, err := pluginDB(p)
-	if err != nil {
-		return fmt.Errorf("%s: %w", CommandOrderArtwork, err)
-	}
 	if p.orderLookup == nil {
 		return fmt.Errorf("%s: order source is not bound", CommandOrderArtwork)
 	}
 	if p.assets == nil {
 		return fmt.Errorf("%s: asset store is not configured", CommandOrderArtwork)
 	}
+	svc, err := p.openOrderArtwork()
+	if err != nil {
+		return fmt.Errorf("%s: %w", CommandOrderArtwork, err)
+	}
+	if ctx.Logger != nil {
+		svc.Logger = ctx.Logger
+	}
 	c := ctx.Ctx
 	if c == nil {
 		c = context.Background()
 	}
-	var log application.ArtworkLogger
-	if ctx.Logger != nil {
-		log = ctx.Logger
-	}
-	clock := p.snapshotClock
-	if clock == nil {
-		clock = ports.SystemClock{}
-	}
-	view, err := (&application.OrderArtworkAccess{
-		Orders:    p.orderLookup,
-		Snapshots: postgres.NewOrderDesignSnapshotRepo(db),
-		Assets:    postgres.NewAssetRepo(db),
-		Store:     p.assets,
-		Log:       postgres.NewArtworkAccessLogRepo(db),
-		Clock:     clock,
-		Logger:    log,
-	}).Access(c, args[0], application.ArtworkActorCLI, ports.ArtworkChannelCLI)
+	view, err := svc.Access(c, args[0], application.ArtworkActorCLI, ports.ArtworkChannelCLI)
 	if err != nil {
 		if errors.Is(err, application.ErrOrderNotFound) {
 			return fmt.Errorf("not found")

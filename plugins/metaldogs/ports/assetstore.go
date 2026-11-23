@@ -32,6 +32,22 @@ type AssetStore interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// SignedDisposition is Content-Disposition on one signed GET.
+type SignedDisposition string
+
+const (
+	// SignedDispositionAttachment forces a download.
+	SignedDispositionAttachment SignedDisposition = "attachment"
+	// SignedDispositionInline lets the browser preview allowlisted images.
+	SignedDispositionInline SignedDisposition = "inline"
+)
+
+// DispositionSigner signs a key with an explicit Content-Disposition.
+// Production artwork uses attachment even when the key is a preview image.
+type DispositionSigner interface {
+	SignedGetURLDisposition(ctx context.Context, key string, ttl time.Duration, disp SignedDisposition) (string, error)
+}
+
 // ObjectKey builds an opaque storage key:
 // private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}
 // Keys never include dog names, customer IDs, or original filenames.

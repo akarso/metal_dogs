@@ -82,7 +82,7 @@ func (s *OrderArtworkAccess) Access(ctx context.Context, orderID, actor, channel
 		return OrderArtwork{}, ErrArtworkAccessFailed
 	}
 	if err := canonicalOrderID(orderID); err != nil {
-		s.logCall(orderID, actor, true)
+		s.logCall(orderID, actor, false)
 		return OrderArtwork{}, err
 	}
 	exists, err := s.Orders.Exists(ctx, orderID)
@@ -121,7 +121,7 @@ func (s *OrderArtworkAccess) Access(ctx context.Context, orderID, actor, channel
 }
 
 func (s *OrderArtworkAccess) signLine(ctx context.Context, snap domain.OrderDesignSnapshot, actor, channel string, now, expires time.Time) (OrderArtworkLine, []ports.ArtworkAccessEvent, error) {
-	approvedURL, err := s.signAsset(ctx, snap.ArtworkAssetID)
+	approvedURL, err := s.signAsset(ctx, snap.ArtworkAssetID, false)
 	if err != nil {
 		return OrderArtworkLine{}, nil, err
 	}
@@ -144,7 +144,7 @@ func (s *OrderArtworkAccess) signLine(ctx context.Context, snap domain.OrderDesi
 	if snap.ProductionAssetID == "" {
 		return line, events, nil
 	}
-	prodURL, err := s.signAsset(ctx, snap.ProductionAssetID)
+	prodURL, err := s.signAsset(ctx, snap.ProductionAssetID, true)
 	if err != nil {
 		return OrderArtworkLine{}, nil, err
 	}
@@ -157,12 +157,21 @@ func (s *OrderArtworkAccess) signLine(ctx context.Context, snap domain.OrderDesi
 	return line, events, nil
 }
 
-func (s *OrderArtworkAccess) signAsset(ctx context.Context, assetID string) (string, error) {
+func (s *OrderArtworkAccess) signAsset(ctx context.Context, assetID string, attachment bool) (string, error) {
 	asset, ok, err := s.Assets.GetByID(ctx, assetID)
 	if err != nil || !ok || strings.TrimSpace(asset.StorageKey) == "" {
 		return "", ErrArtworkAccessFailed
 	}
-	url, err := s.Store.SignedGetURL(ctx, asset.StorageKey, OrderArtworkTTL)
+	var url string
+	if attachment {
+		signer, isSigner := s.Store.(ports.DispositionSigner)
+		if !isSigner {
+			return "", ErrArtworkAccessFailed
+		}
+		url, err = signer.SignedGetURLDisposition(ctx, asset.StorageKey, OrderArtworkTTL, ports.SignedDispositionAttachment)
+	} else {
+		url, err = s.Store.SignedGetURL(ctx, asset.StorageKey, OrderArtworkTTL)
+	}
 	if err != nil || strings.TrimSpace(url) == "" {
 		return "", ErrArtworkAccessFailed
 	}

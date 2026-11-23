@@ -1,6 +1,6 @@
 # ADR-0004: Private S3-compatible storage with short-lived signed URLs
 
-- **Status:** Accepted (F4 port; **C2** first Put call site via `POST /api/customizer/uploads`). **E5** landed ([CR-35](../cr-rounds/CR-35-e5-artwork-access.md), 2026-11-23): `OrderArtworkAccess` signs approved and production snapshot artwork with a fixed 300s TTL through this `SignedGetURL` (still capped at 15m). The route and `metaldogs:order-artwork` register only when `plugins.metaldogs.order_snapshot.enabled` is true. Each issued URL is one append-only row in `metaldogs_artwork_access_log` (no URL, no storage key). URLs are not logged.
+- **Status:** Accepted (F4 port; **C2** first Put call site via `POST /api/customizer/uploads`). **E5** landed ([CR-35](../cr-rounds/CR-35-e5-artwork-access.md), 2026-11-23): `OrderArtworkAccess` signs approved artwork with `SignedGetURL` and production artwork with attachment via `SignedGetURLDisposition`. TTL is a fixed 300s (still capped at 15m). The route and `metaldogs:order-artwork` register only when `plugins.metaldogs.order_snapshot.enabled` is true. Each issued URL is one append-only row in `metaldogs_artwork_access_log` (no URL, no storage key). URLs are not logged. A non-UUID order id is logged at info; error is reserved for `ErrArtworkAccessFailed`.
 - **Date:** 2026-10-15
 - **Related slices:** `F4`, `C2`, `C5`, `E5`, `E6`, `O2`, `O6`
 - **Related ADRs:** [ADR-0007](0007-guest-design-ownership-tokens.md)
@@ -13,7 +13,7 @@ Uploaded photos are private personal data. Shopanda provides `media.SignedURLSto
 
 1. Metal Dogs assets use core media storage (local or S3). No second product registry or HMAC route.
 2. Object keys: `private/blobs/metaldogs/{asset_type}/{yyyy}/{mm}/{asset_id}.{ext}` (`ports.AssetKeyPrefix`). The mediastore adapter **rejects** any other key for Put/Head/Delete/SignedGetURL.
-3. Delivery via short-lived signed URLs (`SignedGetURL` caps TTL ≤ 15m, default 60s). Inline disposition only for allowlisted image extensions (`jpg/jpeg/png/webp`); other keys force attachment. Caller `Content-Type` outside that allowlist is overridden. URLs must not be logged.
+3. Delivery via short-lived signed URLs (`SignedGetURL` caps TTL ≤ 15m, default 60s). Inline disposition only for allowlisted image extensions (`jpg/jpeg/png/webp`); other keys force attachment. E5 production artwork is the exception: `OrderArtworkAccess` calls `SignedGetURLDisposition` with attachment, so a production image is a download. Caller `Content-Type` outside that allowlist is overridden. URLs must not be logged.
 4. Plugin `AssetStore` wraps `media.SignedURLStorage` only.
 5. `metaldogs_assets` metadata + EXIF-strip re-encode on upload: **landed in C2**. Guest ownership / 404 hiding of foreign assets: **C3+**. Retention sweep of expired unattached uploads: **O2**.
 6. Local layout: config default and examples use `./var/media` (not under a static web root). Private keys share that root — operators must **never** FileServer `base_path` / `base_url`. Platform localfs uses `0700`/`0600` (chmod ancestors on private write), EvalSymlinks containment, and versioned HMAC tokens with v0 compat parse.

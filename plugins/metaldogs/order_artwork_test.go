@@ -147,6 +147,7 @@ func TestOrderArtworkCLI(t *testing.T) {
 			t.Fatalf("ttl %s", ttl)
 		}
 	}
+	assertArtworkDisposition(t, store, artKey, prodKey)
 	assertNoStorageKey(t, out, log.dump(), artKey, prodKey, prevKey)
 	assertAuditRows(t, db, orderFull, start, []string{ports.ArtworkKindApproved, ports.ArtworkKindProduction})
 
@@ -200,6 +201,13 @@ func TestOrderArtworkCLI(t *testing.T) {
 	}
 	if orders.findCalls < 4 {
 		t.Fatalf("FindByID calls %d", orders.findCalls)
+	}
+	errBefore := log.errorCount()
+	if _, err := runOrderArtwork(t, reg, log, "not-a-uuid"); err == nil || !strings.Contains(err.Error(), "not a uuid") {
+		t.Fatalf("bad id: %v", err)
+	}
+	if log.errorCount() != errBefore {
+		t.Fatal("invalid order id logged at error")
 	}
 	assertNoStorageKey(t, emptyOut, log.dump(), artKey, prodKey, prevKey)
 
@@ -380,11 +388,17 @@ type expiringToken struct {
 	exp time.Time
 }
 
+type issuedSign struct {
+	key  string
+	disp ports.SignedDisposition
+}
+
 type expiringStore struct {
 	clock *testutil.FakeClock
 	body  map[string][]byte
 	token map[string]expiringToken
 	ttls  []time.Duration
+	signs []issuedSign
 	mu    sync.Mutex
 }
 
@@ -400,6 +414,17 @@ func (s *expiringStore) Delete(context.Context, string) error {
 }
 
 func (s *expiringStore) SignedGetURL(_ context.Context, key string, ttl time.Duration) (string, error) {
+	return s.issue(key, ttl, "")
+}
+
+func (s *expiringStore) SignedGetURLDisposition(_ context.Context, key string, ttl time.Duration, disp ports.SignedDisposition) (string, error) {
+	if disp != ports.SignedDispositionAttachment && disp != ports.SignedDispositionInline {
+		return "", fmt.Errorf("disposition required")
+	}
+	return s.issue(key, ttl, disp)
+}
+
+func (s *expiringStore) issue(key string, ttl time.Duration, disp ports.SignedDisposition) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.body[key]; !ok {
@@ -409,9 +434,28 @@ func (s *expiringStore) SignedGetURL(_ context.Context, key string, ttl time.Dur
 		s.token = map[string]expiringToken{}
 	}
 	s.ttls = append(s.ttls, ttl)
+	s.signs = append(s.signs, issuedSign{key: key, disp: disp})
 	id := fmt.Sprintf("u%d", len(s.ttls))
 	s.token[id] = expiringToken{key: key, exp: s.clock.Now().Add(ttl)}
 	return "https://artwork.invalid/" + id, nil
+}
+
+func assertArtworkDisposition(t *testing.T, store *expiringStore, approvedKey, productionKey string) {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var approved, production bool
+	for _, sign := range store.signs {
+		if sign.key == approvedKey && sign.disp == "" {
+			approved = true
+		}
+		if sign.key == productionKey && sign.disp == ports.SignedDispositionAttachment {
+			production = true
+		}
+	}
+	if !approved || !production {
+		t.Fatalf("signs %+v", store.signs)
+	}
 }
 
 func (s *expiringStore) Fetch(url string) ([]byte, error) {
@@ -432,6 +476,7 @@ type artworkCaptureLog struct {
 	mu      sync.Mutex
 	text    bytes.Buffer
 	badKeys []string
+	errors  int
 }
 
 func (l *artworkCaptureLog) Info(event string, fields map[string]interface{}) {
@@ -446,9 +491,18 @@ func (l *artworkCaptureLog) Error(event string, err error, fields map[string]int
 	l.record(event, err, fields)
 }
 
+func (l *artworkCaptureLog) errorCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.errors
+}
+
 func (l *artworkCaptureLog) record(event string, err error, fields map[string]interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err != nil {
+		l.errors++
+	}
 	fmt.Fprintf(&l.text, "%s\n", event)
 	if err != nil {
 		fmt.Fprintf(&l.text, "%s\n", err.Error())
