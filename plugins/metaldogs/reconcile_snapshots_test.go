@@ -91,7 +91,9 @@ func TestReconcileSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := memory.NewOrderSource()
-	p.SetOrderSource(src)
+	listed := &listingOrders{inner: src}
+	p.SetOrderSource(listed)
+	p.SetSnapshotClock(testutil.NewFakeClock(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)))
 	cat := &application.TemplateCatalog{Store: postgres.NewTemplateStore(db), IDs: ports.UUIDGenerator{}}
 	snaps := postgres.NewOrderDesignSnapshotRepo(db)
 	handler := findSnapshotHandler(t, app)
@@ -105,6 +107,11 @@ func TestReconcileSnapshots(t *testing.T) {
 		{VariantID: missingVariant, SKU: "TEE-M", Quantity: 1, DesignID: missingSeed.Design.ID},
 		{VariantID: otherVariant, SKU: "TEE-PLAIN", Quantity: 1},
 	})
+	staleOrder := uuid.NewString()
+	staleVariant := uuid.NewString()
+	src.Add(staleOrder, created.Add(-application.ReconcileLookback-time.Hour), []ports.OrderLine{{
+		VariantID: staleVariant, SKU: "TEE-M", Quantity: 1, DesignID: missingSeed.Design.ID,
+	}})
 
 	heldSeed := seedApprovedDesign(t, db, cat, "tee-reconcile-held", "prompt-reconcile-held", false)
 	heldOrder := uuid.NewString()
@@ -130,16 +137,34 @@ func TestReconcileSnapshots(t *testing.T) {
 	if strings.Contains(out, heldOrder) {
 		t.Fatalf("snapshotted order reported %q", out)
 	}
+	if strings.Contains(out, staleOrder) {
+		t.Fatalf("order outside lookback reported %q", out)
+	}
 	if strings.Count(out, "order_id="+missingOrder) != 1 {
 		t.Fatalf("report %q", out)
 	}
+	heldSnap, ok, err := snaps.Get(ctx, heldOrder, heldVariant)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if heldSnap.ProductionAssetID != "" || heldSnap.ProductionChecksum != "" {
+		t.Fatalf("report wrote production %+v", heldSnap)
+	}
 
+	listsBefore := listed.lists
 	narrow, err := runReconcile(t, reg, []string{"--order=" + missingOrder})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(narrow, wantLine) || strings.Contains(narrow, heldOrder) {
 		t.Fatalf("narrow %q", narrow)
+	}
+	if listed.lists != listsBefore {
+		t.Fatalf("scoped reconcile listed orders: before=%d after=%d", listsBefore, listed.lists)
+	}
+	staleOut, err := runReconcile(t, reg, []string{"--order=" + staleOrder})
+	if err != nil || !strings.Contains(staleOut, staleOrder+"/"+staleVariant) || !strings.Contains(staleOut, application.ReconcileReasonMissing) {
+		t.Fatalf("err=%v stale %q", err, staleOut)
 	}
 
 	if _, err := runReconcile(t, reg, []string{"--order=" + missingOrder, "--fix"}); err != nil {
@@ -148,6 +173,10 @@ func TestReconcileSnapshots(t *testing.T) {
 	jobID := metaldogs.SnapshotOrderJobID(missingOrder)
 	if n := countJobID(t, db, jobID); n != 1 {
 		t.Fatalf("jobs=%d", n)
+	}
+	pendingOut, err := runReconcile(t, reg, []string{"--order=" + missingOrder})
+	if err != nil || !strings.Contains(pendingOut, application.ReconcileReasonPending) || strings.Contains(pendingOut, "reason="+application.ReconcileReasonMissing) {
+		t.Fatalf("err=%v pending %q", err, pendingOut)
 	}
 	if _, err := runReconcile(t, reg, []string{"--fix", "--order=" + missingOrder}); err != nil {
 		t.Fatal(err)
@@ -169,6 +198,7 @@ func TestReconcileSnapshots(t *testing.T) {
 	srcOff.Add(refusedOrder, created, []ports.OrderLine{{
 		VariantID: uuid.NewString(), SKU: "TEE-M", Quantity: 1, DesignID: missingSeed.Design.ID,
 	}})
+	pOff.SetSnapshotClock(testutil.NewFakeClock(created.Add(24 * time.Hour)))
 	pOff.SetOrderSource(srcOff)
 	refused, err := runReconcile(t, regOff, []string{"--order=" + refusedOrder, "--fix"})
 	if err == nil || !strings.Contains(err.Error(), "--fix refused") || !strings.Contains(err.Error(), "order_snapshot.enabled") {
@@ -257,9 +287,9 @@ func TestReconcileSnapshots(t *testing.T) {
 	if strings.Contains(sweepOut, sweepOrder) {
 		t.Fatalf("filled order reported %q", sweepOut)
 	}
-	swept, ok, err := snaps.Get(ctx, sweepOrder, sweepVariant)
-	if err != nil || !ok || swept.ProductionAssetID != sweepProd || swept.ProductionChecksum != "sha256:late" {
-		t.Fatalf("ok=%v err=%v %+v", ok, err, swept)
+	unfilled, ok, err := snaps.Get(ctx, sweepOrder, sweepVariant)
+	if err != nil || !ok || unfilled.ProductionAssetID != "" || unfilled.ProductionChecksum != "" {
+		t.Fatalf("report filled production ok=%v err=%v %+v", ok, err, unfilled)
 	}
 
 	cronOrder := uuid.NewString()
@@ -283,6 +313,44 @@ func TestReconcileSnapshots(t *testing.T) {
 	if !log.contains("metaldogs.reconcile_snapshots.gap") || !log.contains(cronOrder) || !log.contains(cronOrder+"/"+cronVariant) || !log.contains(application.ReconcileReasonMissing) {
 		t.Fatalf("cron log %+v", log.lines)
 	}
+	swept, ok, err := snaps.Get(ctx, sweepOrder, sweepVariant)
+	if err != nil || !ok || swept.ProductionAssetID != sweepProd || swept.ProductionChecksum != "sha256:late" {
+		t.Fatalf("ok=%v err=%v %+v", ok, err, swept)
+	}
+
+	badOrder := uuid.NewString()
+	src.Add(badOrder, created, []ports.OrderLine{{
+		VariantID: uuid.NewString(), SKU: "TEE-M", Quantity: 1, DesignID: missingSeed.Design.ID,
+	}})
+	listed.fail = map[string]error{badOrder: errors.New("lines down")}
+	badOut, err := runReconcile(t, reg, nil)
+	if err == nil || !strings.Contains(err.Error(), "lines down") {
+		t.Fatalf("err=%v", err)
+	}
+	if !strings.Contains(badOut, badOrder) || !strings.Contains(badOut, "reason="+application.ReconcileReasonInspectFailed) || !strings.Contains(badOut, cronOrder) {
+		t.Fatalf("partial report %q", badOut)
+	}
+	if n := countJobID(t, db, metaldogs.SnapshotOrderJobID(badOrder)); n != 0 {
+		t.Fatalf("inspect failure enqueued %d", n)
+	}
+}
+
+type listingOrders struct {
+	inner ports.OrderSource
+	fail  map[string]error
+	lists int
+}
+
+func (o *listingOrders) Lines(ctx context.Context, orderID string) ([]ports.OrderLine, error) {
+	if err := o.fail[orderID]; err != nil {
+		return nil, err
+	}
+	return o.inner.Lines(ctx, orderID)
+}
+
+func (o *listingOrders) ListCreatedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
+	o.lists++
+	return o.inner.ListCreatedSince(ctx, since, afterID, limit)
 }
 
 func runReconcile(t *testing.T, reg *plugin.Registry, args []string) (string, error) {

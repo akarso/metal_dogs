@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,8 +15,18 @@ import (
 
 const reconcilePageSize = 100
 
-// ReconcileReasonMissing is the report reason when a design line has no snapshot and no failed job.
+// ReconcileLookback is how far ListCreatedSince reaches on an unscoped run.
+// Older orders stay out of the cron and the unscoped CLI report; --order still inspects them.
+const ReconcileLookback = 30 * 24 * time.Hour
+
+// ReconcileReasonMissing is the report reason when a design line has no snapshot and no in-flight or failed job.
 const ReconcileReasonMissing = "missing_snapshot"
+
+// ReconcileReasonPending is the report reason when the snapshot job is still pending, processing, or reclaiming.
+const ReconcileReasonPending = "snapshot_job_pending"
+
+// ReconcileReasonInspectFailed is the report reason when one order could not be read. The sweep continues.
+const ReconcileReasonInspectFailed = "inspect_failed"
 
 // ReconcileGap is one design line that has no snapshot.
 type ReconcileGap struct {
@@ -37,14 +48,18 @@ type ReconcileSnapshots struct {
 	Orders    ports.OrderSource
 	Snapshots ports.OrderDesignSnapshotRepository
 	Versions  ports.DesignVersionRepository
-	// JobFailure reports a terminal-failed snapshot job for the order.
-	// failed is false when there is no such job. Nil skips the lookup.
-	JobFailure func(ctx context.Context, orderID string) (failed bool, reason string, err error)
-	Fill       bool
+	// JobReport classifies the snapshot job for the order.
+	// pending is set while the job is in flight. failed is set when it is terminal-failed.
+	// Both false means there is no job, or it is done or cancelled. Nil skips the lookup.
+	JobReport func(ctx context.Context, orderID string) (pending bool, failed bool, reason string, err error)
+	// Clock bounds the unscoped list. Nil uses time.Now.
+	Clock ports.Clock
+	Fill  bool
 }
 
-// Run reads orders from ListCreatedSince (created_at >= zero, every page) and Lines.
-// orderID, when set, limits the report to that order. It must be a canonical UUID.
+// Run reports design lines with no snapshot.
+// An empty orderID lists orders created within ReconcileLookback.
+// A canonical orderID inspects that order and does not call ListCreatedSince.
 func (r *ReconcileSnapshots) Run(ctx context.Context, orderID string) ([]ReconcileGap, error) {
 	if r == nil || r.Orders == nil || r.Snapshots == nil {
 		return nil, fmt.Errorf("metaldogs reconcile: dependencies required")
@@ -53,32 +68,54 @@ func (r *ReconcileSnapshots) Run(ctx context.Context, orderID string) ([]Reconci
 	if err != nil {
 		return nil, err
 	}
+	if only != "" {
+		return r.finishOrder(ctx, only)
+	}
 	var gaps []ReconcileGap
+	var failed error
 	var after string
+	since := r.now().Add(-ReconcileLookback)
 	for {
-		ids, err := r.Orders.ListCreatedSince(ctx, time.Time{}, after, reconcilePageSize)
+		ids, err := r.Orders.ListCreatedSince(ctx, since, after, reconcilePageSize)
 		if err != nil {
-			return nil, fmt.Errorf("metaldogs reconcile: list orders: %w", err)
+			return gaps, errors.Join(failed, fmt.Errorf("metaldogs reconcile: list orders: %w", err))
 		}
 		if len(ids) == 0 {
 			break
 		}
 		for _, id := range ids {
-			if only != "" && id != only {
-				continue
-			}
-			found, err := r.inspect(ctx, id)
-			if err != nil {
-				return nil, err
-			}
+			found, err := r.finishOrder(ctx, id)
 			gaps = append(gaps, found...)
+			if err != nil {
+				failed = errors.Join(failed, err)
+			}
 		}
 		after = ids[len(ids)-1]
 		if len(ids) < reconcilePageSize {
 			break
 		}
 	}
-	return gaps, nil
+	return gaps, failed
+}
+
+func (r *ReconcileSnapshots) now() time.Time {
+	if r == nil || r.Clock == nil {
+		return time.Now().UTC()
+	}
+	return r.Clock.Now().UTC()
+}
+
+func (r *ReconcileSnapshots) finishOrder(ctx context.Context, orderID string) ([]ReconcileGap, error) {
+	found, err := r.inspect(ctx, orderID)
+	if err == nil {
+		return found, nil
+	}
+	found = append(found, ReconcileGap{
+		OrderID: orderID,
+		LineKey: LineKey(orderID, ""),
+		Reason:  ReconcileReasonInspectFailed + ": " + oneLine(err.Error()),
+	})
+	return found, err
 }
 
 func canonicalReconcileOrder(orderID string) (string, error) {
@@ -116,17 +153,6 @@ func (r *ReconcileSnapshots) inspect(ctx context.Context, orderID string) ([]Rec
 		seenVersion[snap.DesignVersionID] = struct{}{}
 		versions = append(versions, snap.DesignVersionID)
 	}
-	if r.Fill && len(versions) > 0 {
-		if r.Versions == nil {
-			return nil, fmt.Errorf("metaldogs reconcile: production fill dependencies required")
-		}
-		filler := &FillSnapshotProduction{Versions: r.Versions, Snapshots: r.Snapshots}
-		for _, id := range versions {
-			if err := filler.Execute(ctx, id); err != nil {
-				return nil, err
-			}
-		}
-	}
 	var missing []ports.OrderLine
 	for _, line := range lines {
 		if strings.TrimSpace(line.DesignID) == "" {
@@ -138,15 +164,21 @@ func (r *ReconcileSnapshots) inspect(ctx context.Context, orderID string) ([]Rec
 		missing = append(missing, line)
 	}
 	if len(missing) == 0 {
+		if err := r.fillReady(ctx, versions); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 	reason := ReconcileReasonMissing
-	if r.JobFailure != nil {
-		failed, jobReason, err := r.JobFailure(ctx, orderID)
+	if r.JobReport != nil {
+		pending, failed, jobReason, err := r.JobReport(ctx, orderID)
 		if err != nil {
 			return nil, fmt.Errorf("metaldogs reconcile: snapshot job %s: %w", orderID, err)
 		}
-		if failed {
+		switch {
+		case pending:
+			reason = ReconcileReasonPending
+		case failed:
 			jobReason = oneLine(jobReason)
 			if jobReason == "" {
 				jobReason = "snapshot_job_failed"
@@ -164,7 +196,26 @@ func (r *ReconcileSnapshots) inspect(ctx context.Context, orderID string) ([]Rec
 			Reason:    reason,
 		})
 	}
+	if err := r.fillReady(ctx, versions); err != nil {
+		return gaps, err
+	}
 	return gaps, nil
+}
+
+func (r *ReconcileSnapshots) fillReady(ctx context.Context, versions []string) error {
+	if r == nil || !r.Fill || len(versions) == 0 {
+		return nil
+	}
+	if r.Versions == nil {
+		return fmt.Errorf("metaldogs reconcile: production fill dependencies required")
+	}
+	filler := &FillSnapshotProduction{Versions: r.Versions, Snapshots: r.Snapshots}
+	for _, id := range versions {
+		if err := filler.Execute(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func oneLine(s string) string {

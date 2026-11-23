@@ -39,23 +39,19 @@ func (p *Plugin) reconcileSnapshotsHandler() extapi.SyncJobHandler {
 			}
 		}
 		gaps, err := p.reconcileOrders(ctx, db, "", true)
-		if err != nil {
-			if job.Logger != nil {
+		if job.Logger != nil {
+			for _, gap := range gaps {
+				job.Logger.Info("metaldogs.reconcile_snapshots.gap", map[string]interface{}{
+					"order_id": gap.OrderID,
+					"line_key": gap.LineKey,
+					"reason":   gap.Reason,
+				})
+			}
+			if err != nil {
 				job.Logger.Error("metaldogs.reconcile_snapshots.failed", err, nil)
 			}
-			return err
 		}
-		if job.Logger == nil {
-			return nil
-		}
-		for _, gap := range gaps {
-			job.Logger.Info("metaldogs.reconcile_snapshots.gap", map[string]interface{}{
-				"order_id": gap.OrderID,
-				"line_key": gap.LineKey,
-				"reason":   gap.Reason,
-			})
-		}
-		return nil
+		return err
 	}
 }
 
@@ -70,35 +66,43 @@ func (p *Plugin) reconcileOrders(ctx context.Context, db *sql.DB, orderID string
 		ctx = context.Background()
 	}
 	svc := &application.ReconcileSnapshots{
-		Orders:     p.orderSource,
-		Snapshots:  postgres.NewOrderDesignSnapshotRepo(db),
-		Versions:   postgres.NewDesignVersionRepo(db),
-		JobFailure: p.snapshotJobFailure,
-		Fill:       fill,
+		Orders:    p.orderSource,
+		Snapshots: postgres.NewOrderDesignSnapshotRepo(db),
+		Versions:  postgres.NewDesignVersionRepo(db),
+		JobReport: p.snapshotJobReport,
+		Clock:     p.snapshotClock,
+		Fill:      fill,
 	}
 	return svc.Run(ctx, orderID)
 }
 
-func (p *Plugin) snapshotJobFailure(ctx context.Context, orderID string) (bool, string, error) {
+func (p *Plugin) snapshotJobReport(ctx context.Context, orderID string) (bool, bool, string, error) {
 	if p == nil || p.jobs == nil {
-		return false, "", nil
+		return false, false, "", nil
 	}
 	store, ok := p.jobs.Store()
 	if !ok || store == nil {
-		return false, "", nil
+		return false, false, "", nil
 	}
 	detail, err := store.Get(ctx, SnapshotOrderJobID(orderID))
 	if err != nil {
-		return false, "", err
+		return false, false, "", err
 	}
-	if detail == nil || detail.Status != ports.JobStatusFailed {
-		return false, "", nil
+	if detail == nil {
+		return false, false, "", nil
 	}
-	reason := strings.TrimSpace(detail.LastError)
-	if reason == "" {
-		return true, "snapshot_job_failed", nil
+	switch detail.Status {
+	case ports.JobStatusPending, ports.JobStatusProcessing, ports.JobStatusReclaiming:
+		return true, false, "", nil
+	case ports.JobStatusFailed:
+		reason := strings.TrimSpace(detail.LastError)
+		if reason == "" {
+			return false, true, "snapshot_job_failed", nil
+		}
+		return false, true, "snapshot_job_failed: " + reason, nil
+	default:
+		return false, false, "", nil
 	}
-	return true, "snapshot_job_failed: " + reason, nil
 }
 
 // FillSnapshotProduction records ready production artwork on snapshots of versionID.
@@ -143,7 +147,7 @@ func (p *Plugin) runSnapshots(ctx pluginsdk.CLIContext, args []string) error {
 func (p *Plugin) runReconcileCLI(ctx pluginsdk.CLIContext, args []string) error {
 	fs := flag.NewFlagSet(CommandSnapshots+" reconcile", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
-	orderID := fs.String("order", "", "limit the report to one order id")
+	orderID := fs.String("order", "", "inspect one order id; skips the created-since scan")
 	fix := fs.Bool("fix", false, "enqueue snapshot_order_design for each affected order")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -156,12 +160,12 @@ func (p *Plugin) runReconcileCLI(ctx pluginsdk.CLIContext, args []string) error 
 	if err != nil {
 		return fmt.Errorf("%s reconcile: %w", CommandSnapshots, err)
 	}
-	gaps, err := p.reconcileOrders(c, db, *orderID, p != nil && p.orderSnapshotEnabled)
-	if err != nil {
-		return fmt.Errorf("%s reconcile: %w", CommandSnapshots, err)
-	}
+	gaps, err := p.reconcileOrders(c, db, *orderID, false)
 	writeReconcileReport(gaps)
 	if !*fix {
+		if err != nil {
+			return fmt.Errorf("%s reconcile: %w", CommandSnapshots, err)
+		}
 		return nil
 	}
 	if p == nil || !p.orderSnapshotEnabled {
@@ -172,10 +176,16 @@ func (p *Plugin) runReconcileCLI(ctx pluginsdk.CLIContext, args []string) error 
 		if _, ok := seen[gap.OrderID]; ok {
 			continue
 		}
-		seen[gap.OrderID] = struct{}{}
-		if err := p.EnqueueSnapshotOrder(c, gap.OrderID); err != nil {
-			return fmt.Errorf("%s reconcile: %w", CommandSnapshots, err)
+		if strings.HasPrefix(gap.Reason, application.ReconcileReasonInspectFailed) {
+			continue
 		}
+		seen[gap.OrderID] = struct{}{}
+		if enqErr := p.EnqueueSnapshotOrder(c, gap.OrderID); enqErr != nil {
+			return fmt.Errorf("%s reconcile: %w", CommandSnapshots, enqErr)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("%s reconcile: %w", CommandSnapshots, err)
 	}
 	return nil
 }
