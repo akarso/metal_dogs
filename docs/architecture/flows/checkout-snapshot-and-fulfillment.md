@@ -60,7 +60,7 @@ flowchart TB
     f2 -- yes --> f3 --> w3
     f2 -- no --> w3
     w3 --> p1 --> f4 --> p2 --> p3 --> f5 --> f6 --> s8
-    w4 -. repairs .-> e1
+    w4 -. report / --fix .-> e1
 ```
 
 ## Sequence
@@ -126,7 +126,7 @@ sequenceDiagram
 | Order always references the exact approved artwork | `DesignVersion` frozen at approval with checksum; snapshot copies version fields; assets referenced by a snapshot are excluded from retention until fulfilment completes |
 | Later template or prompt changes do not affect orders | Designs pin `template_version`; templates are versioned and immutable once published; snapshots copy the version number |
 | One snapshot per order line | Unique `(order_id, variant_id)`; insert is `ON CONFLICT DO NOTHING`. A repeated `order.created` is a second dispatcher job and the same snapshot job (see Event delivery) |
-| Snapshot eventually exists even if the event is lost | Scheduler reconciliation sweep queries Shopanda orders with `metaldogs.design_id` lines lacking snapshots and re-enqueues |
+| Snapshot eventually exists even if the event is lost | Cron `reconcile_snapshots` reports design lines with no snapshot and does not enqueue. `metaldogs:snapshots reconcile --fix` enqueues `snapshot_order_design` once per affected order (UUID v5 job id) |
 | No double POD orders | `submit_fulfillment` idempotent on `snapshot_id`; provider idempotency key = snapshot id where supported; status `submitting` lock |
 | Operator can always fulfil by hand | P1 manual path and runbook independent of P2 automation |
 
@@ -137,6 +137,8 @@ sequenceDiagram
 A build failure logs `metaldogs.snapshot_order_design.failed` for that line. A commit that rolls back logs `failed` once per design line in the order (order id, variant id, design id). Lines with no design id are skipped. An order the source does not return and an order whose lines have no design id both end the job `done` with no log: `OrderSource.Lines` does not distinguish them. E4b has to, or a missing order looks like a successful skip.
 
 `plugins.metaldogs.order_snapshot.enabled` stays false until an `OrderSource` adapter is bound. With the flag on and no source bound, the snapshot handler returns an error. The job retries and ends `failed`, visible in `jobs:list --type=integration.sync.metaldogs.snapshot_order_design --status=failed`. E4a does not bind a source. Tests inject the in-memory fake through `SetOrderSource`.
+
+`reconcile_snapshots` is registered only while that flag is on (`@every 5m`). The cron and `metaldogs:snapshots reconcile` both read `OrderSource.ListCreatedSince` and `Lines`. The report is one line per design line without a snapshot: `order_id`, `line_key` (`order_id/variant_id`), `reason`. A line that already has a snapshot is omitted. A terminal-failed snapshot job puts its last error in `reason`. The cron logs that report and does not insert snapshots or enqueue jobs. `--fix` enqueues; with the flag off the command still reports and refuses `--fix`. When the flag is on, the same sweep calls `FillSnapshotProduction` for snapshots whose production columns are still NULL and whose version is `ready`. A second fill changes nothing.
 
 ## Open items to verify (tracked in ROADMAP §1)
 

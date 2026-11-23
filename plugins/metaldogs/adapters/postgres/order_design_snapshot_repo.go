@@ -233,6 +233,44 @@ func (r *OrderDesignSnapshotRepo) ListByOrder(ctx context.Context, orderID strin
 	return out, nil
 }
 
+func (r *OrderDesignSnapshotRepo) ListUnfilledProduction(ctx context.Context, designVersionID string) ([]domain.OrderDesignSnapshot, error) {
+	designVersionID = strings.TrimSpace(designVersionID)
+	if designVersionID == "" {
+		return nil, nil
+	}
+	parsed, err := uuid.Parse(designVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots unfilled production: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+orderDesignSnapshotColumns+`
+		FROM metaldogs_order_design_snapshots
+		WHERE design_version_id = $1
+		  AND production_asset_id IS NULL
+		  AND production_checksum IS NULL
+		ORDER BY order_id, variant_id
+	`, parsed.String())
+	if err != nil {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots unfilled production: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.OrderDesignSnapshot
+	for rows.Next() {
+		s, ok, err := scanOrderDesignSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots unfilled production: %w", err)
+	}
+	return out, nil
+}
+
 func (r *OrderDesignSnapshotRepo) FillProduction(ctx context.Context, orderID, variantID, assetID, checksum string) error {
 	got, ok, err := r.Get(ctx, orderID, variantID)
 	if err != nil {

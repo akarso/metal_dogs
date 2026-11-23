@@ -8,4 +8,4 @@
 #       max_attempts_per_design: 3
 #       cooldown_seconds: 30
 #     order_snapshot:            # or order_snapshot_enabled; env SHOPANDA_PLUGINS_METALDOGS_ORDER_SNAPSHOT_ENABLED
-#       enabled: false           # when false, snapshot jobs are not registered. When true with no OrderSource bound (until E4b), snapshot_order_design fails closed and shows failed in jobs:list.
+#       enabled: false           # when false, snapshot jobs and reconcile_snapshots are not registered; metaldogs:snapshots reconcile reports and refuses --fix. When true with no OrderSource bound (until E4b), snapshot_order_design fails closed and shows failed in jobs:list.

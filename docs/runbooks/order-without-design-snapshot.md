@@ -23,7 +23,7 @@ Fulfilment is blocked for that order. The approved artwork still exists as a `De
 
 ## Remediation
 
-1. Job failed or never enqueued, design version intact → re-run reconciliation for the order: `TBD (E4)` command `metaldogs:snapshots reconcile --order=<order_id>` (idempotent; safe to repeat).
+1. Job failed or never enqueued, design version intact → report, then repair. `./app metaldogs:snapshots reconcile --order=<order_id>` prints `order_id`, `line_key` (`order_id/variant_id`), and `reason`. It does not insert a snapshot. `./app metaldogs:snapshots reconcile --order=<order_id> --fix` enqueues `snapshot_order_design` (one job id per order; repeating `--fix` is safe). With `plugins.metaldogs.order_snapshot.enabled` false the report still runs and `--fix` is refused. The scheduler job `integration.sync.metaldogs.reconcile_snapshots` only logs the same report. When the flag is on, that sweep also sets production asset and checksum once if they are still NULL and the version is `ready`.
 2. Job failing repeatedly → read the error; typical causes are a missing variant SKU mapping or a design in an unexpected status. Fix the cause, re-run.
 3. Design version missing because the customer's design was never approved but the line passed validation → bug in the cart hook/checkout step; escalate, add regression test, and contact the customer to re-approve or refund through Shopanda.
 4. Assets deleted by retention → restore from backup if within window; otherwise contact customer and refund.
@@ -33,6 +33,7 @@ Irreversible: refunds and customer communication. Never hand-insert snapshot row
 ## Verification
 
 - Snapshot exists for every design line of the order; design `status = ordered`; `E5` admin view shows the artwork with matching checksum.
+- If production artwork became ready after the snapshot, `production_asset_id` and `production_checksum` are set. A second fill does not change them.
 
 ## Prevention / follow-up
 

@@ -25,16 +25,17 @@ const permJobsRead = "jobs.read"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets        ports.AssetStore
-	uploads       *application.UploadService
-	designs       *application.DesignService
-	generate      *application.GenerateService
-	worker        *application.GenerateWorker
-	host          cartSurface
-	syncJobNames  []string
-	jobs          ports.JobAccess
-	orderSource   ports.OrderSource
-	snapshotClock ports.Clock
+	assets               ports.AssetStore
+	uploads              *application.UploadService
+	designs              *application.DesignService
+	generate             *application.GenerateService
+	worker               *application.GenerateWorker
+	host                 cartSurface
+	syncJobNames         []string
+	jobs                 ports.JobAccess
+	orderSource          ports.OrderSource
+	snapshotClock        ports.Clock
+	orderSnapshotEnabled bool
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.
@@ -219,12 +220,17 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		}
 		p.noteSyncJob(generateJobName)
 	}
+	p.orderSnapshotEnabled = settings.OrderSnapshotEnabled
 	if settings.OrderSnapshotEnabled {
 		if err := registerSnapshotOrder(syncAPI, p); err != nil {
 			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
 		}
 		p.noteSyncJob(SnapshotOrderJobName)
 		p.noteSyncJob(SnapshotOrderDispatchJobName)
+		if err := registerReconcileSnapshots(syncAPI, p); err != nil {
+			return fmt.Errorf("metaldogs plugin: reconcile_snapshots: %w", err)
+		}
+		p.noteSyncJob(ReconcileSnapshotsJobName)
 	}
 	return nil
 }

@@ -452,7 +452,7 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 
 - **Goal:** On order creation (event handler, idempotent on `order_line_id`), create `OrderDesignSnapshot` referencing the approved `DesignVersion`, artwork asset and checksum, template version, texts, provider/model/prompt versions; design → `ordered`; retention of referenced assets switched to "keep until fulfilled + N days".
 - **Scope:** Handler runs via queue job for reliability (transactional enqueue with the Shopanda order commit if the event is synchronous; otherwise idempotent async handler with reconciliation sweep).
-- **Tests:** Unit: snapshot content; feature: order created → snapshot exists; duplicate event → one snapshot; reconciliation sweep finds orders with design lines and no snapshot.
+- **Tests:** Unit: snapshot content; feature: order created → snapshot exists; duplicate event → one snapshot; `metaldogs:snapshots reconcile` reports a design line with no snapshot, `--fix` enqueues one `snapshot_order_design` job, and cron `reconcile_snapshots` only logs.
 - **Safe delivery:** Flagged; reconciliation is read-only until enabled.
 - **Docs:** `architecture/flows/checkout-snapshot-and-fulfillment.md`; runbook `order-without-design-snapshot.md`.
 

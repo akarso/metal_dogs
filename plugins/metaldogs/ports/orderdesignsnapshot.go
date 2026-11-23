@@ -41,6 +41,8 @@ type OrderDesignSnapshotRepository interface {
 	CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, at time.Time) (written []bool, err error)
 	Get(ctx context.Context, orderID, variantID string) (domain.OrderDesignSnapshot, bool, error)
 	ListByOrder(ctx context.Context, orderID string) ([]domain.OrderDesignSnapshot, error)
+	// ListUnfilledProduction returns snapshots of designVersionID whose production columns are NULL.
+	ListUnfilledProduction(ctx context.Context, designVersionID string) ([]domain.OrderDesignSnapshot, error)
 	// FillProduction sets production artwork once, while both columns are NULL.
 	// A second call returns domain.ErrProductionAlreadySet.
 	FillProduction(ctx context.Context, orderID, variantID, assetID, checksum string) error

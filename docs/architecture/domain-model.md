@@ -148,7 +148,7 @@ erDiagram
 
 Notes:
 
-- `DESIGN_VERSION` and `ORDER_DESIGN_SNAPSHOT` are **append-only**. Nothing updates them after creation except `production_*` fields on `DESIGN_VERSION`, which move once from `pending` to a terminal state.
+- `DESIGN_VERSION` and `ORDER_DESIGN_SNAPSHOT` are **append-only**. Nothing updates them after creation except `production_*` on `DESIGN_VERSION` (once, from `pending` to a terminal state) and `production_asset_id` / `production_checksum` on `ORDER_DESIGN_SNAPSHOT` (once, from NULL, when that version is `ready`).
 - Snapshot duplicates the version's data (texts, template version, checksums) deliberately so an order remains fully described even if a design is deleted under retention rules. Assets referenced by a snapshot are never swept while the snapshot's fulfilment is incomplete.
 - `owner_token_hash` stores only the hash of the capability token ([ADR-0007](../adr/0007-guest-design-ownership-tokens.md)).
 

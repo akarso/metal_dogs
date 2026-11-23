@@ -40,6 +40,7 @@ bash .github/scripts/check-product-docs-links.sh
 # G0/G2 offline eval (plugin enabled; media optional):
 # ./app metaldogs:eval -template plugins/metaldogs/templates/….yaml -photos … -out … -provider fake -dog-name Burek
 # ./app metaldogs:templates validate|load|publish|retire …
+# ./app metaldogs:snapshots reconcile [--order=<id>] [--fix]
 ```
 
 DSN-gated feature tests (skip when unset; required in CI `integration` job):
