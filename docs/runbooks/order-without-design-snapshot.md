@@ -1,6 +1,6 @@
 # Runbook: order with a design line but no `OrderDesignSnapshot`
 
-- **Introduced by slice:** `E4`
+- **Introduced by slice:** `E4a`
 - **Last exercised:** never
 - **Severity when triggered:** high (a paid order cannot be fulfilled correctly)
 - **Owner:** on-call operator
@@ -16,10 +16,25 @@ Fulfilment is blocked for that order. The approved artwork still exists as a `De
 
 ## Diagnosis
 
-1. Identify the order and line ids from the alert.
-2. Check whether the `order.created` handler ran: search logs by `order_id` for `snapshot_order_design` enqueue; check the job: `./app jobs:list --type=integration.sync.metaldogs.snapshot_order_design`.
+1. Identify the order id and the line key `(order_id, variant_id)` from the alert.
+2. Check whether the handler ran. Search logs by `order_id` for `metaldogs.snapshot_order_design.written`, `.duplicate`, or `.failed`. List the jobs:
+
+```bash
+./app jobs:list --type=integration.sync.metaldogs.snapshot_order_design --limit=50
+./app jobs:list --type=integration.sync.metaldogs.dispatch_snapshot_order --limit=50
+./app jobs:list --type=integration.sync.metaldogs.snapshot_order_design --status=failed --limit=50
+```
+
 3. Check the design: does `metaldogs_designs.approved_version_id` exist for the `design_id` on the line? Is the design `approved` or `ordered`?
 4. If the design version is missing or its assets are deleted, this is a data-loss incident: escalate and check [`backup-and-restore.md`](backup-and-restore.md).
+
+## What a terminal-failed job means
+
+`./app jobs:list --type=integration.sync.metaldogs.snapshot_order_design --status=failed` shows a job the queue has finished retrying. The reconcile reason is `snapshot_job_failed:` plus that job's last error.
+
+The handler writes nothing for that order: no row in `metaldogs_order_design_snapshots`, and the Shopanda order is left as it was. The design stays `approved` when the failure is a missing design, a missing approved version, a missing pinned template, or a commit that rolled back. A flag that is on with no `OrderSource` bound fails the same way (`order source is not bound`). The default is that the flag is off, so these jobs are not registered and a real order has no snapshot until E4b.
+
+Do not `INSERT` or `UPDATE` `metaldogs_order_design_snapshots` by hand. The table rejects deletes and rejects updates outside the two production columns, and a hand-written row would skip the `approved → ordered` transition. Repair is `--fix`, which only enqueues the job, after the cause is fixed and the flag is on.
 
 ## Remediation
 
@@ -28,7 +43,7 @@ Fulfilment is blocked for that order. The approved artwork still exists as a `De
 3. Design version missing because the customer's design was never approved but the line passed validation → bug in the cart hook/checkout step; escalate, add regression test, and contact the customer to re-approve or refund through Shopanda.
 4. Assets deleted by retention → restore from backup if within window; otherwise contact customer and refund.
 
-Irreversible: refunds and customer communication. Never hand-insert snapshot rows.
+Irreversible: refunds and customer communication. Never insert snapshot rows by hand. See "What a terminal-failed job means".
 
 ## Verification
 

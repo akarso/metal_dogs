@@ -113,28 +113,28 @@ erDiagram
     }
 
     ORDER_DESIGN_SNAPSHOT {
-        uuid id PK
-        string order_id "Shopanda"
-        string order_line_id "Shopanda, unique"
-        uuid design_id FK
-        uuid design_version_id FK
-        uuid artwork_asset_id FK
-        string artwork_checksum
-        uuid production_asset_id FK
-        string production_checksum
-        jsonb texts
+        uuid order_id PK "Shopanda"
+        string variant_id PK "line key with order_id"
+        uuid design_id
+        uuid design_version_id
+        string sku
         string template_slug
         int template_version
+        jsonb texts
         string provider
         string model
         string prompt_version
-        string variant_sku
+        uuid artwork_asset_id
+        string artwork_checksum
+        uuid production_asset_id "nullable"
+        string production_checksum "nullable"
         timestamptz created_at
     }
 
     FULFILLMENT_RECORD {
         uuid id PK
-        uuid snapshot_id FK
+        uuid order_id "snapshot key, with variant_id"
+        string variant_id
         enum status
         string provider
         string external_order_id
@@ -149,7 +149,8 @@ erDiagram
 Notes:
 
 - `DESIGN_VERSION` and `ORDER_DESIGN_SNAPSHOT` are **append-only**. Nothing updates them after creation except `production_*` on `DESIGN_VERSION` (once, from `pending` to a terminal state) and `production_asset_id` / `production_checksum` on `ORDER_DESIGN_SNAPSHOT` (once, from NULL, when that version is `ready`).
-- Snapshot duplicates the version's data (texts, template version, checksums) deliberately so an order remains fully described even if a design is deleted under retention rules. Assets referenced by a snapshot are never swept while the snapshot's fulfilment is incomplete.
+- Snapshot duplicates the version's data (texts, template version, checksums, SKU) deliberately so an order remains fully described even if a design is deleted under retention rules. There is no surrogate id. ADR-0005 decision 4 called the line key `order_line_id`; the stored key is `(order_id, variant_id)` (`metaldogs_order_design_snapshots`, migration `015`). E4a writes this table only when `plugins.metaldogs.order_snapshot.enabled` is true and an `OrderSource` is bound. The setting defaults to false and E4a binds no real source, so a live order has no row.
+- `AssetsReferencedBySnapshots` is the deletion check: an asset id stored as `artwork_asset_id` or `production_asset_id` is left active. The after-`shipped` grace is O2 and is not applied yet. Nothing schedules the deletion functions.
 - `owner_token_hash` stores only the hash of the capability token ([ADR-0007](../adr/0007-guest-design-ownership-tokens.md)).
 
 ## Template (G2)
@@ -208,7 +209,7 @@ Invalid transitions return a domain error (`invalid_transition`) which the HTTP 
 
 ## Cart line design (E2)
 
-Shopanda stores the link on the cart line as extension `metaldogs.design_id` (public read, plugin-only write, snapshot storage, UUID). Metal Dogs does not own a cart table. The add-to-cart route writes the field through a trusted context on `AddItem` only. Checkout copies snapshot-mode values onto the order line; E4 reads that copy. Adding to the cart does not change design status, versions, or expiry. `ordered` stays on the E4 snapshot step. One line is one variant, so one size holds one design.
+Shopanda stores the link on the cart line as extension `metaldogs.design_id` (public read, plugin-only write, snapshot storage, UUID). Metal Dogs does not own a cart table. The add-to-cart route writes the field through a trusted context on `AddItem` only. Checkout copies snapshot-mode values onto the order line under `(order_id, variant_id)`. At the current pin that copy runs after `order.created` (`CreateOrderStep`). E4a does not read the core line. Adding to the cart does not change design status, versions, or expiry. `approved → ordered` happens in the snapshot transaction, which is registered only when the flag is on. The add route still returns `409` for `ordered`; re-order is a clone. One line is one variant, so one size holds one design.
 
 ## GenerationJob status machine
 
@@ -274,5 +275,5 @@ stateDiagram-v2
 | Artwork and mockup previews | design never ordered | Same as source on approve: extend to design `expires_at` (GREATEST). Version-referenced artwork must outlive a 7d preview sweep. |
 | Design row | never ordered | 30 days from create / last mutating activity (`POST`/`PATCH`, incl. **approve**), then `expired` and purged. `GET` does not slide `expires_at`. |
 | Source photo | design ordered | until fulfilment `shipped` + 14 days |
-| Approved and production artwork | design ordered | per legal/warranty policy (decision in O2) |
+| Approved and production artwork | design ordered | per legal/warranty policy (decision in O2). Until O2, any snapshot reference keeps the asset (`AssetsReferencedBySnapshots`) |
 | Snapshot row | always | with the order |

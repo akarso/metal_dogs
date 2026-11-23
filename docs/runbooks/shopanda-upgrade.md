@@ -94,7 +94,7 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
 ## Verification
 
 - `./app dev` serves the default Shopanda storefront (and `/api/customizer/enabled` `200` once `F1` enables the plugin).
-- Import-boundary test green; queue depth normal; an end-to-end order on staging produces a snapshot (from `E4` onward).
+- Import-boundary test green; queue depth normal. An end-to-end order on staging produces a snapshot only from E4b, with `plugins.metaldogs.order_snapshot.enabled` true. E4a leaves the flag false and does not snapshot a real order.
 
 ## Prevention / follow-up
 

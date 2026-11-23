@@ -34,13 +34,13 @@ The invariant to protect: for every `OrderDesignSnapshot`, the referenced approv
 2. Restore database, then storage (or vice versa — order does not matter if both are point-in-time consistent; if not, restore storage to a point **after** the database point so no referenced object is missing).
 3. Run the integrity check; list snapshots with missing objects.
 4. For missing objects within bucket versioning history, restore the version; otherwise mark the affected fulfilment records and handle customer-by-customer.
-5. Start processes; watch the reconciliation sweeps; they will re-enqueue missed snapshot jobs.
+5. Start processes. `reconcile_snapshots` only logs. Repair is `metaldogs:snapshots reconcile --fix`, and only when `plugins.metaldogs.order_snapshot.enabled` is true. E4a leaves that flag false.
 
 Irreversible: overwriting the production database. Always restore to a new instance and switch.
 
 ## Verification
 
-- Integrity check passes; a new order on staging produces a snapshot; queue processes.
+- Integrity check passes; queue processes. A new staging order produces a snapshot only from E4b, with the flag on. E4a does not.
 
 ## Prevention / follow-up
 

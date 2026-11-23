@@ -1,8 +1,8 @@
 # ADR-0005: Approval freezes a `DesignVersion`; orders carry an `OrderDesignSnapshot`
 
-- **Status:** Accepted for `DesignVersion` / approve (`C6`, CR-16); `OrderDesignSnapshot` remains open until `E4`
-- **Date:** 2026-10-15 (Accepted C6 portion 2026-11-10)
-- **Related slices:** `C6`, `G5`, `E2`, `E4`, `E5`, `O2`
+- **Status:** Accepted for `DesignVersion` / approve (`C6`, CR-16). `OrderDesignSnapshot` is implemented in E4a (CR-32, 2026-11-23) and not yet active: `plugins.metaldogs.order_snapshot.enabled` defaults to false, and no real order source is bound
+- **Date:** 2026-10-15 (Accepted C6 portion 2026-11-10; snapshot portion implemented, inactive, 2026-11-23)
+- **Related slices:** `C6`, `G5`, `E2`, `E4a`, `E4b`, `E5`, `O2`
 - **Related ADRs:** [ADR-0006](0006-design-and-job-status-model.md), [ADR-0009](0009-pod-provider-and-catalog-modelling.md)
 
 ## Context
@@ -14,7 +14,7 @@ Project principle 4: every order is bound to an immutable version of the approve
 1. **Approval creates a `DesignVersion`** (append-only): approved artwork asset id + SHA-256, template id + version, texts, provider, model, prompt version, generation parameters, approved-at. A design has at most one approved version; approving again is idempotent and returns it.
 2. After approval the design is **immutable**: no text edits, no photo replacement, no regeneration. "Change it" clones the design into a new draft with a new owner token.
 3. Production artwork is prepared **asynchronously from the approved version** (`integration.sync.metaldogs.prepare_production_artwork`) and attached to the `DesignVersion` with its own checksum. Preview assets are never used for production.
-4. The cart line carries only `metaldogs.design_id`. **At order creation**, the plugin creates an `OrderDesignSnapshot` per order line that **copies** the version's identifying data (not just a foreign key): artwork asset id and checksum, production asset id and checksum (nullable until ready), template slug and version, texts, provider/model/prompt version, variant SKU. Unique on `order_line_id`.
+4. The cart line carries only `metaldogs.design_id`. Shopanda order items have no id of their own. The line key is `(order_id, variant_id)`, the same pair core uses for `order_item` extension values. **At order creation**, the plugin creates one `OrderDesignSnapshot` per custom-tee line that **copies** the version's identifying data (not just a foreign key): artwork asset id and checksum, production asset id and checksum (nullable until ready), template slug and version, texts, provider, model, prompt version, variant SKU. The snapshot's unique key is that pair. This decision called the key `order_line_id`; the stored key is the pair, not a single column. A line with no `metaldogs.design_id` is skipped. The write is implemented in E4a and stays off until E4b binds a real order source.
 5. Assets referenced by a snapshot are excluded from retention until the fulfilment record is `shipped` plus the grace period; approved and production artwork retention after that is a policy decision in `O2`.
 6. Templates are versioned; publishing a changed template increments the version. In-flight designs keep their pinned version; nothing is migrated.
 
