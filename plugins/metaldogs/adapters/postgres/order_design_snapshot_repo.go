@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -100,6 +101,9 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 		default:
 			return nil, snapshotDesignErr(id, fmt.Errorf("metaldogs snapshot: design %s status %s", id, status))
 		}
+	}
+	if err := lockLiveSnapshotAssets(ctx, tx, snapshots); err != nil {
+		return nil, err
 	}
 
 	written := make([]bool, len(snapshots))
@@ -241,7 +245,15 @@ func (r *OrderDesignSnapshotRepo) FillProduction(ctx context.Context, orderID, v
 	if err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("metaldogs order_design_snapshots fill production begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockLiveAssetIDs(ctx, tx, []string{next.ProductionAssetID}); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
 		UPDATE metaldogs_order_design_snapshots
 		SET production_asset_id = $3, production_checksum = $4
 		WHERE order_id = $1 AND variant_id = $2
@@ -255,10 +267,88 @@ func (r *OrderDesignSnapshotRepo) FillProduction(ctx context.Context, orderID, v
 	if err != nil {
 		return err
 	}
-	if n == 1 {
+	if n != 1 {
+		return domain.ErrProductionAlreadySet
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("metaldogs order_design_snapshots fill production commit: %w", err)
+	}
+	return nil
+}
+
+func lockLiveSnapshotAssets(ctx context.Context, q dbSession, snapshots []domain.OrderDesignSnapshot) error {
+	var ids []string
+	for _, s := range snapshots {
+		ids = append(ids, s.ArtworkAssetID)
+		if s.ProductionAssetID != "" {
+			ids = append(ids, s.ProductionAssetID)
+		}
+	}
+	if err := lockLiveAssetIDs(ctx, q, ids); err != nil {
+		var missing errAssetNotLive
+		if errors.As(err, &missing) {
+			for _, s := range snapshots {
+				if assetIDMatches(s.ArtworkAssetID, missing.ID) || assetIDMatches(s.ProductionAssetID, missing.ID) {
+					return snapshotDesignErr(s.DesignID, err)
+				}
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// FOR SHARE blocks retention's FOR UPDATE until this transaction commits.
+func lockLiveAssetIDs(ctx context.Context, q dbSession, assetIDs []string) error {
+	raw := uniqueStrings(assetIDs)
+	for _, id := range raw {
+		if _, ok := canonicalUUID(id); !ok {
+			return errAssetNotLive{ID: id}
+		}
+	}
+	ids := canonicalUUIDs(raw)
+	if len(ids) == 0 {
 		return nil
 	}
-	return domain.ErrProductionAlreadySet
+	sort.Strings(ids)
+	found, err := queryIDs(ctx, q, `
+		SELECT id::text FROM metaldogs_assets
+		WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+		ORDER BY id
+		FOR SHARE
+	`, ids)
+	if err != nil {
+		return fmt.Errorf("metaldogs snapshot: lock assets: %w", err)
+	}
+	have := make(map[string]struct{}, len(found))
+	for _, id := range found {
+		if canon, ok := canonicalUUID(id); ok {
+			have[canon] = struct{}{}
+		}
+	}
+	for _, id := range ids {
+		if _, ok := have[id]; !ok {
+			return errAssetNotLive{ID: id}
+		}
+	}
+	return nil
+}
+
+type errAssetNotLive struct {
+	ID string
+}
+
+func (e errAssetNotLive) Error() string {
+	return fmt.Sprintf("metaldogs snapshot: asset %s missing or deleted", e.ID)
+}
+
+func assetIDMatches(id, missing string) bool {
+	if id == "" || missing == "" {
+		return false
+	}
+	canon, ok := canonicalUUID(id)
+	want, ok2 := canonicalUUID(missing)
+	return ok && ok2 && canon == want
 }
 
 func requireUUIDOrderID(orderID string) error {

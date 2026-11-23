@@ -587,6 +587,70 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			t.Fatalf("first status=%s", status)
 		}
 	})
+
+	t.Run("soft-deleted artwork fails the commit", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-dead-art", "prompt-dead-art", false)
+		at := clock.Now()
+		if _, err := db.ExecContext(ctx, `UPDATE metaldogs_assets SET deleted_at = $2 WHERE id = $1`, seed.ArtworkID, at); err != nil {
+			t.Fatal(err)
+		}
+		orderID := uuid.NewString()
+		line := snapshotFromSeed(t, orderID, uuid.NewString(), "TEE-DEAD", seed, at)
+		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, at)
+		var de *ports.SnapshotDesignError
+		if !errors.As(err, &de) || de.DesignID != seed.Design.ID || !strings.Contains(err.Error(), "missing or deleted") {
+			t.Fatalf("%v", err)
+		}
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1`, orderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("snapshots=%d", n)
+		}
+		if status, _ := designStatus(t, designs, seed.Design.ID); status != domain.DesignApproved {
+			t.Fatalf("status=%s", status)
+		}
+	})
+
+	t.Run("soft-deleted production fails the commit", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-dead-prod", "prompt-dead-prod", true)
+		at := clock.Now()
+		if _, err := db.ExecContext(ctx, `UPDATE metaldogs_assets SET deleted_at = $2 WHERE id = $1`, seed.ProductionID, at); err != nil {
+			t.Fatal(err)
+		}
+		orderID := uuid.NewString()
+		line := snapshotFromSeed(t, orderID, uuid.NewString(), "TEE-DEAD-PROD", seed, at)
+		line.ProductionAssetID = seed.ProductionID
+		line.ProductionChecksum = "sha256:production"
+		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, at)
+		var de *ports.SnapshotDesignError
+		if !errors.As(err, &de) || de.DesignID != seed.Design.ID || !strings.Contains(err.Error(), seed.ProductionID) {
+			t.Fatalf("%v", err)
+		}
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1`, orderID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("snapshots=%d", n)
+		}
+		if status, _ := designStatus(t, designs, seed.Design.ID); status != domain.DesignApproved {
+			t.Fatalf("status=%s", status)
+		}
+		assertAssetStill := func(id string, active bool) {
+			t.Helper()
+			var deleted sql.NullTime
+			if err := db.QueryRowContext(ctx, `SELECT deleted_at FROM metaldogs_assets WHERE id = $1`, id).Scan(&deleted); err != nil {
+				t.Fatal(err)
+			}
+			if deleted.Valid == active {
+				t.Fatalf("asset %s active=%v deleted=%v", id, active, deleted)
+			}
+		}
+		assertAssetStill(seed.ArtworkID, true)
+		assertAssetStill(seed.ProductionID, false)
+	})
 }
 
 func snapshotFromSeed(t *testing.T, orderID, variantID, sku string, seed seeded, at time.Time) domain.OrderDesignSnapshot {
@@ -715,6 +779,14 @@ func seedApprovedDesign(t *testing.T, db *sql.DB, cat *application.TemplateCatal
 	out.Design.ApprovedVersionID = verID
 	if productionReady {
 		prodID := uuid.NewString()
+		if err := assets.Insert(ctx, domain.Asset{
+			ID: prodID, Type: domain.AssetTypeProduction, OwnerRef: designID,
+			StorageKey: "private/blobs/metaldogs/production/2026/11/" + prodID + ".png",
+			MimeType:   "image/png", SizeBytes: 1, Width: 64, Height: 64,
+			Checksum: "sha256:production", CreatedAt: now, DeleteAfter: now.Add(2 * time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := db.ExecContext(ctx, `
 			UPDATE metaldogs_design_versions
 			SET production_status = 'ready', production_asset_id = $2, production_checksum = $3

@@ -85,3 +85,11 @@ CREATE TRIGGER metaldogs_order_design_snapshots_no_delete_trg
     BEFORE DELETE ON metaldogs_order_design_snapshots
     FOR EACH ROW
     EXECUTE FUNCTION metaldogs_order_design_snapshots_no_delete();
+
+CREATE INDEX metaldogs_order_design_snapshots_artwork_asset_id_idx
+    ON metaldogs_order_design_snapshots (artwork_asset_id)
+    WHERE artwork_asset_id IS NOT NULL;
+
+CREATE INDEX metaldogs_order_design_snapshots_production_asset_id_idx
+    ON metaldogs_order_design_snapshots (production_asset_id)
+    WHERE production_asset_id IS NOT NULL;

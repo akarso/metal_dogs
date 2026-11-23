@@ -40,20 +40,13 @@ func AssetsReferencedBySnapshots(ctx context.Context, q dbSession, assetIDs []st
 	if len(ids) == 0 {
 		return out, nil
 	}
-	args := make([]any, len(ids))
-	ph := make([]string, len(ids))
-	for i, id := range ids {
-		args[i] = id
-		ph[i] = fmt.Sprintf("$%d", i+1)
-	}
-	in := strings.Join(ph, ",")
 	rows, err := q.QueryContext(ctx, `
 		SELECT artwork_asset_id::text FROM metaldogs_order_design_snapshots
-		WHERE artwork_asset_id::text IN (`+in+`)
+		WHERE artwork_asset_id = ANY($1::uuid[])
 		UNION
 		SELECT production_asset_id::text FROM metaldogs_order_design_snapshots
-		WHERE production_asset_id IS NOT NULL AND production_asset_id::text IN (`+in+`)
-	`, args...)
+		WHERE production_asset_id = ANY($1::uuid[])
+	`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs snapshot asset refs: %w", err)
 	}

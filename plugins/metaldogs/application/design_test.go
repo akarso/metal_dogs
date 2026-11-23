@@ -163,6 +163,7 @@ func (m *designAssetRepo) ClearStorageKey(_ context.Context, assetID string) err
 
 type designBlobStore struct {
 	objects map[string][]byte
+	deletes int
 }
 
 func (m *designBlobStore) Put(_ context.Context, key string, r io.Reader, _ string) error {
@@ -190,6 +191,7 @@ func (m *designBlobStore) SignedGetURL(_ context.Context, key string, _ time.Dur
 	return "https://signed.example/" + key, nil
 }
 func (m *designBlobStore) Delete(_ context.Context, key string) error {
+	m.deletes++
 	if _, ok := m.objects[key]; !ok {
 		return os.ErrNotExist
 	}
@@ -1666,7 +1668,7 @@ func TestDesignService_Get_JobLookupErrorPreservesCause(t *testing.T) {
 	inner := &designJobRepo{byID: map[string]domain.GenerationJob{}}
 	svc := &application.DesignService{
 		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
-		Jobs: &errDesignJobRepo{inner: inner, err: boom},
+		Jobs:      &errDesignJobRepo{inner: inner, err: boom},
 		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
 		Store:     &designBlobStore{objects: map[string][]byte{"src-job-err": {1}}},
 		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
@@ -1719,9 +1721,9 @@ func TestDesignService_Get_ArtworkLookupError(t *testing.T) {
 	designs := &designMemRepo{}
 	jobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
 	svc := &application.DesignService{
-		Designs: &bindingDesignRepo{designs: designs, assets: inner},
-		Assets:  &errAssetRepo{designAssetRepo: *inner, getErr: boom, failID: artID},
-		Jobs:    jobs,
+		Designs:   &bindingDesignRepo{designs: designs, assets: inner},
+		Assets:    &errAssetRepo{designAssetRepo: *inner, getErr: boom, failID: artID},
+		Jobs:      jobs,
 		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
 		Store:     &designBlobStore{objects: map[string][]byte{"src-art-err": {1}, "art-err": {2}}},
 		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
@@ -1779,7 +1781,7 @@ func TestDesignService_Get_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
 	inner := &designJobRepo{byID: map[string]domain.GenerationJob{}}
 	svc := &application.DesignService{
 		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
-		Jobs: &errDesignJobRepo{inner: inner, err: boom},
+		Jobs:      &errDesignJobRepo{inner: inner, err: boom},
 		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
 		Store:     &designBlobStore{objects: map[string][]byte{"src-preview-err": {1}}},
 		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
@@ -1808,7 +1810,6 @@ func TestDesignService_Get_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
 		t.Fatalf("want wrapped cause %v, got %v", boom, err)
 	}
 }
-
 
 func TestDesignService_Approve_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
 	t.Parallel()
@@ -2160,6 +2161,77 @@ func (f *failCreateBound) CreateBound(context.Context, domain.Design, time.Time)
 }
 func (f *failCreateBound) ReplaceSource(ctx context.Context, d domain.Design, old string, expectedUpdatedAt, deleteAfter time.Time) (string, error) {
 	return f.inner.ReplaceSource(ctx, d, old, expectedUpdatedAt, deleteAfter)
+}
+
+func TestDesignService_Clone_CleanupKeepsBlobWhenAssetStaysActive(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	tplID := "11111111-1111-4111-8111-111111111111"
+	uploadID := "22222222-2222-4222-8222-222222222222"
+	assets := &designAssetRepo{byID: map[string]domain.Asset{
+		uploadID: {
+			ID: uploadID, Type: domain.AssetTypeSource, StorageKey: "src",
+			MimeType: "image/jpeg", SizeBytes: int64(len(jpegStub)), Checksum: sha256Sum(jpegStub),
+			DeleteAfter: now.Add(time.Hour),
+		},
+	}}
+	designs := &designMemRepo{}
+	store := &designBlobStore{objects: map[string][]byte{"src": append([]byte(nil), jpegStub...)}}
+	svc := &application.DesignService{
+		Designs:   &failCreateBound{inner: &bindingDesignRepo{designs: designs, assets: assets}},
+		Assets:    &keepActiveAfterSoftDelete{inner: assets},
+		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
+		Store:     store, IDs: testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
+	}
+	token, hash, err := application.MintOwnerToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	designID := "des-approved"
+	assets.mu.Lock()
+	a := assets.byID[uploadID]
+	a.OwnerRef = designID
+	assets.byID[uploadID] = a
+	assets.mu.Unlock()
+	_ = designs.Insert(context.Background(), domain.Design{
+		ID: designID, TemplateID: tplID, TemplateVersion: 2, Status: domain.DesignApproved,
+		Texts: map[string]string{"dog_name": "Burek", "tagline": "METAL"}, SourceAssetID: uploadID,
+		OwnerTokenHash: hash, ApprovedVersionID: "ver-1",
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(domain.DesignRetentionUnordered),
+	})
+	_, err = svc.Clone(context.Background(), designID, token)
+	if err == nil || !strings.Contains(err.Error(), "create bind failed") {
+		t.Fatalf("err=%v", err)
+	}
+	if store.deletes != 0 {
+		t.Fatalf("must not Delete blob when the row stays active, deletes=%d", store.deletes)
+	}
+	if len(store.objects) < 2 {
+		t.Fatalf("clone blob must remain: keys=%v", store.objects)
+	}
+}
+
+type keepActiveAfterSoftDelete struct {
+	inner *designAssetRepo
+}
+
+func (k *keepActiveAfterSoftDelete) Insert(ctx context.Context, a domain.Asset) error {
+	return k.inner.Insert(ctx, a)
+}
+func (k *keepActiveAfterSoftDelete) GetByID(ctx context.Context, id string) (domain.Asset, bool, error) {
+	return k.inner.GetByID(ctx, id)
+}
+func (k *keepActiveAfterSoftDelete) SoftDelete(context.Context, string, time.Time) error {
+	return nil
+}
+func (k *keepActiveAfterSoftDelete) BindOwnerRef(ctx context.Context, assetID, ownerRef string, deleteAfter time.Time) error {
+	return k.inner.BindOwnerRef(ctx, assetID, ownerRef, deleteAfter)
+}
+func (k *keepActiveAfterSoftDelete) ClearOwnerRef(ctx context.Context, assetID, ownerRef string) error {
+	return k.inner.ClearOwnerRef(ctx, assetID, ownerRef)
+}
+func (k *keepActiveAfterSoftDelete) ClearStorageKey(ctx context.Context, assetID string) error {
+	return k.inner.ClearStorageKey(ctx, assetID)
 }
 
 func TestDesignService_Clone_OwnerRefMismatch(t *testing.T) {

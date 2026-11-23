@@ -96,6 +96,14 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 		t.Fatalf("list: %+v", listed)
 	}
 
+	if err := postgres.NewAssetRepo(db).Insert(ctx, domain.Asset{
+		ID: prodID, Type: domain.AssetTypeProduction,
+		StorageKey: "private/blobs/metaldogs/production/" + prodID + ".png",
+		MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+		Checksum: "sha256:production", CreatedAt: at, DeleteAfter: at.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.FillProduction(ctx, orderID, variantM, prodID, "sha256:production"); err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +218,65 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 	}
 	if snap015.Before(prev014) {
 		t.Fatalf("015 applied_at %s before 014 %s", snap015, prev014)
+	}
+	var indexes int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*) FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND indexname IN (
+			'metaldogs_order_design_snapshots_artwork_asset_id_idx',
+			'metaldogs_order_design_snapshots_production_asset_id_idx'
+		  )
+	`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if indexes != 2 {
+		t.Fatalf("snapshot asset indexes=%d", indexes)
+	}
+}
+
+func TestFillProduction_SoftDeletedAssetFails(t *testing.T) {
+	db := testutil.OpenIsolated(t, "order_design_snapshots_dead_asset")
+	repo := postgres.NewOrderDesignSnapshotRepo(db)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 22, 18, 4, 5, 0, time.UTC)
+	orderID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"
+	variantID := "cccccccc-cccc-4ccc-8ccc-cccccccccccb"
+	artID := "11111111-1111-4111-8111-111111111112"
+	prodID := "22222222-2222-4222-8222-222222222223"
+	line, err := domain.NewOrderDesignSnapshot(
+		orderID, variantID, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef", "ffffffff-ffff-4fff-8fff-fffffffffffe", "TEE-BLK-M",
+		"black-tee", 3, map[string]string{"dog_name": "Burek"},
+		"openai", "gpt-image", "prompt-v7",
+		artID, "sha256:artwork", "", "", at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written, err := repo.Insert(ctx, line); err != nil || !written {
+		t.Fatalf("written=%v err=%v", written, err)
+	}
+	if err := postgres.NewAssetRepo(db).Insert(ctx, domain.Asset{
+		ID: prodID, Type: domain.AssetTypeProduction,
+		StorageKey: "private/blobs/metaldogs/production/" + prodID + ".png",
+		MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+		Checksum: "sha256:production", CreatedAt: at, DeleteAfter: at.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE metaldogs_assets SET deleted_at = $2 WHERE id = $1`, prodID, at); err != nil {
+		t.Fatal(err)
+	}
+	err = repo.FillProduction(ctx, orderID, variantID, prodID, "sha256:production")
+	if err == nil || !strings.Contains(err.Error(), "missing or deleted") {
+		t.Fatalf("err=%v", err)
+	}
+	got, ok, err := repo.Get(ctx, orderID, variantID)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if got.ProductionAssetID != "" || got.ProductionChecksum != "" {
+		t.Fatalf("fill wrote deleted asset: %+v", got)
 	}
 }
 
