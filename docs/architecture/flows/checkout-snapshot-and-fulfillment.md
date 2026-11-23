@@ -2,7 +2,7 @@
 
 Covers [ADR-0005](../../adr/0005-immutable-order-design-snapshot.md) (immutable snapshot) and track P. Shopanda owns cart, checkout, payment, and the order; the plugin attaches the design and reacts to the order.
 
-E4a ([CR-32](../../cr-rounds/CR-32-e4a-order-design-snapshot.md)) implements the snapshot path behind `plugins.metaldogs.order_snapshot.enabled`, default false. Nothing below runs on a real order: the handler and the `reconcile_snapshots` cron are not registered, the CLI refuses `--fix`, and no `OrderSource` adapter is bound. Tests inject an in-memory fake through `SetOrderSource`. E4b swaps in the adapter after two Shopanda changes and a pin bump (see below). The fulfilment boxes are track P and are not part of E4a.
+E4a ([CR-32](../../cr-rounds/CR-32-e4a-order-design-snapshot.md)) implements the snapshot path behind `plugins.metaldogs.order_snapshot.enabled`, default false. Nothing below runs on a real order: the handler and the `reconcile_snapshots` cron are not registered, the CLI refuses `--fix`, and no `OrderSource` adapter is bound. With no adapter, `metaldogs:snapshots reconcile` exits `order source is not bound` and prints nothing. Tests inject an in-memory fake through `SetOrderSource`. E4b swaps in the adapter after two Shopanda changes and a pin bump (see below). The fulfilment boxes are track P and are not part of E4a.
 
 ## Swimlane
 
@@ -112,7 +112,7 @@ sequenceDiagram
     alt manual gate on
         Op->>API: approve submission (permission metaldogs.fulfillment.approve)
     end
-    API->>Q: enqueue submit_fulfillment(snapshot_id) idempotent
+    API->>Q: enqueue submit_fulfillment(order_id, variant_id) idempotent
     W->>S3: signed URL or bytes for production asset
     W->>POD: create order {sku, qty, artwork, shipping address from order}
     POD-->>W: external_order_id
@@ -130,8 +130,8 @@ sequenceDiagram
 | Order always references the exact approved artwork | `DesignVersion` frozen at approval with checksum; snapshot copies version fields; assets referenced by a snapshot are excluded from retention until fulfilment completes |
 | Later template or prompt changes do not affect orders | Designs pin `template_version`; templates are versioned and immutable once published; snapshots copy the version number |
 | One snapshot per order line | Unique `(order_id, variant_id)`; insert is `ON CONFLICT DO NOTHING`. A repeated `order.created` is a second dispatcher job and the same snapshot job (see Event delivery) |
-| Snapshot eventually exists even if the event is lost | Cron `reconcile_snapshots` reports design lines with no snapshot and does not enqueue. `metaldogs:snapshots reconcile --fix` enqueues `snapshot_order_design` once per affected order (UUID v5 job id) |
-| No double POD orders | `submit_fulfillment` idempotent on `snapshot_id`; provider idempotency key = snapshot id where supported; status `submitting` lock |
+| Snapshot eventually exists even if the event is lost | Once an `OrderSource` is bound, cron `reconcile_snapshots` reports design lines with no snapshot and does not enqueue. In E4a that cron errors and reports nothing. `metaldogs:snapshots reconcile --fix` enqueues `snapshot_order_design` once per affected order (UUID v5 job id) |
+| No double POD orders | `submit_fulfillment` idempotent on `(order_id, variant_id)`; provider idempotency key is that pair where supported; status `submitting` lock. Track P runbooks still say `snapshot_id`; that name is this pair. The snapshot table has no surrogate id |
 | Operator can always fulfil by hand | P1 manual path and runbook independent of P2 automation |
 
 ## Line key and what E4b waits on
@@ -153,7 +153,7 @@ A build failure logs `metaldogs.snapshot_order_design.failed` for that line. A c
 
 `plugins.metaldogs.order_snapshot.enabled` stays false until an `OrderSource` adapter is bound. With the flag on and no source bound, the snapshot handler returns an error. The job retries and ends `failed`, visible in `jobs:list --type=integration.sync.metaldogs.snapshot_order_design --status=failed`. E4a does not bind a source. Tests inject the in-memory fake through `SetOrderSource`.
 
-`reconcile_snapshots` is registered only while that flag is on (`@every 5m`). An unscoped run calls `OrderSource.ListCreatedSince` with `since = now - 30 days`, then `Lines`. `--order` calls `Lines` for that id and does not list. The report is one line per design line without a snapshot: `order_id`, `line_key` (`order_id/variant_id`), `reason`. A line that already has a snapshot is omitted. `reason` is `missing_snapshot`, `snapshot_job_pending` while the snapshot job is pending, processing, or reclaiming, or `snapshot_job_failed:` plus the last error when the job is terminal-failed. One order that cannot be read is `inspect_failed`; the rest of the run continues. The cron logs that report and does not insert snapshots or enqueue jobs. The CLI report does not write production columns. `--fix` enqueues and skips `inspect_failed`; with the flag off the command still reports and refuses `--fix`. The cron calls `FillSnapshotProduction` for snapshots whose production columns are still NULL and whose version is `ready`. A second fill changes nothing. The prepare-production job does not call that fill until G5 sets `production_status=ready`.
+`reconcile_snapshots` is registered only while that flag is on (`@every 5m`). An unscoped run calls `OrderSource.ListCreatedSince` with `since = now - 30 days`, then `Lines`. `--order` calls `Lines` for that id and does not list. The report is one line per design line without a snapshot: `order_id`, `line_key` (`order_id/variant_id`), `reason`. A line that already has a snapshot is omitted. `reason` is `missing_snapshot`, `snapshot_job_pending` while the snapshot job is pending, processing, or reclaiming, or `snapshot_job_failed:` plus the last error when the job is terminal-failed. One order that cannot be read is `inspect_failed`; the rest of the run continues. The cron logs that report and does not insert snapshots or enqueue jobs. The CLI report does not write production columns. `--fix` enqueues and skips `inspect_failed`. With an `OrderSource` bound and the flag off, the command still reports and refuses `--fix`. Until E4b binds that source, `metaldogs:snapshots reconcile` exits `order source is not bound` and prints nothing. The cron calls `FillSnapshotProduction` only when that source is bound, for snapshots whose production columns are still NULL and whose version is `ready`. Without the source the job errors and fills nothing. A second fill changes nothing. The prepare-production job does not call that fill until G5 sets `production_status=ready`.
 
 ## Open items to verify (tracked in ROADMAP §1)
 
