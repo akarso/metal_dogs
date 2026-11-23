@@ -21,11 +21,11 @@ Inspected against Shopanda source at pin [`c25f3e7ead48ff75c53667ec7de3a9ab3f705
 | PostgreSQL job queue with admin API and `jobs:*` CLI; cron scheduler | Inspected at pin | Generation, artwork preparation, retention sweeps run as queue jobs ([ADR-0003](adr/0003-async-generation-pg-job-queue-polling.md)) |
 | Plugin on-demand enqueue + handlers | Inspected at pin (Phase 13 PR-1087–1088; PR-1592; PR-1593; PR-1595) | Use `RegisterManual` + `Enqueue`; queue types are `integration.sync.metaldogs.<name>` (no free-form `metaldogs.*` types). Generate and prepare call `SyncJobs.Enqueue` with `pluginsdk.WithJobID` (UUID). A stale generate processing claim is requeued with `WithRequeueMinAge` after that enqueue; fresh processing is left ([CR-26](cr-rounds/CR-26-mig3b-pluginsdk-group-b2.md)). Terminal requeue retries once ([CR-28](cr-rounds/CR-28-upg8-pin-d9ccc21c.md)). Admin health calls `pluginsdk.JobsPort.CountsByType` ([CR-26](cr-rounds/CR-26-mig3b-pluginsdk-group-b2.md)). Plugin CLI skips `CapJobs` and `CapMedia` ([CR-28](cr-rounds/CR-28-upg8-pin-d9ccc21c.md)) |
 | Plugin-owned schema migrations | Inspected at pin (Phase 13 PR-1084–1086) | Implement `pluginsdk.Migrator` (`Migration` returns `pluginsdk.MigrationSpec`); versions `plugin:<name>:<basename>`; applied by `app migrate` / boot `InitAll` with advisory lock ([CR-26](cr-rounds/CR-26-mig3b-pluginsdk-group-b2.md)) |
-| Extension fields with cart → order snapshot at checkout | Inspected at pin; E2 contract-tests the session-cart route, the plugin-only `403`, and `cart.validate` ([CR-19](cr-rounds/CR-19-e2-cart-design-attach.md)). E3 contract-tests `POST /api/v1/checkout` re-validation with manual payment ([CR-30](cr-rounds/CR-30-e3-checkout-validation.md)). Guest SSR pages and Stripe test mode are not recorded. Copy of snapshot-mode values onto the order line is core behaviour, consumed by E4 | Line-level (`cart_item` / `order_item`); `metaldogs.design_id` is public, plugin-only write, snapshot storage ([ADR-0005](adr/0005-immutable-order-design-snapshot.md)) |
+| Extension fields with cart → order snapshot at checkout | Inspected at pin; E2 contract-tests the session-cart route, the plugin-only `403`, and `cart.validate` ([CR-19](cr-rounds/CR-19-e2-cart-design-attach.md)). E3 contract-tests `POST /api/v1/checkout` re-validation with manual payment ([CR-30](cr-rounds/CR-30-e3-checkout-validation.md)). Guest SSR pages and Stripe test mode are not recorded. Copy of snapshot-mode values onto the order line is core behaviour. E4a does not read it. E4b will, after `OrderPort` can list lines and after the copy is visible to `order.created` ([CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)) | Line-level (`cart_item` / `order_item`); key `(order_id, variant_id)`; `metaldogs.design_id` is public, plugin-only write, snapshot storage ([ADR-0005](adr/0005-immutable-order-design-snapshot.md)) |
 | Plugin-only extension writes | Inspected at pin ([shopanda#575](https://github.com/akarso/shopanda/pull/575), [#578](https://github.com/akarso/shopanda/pull/578), [#580](https://github.com/akarso/shopanda/pull/580); cart write order is phase PR-1549, merged in [#584](https://github.com/akarso/shopanda/pull/584)) | Untrusted writes of `Access.PluginOnlyWrite` fields return 403 `forbidden_plugin_only_field`. Trusted in-process code uses `App.PluginWriteContext` (error) or `App.WithPluginWrite` (panic). `Publish`, pricing, `checkout.Workflow.Execute`, and `jobs.Worker.safeHandle` strip the grant. Add-to-cart uses `Host.Cart()` and `Host.Catalog()` ([CR-20](cr-rounds/CR-20-mig1-cart-pluginsdk.md)). |
 | Guest checkout, Stripe core plugin, S3 core plugin, media storage port | Inspected at pin | No account required for MVP; private S3 bucket ([ADR-0004](adr/0004-private-object-storage-signed-urls.md)). Checkout JSON errors can carry a plugin client code (`plugin.<slug>` via `pluginsdk.WithClientCode`), a `details` object (`WithDetails`), and HTTP 503 (`UnavailableError` / `IsUnavailable`; `httpx.ErrorBody.Details`) (PR-1597, shopanda#650). The E3 step uses that for `plugin.metaldogs.design_unavailable` and `plugin.metaldogs.validation_unavailable`. |
 | SSR storefront with themes, UI slots, asset manifest | Inspected at pin | Cart and checkout pages are reused from Shopanda; only the customizer is custom ([ADR-0002](adr/0002-storefront-customizer-and-shopanda-checkout.md)). SSR checkout confirms a Stripe PaymentIntent (`themes/default/templates/checkout_confirm.html`, POST then 303 then GET, `payment.stripe.publishable_key`, `GET /checkout/payment/return`) (PR-1598, shopanda#651). That return route is out-of-scope in `PublicProductVisibilityRoutes` (PR-1599, shopanda#653). This row does not record a Stripe test-mode run. |
-| `order.created` / `order.failed` published | Inspected at pin (PR-1088) | Prefer `order.paid` for fulfilment; tolerate `order.created` followed by `order.failed` if checkout compensates |
+| `order.created` / `order.failed` published | Inspected at pin (PR-1088). `CreateOrderStep` publishes `order.created` after the order row is saved and before `SnapshotCartItemToOrderItem` (`internal/application/checkout/create_order_step.go`). Payload is `OrderCreatedData` (order id, customer id, contact email, currency, item count) | Prefer `order.paid` for fulfilment; tolerate `order.created` followed by `order.failed` if checkout compensates. E4b waits on this event moving to after the extension copy (or a later event). E4a does not subscribe unless `plugins.metaldogs.order_snapshot.enabled` is true, and that flag defaults to false |
 | Plugin shipment status update | Inspected at pin (PR-1400) | `IntegrationShipmentStatusUpdater.ApplyShipmentStatus` for POD status sync (track P) |
 | Public catalog price and on-hand stock | Inspected at pin ([shopanda#573](https://github.com/akarso/shopanda/pull/573)); E1 guest product and variant offer reads contract-tested (CR-18) | Guest product and variant reads include a `PublicOffer` sibling (`amount` in minor units or `null`, `currency`, `in_stock`, `variant_id` only when `amount` is set). List and category lists use `meta.offers[<product id>]`; product detail uses `meta.offer`; variant list uses `offers[<variant id>]`; variant detail uses `offer`. Search and admin reads omit offers. E1 feature tests read the custom tee through these guest responses (PLN host; `amount` is the stored net price; stock 0 is `in_stock: false`). |
 
@@ -107,7 +107,7 @@ timeline
 | **M0** | F0 F1 F2 F3 F4 D0 | Nothing visible; deployable fork with inert plugin (F0–F4 closed; D0 open) |
 | **M1** | G0 G1 G2 | Internal: evaluation report, accepted provider ADR, template format v1 |
 | **M2** | C1 C2 C3 C4 C5 S1 S2 S3 S4 G3 G4 O1 | Hidden `/customize` flow works end to end with previews |
-| **M3** | C6 C7 E1 E2 E3 E4 E5 S5 S6 G5 P0 P1 O2 O4 | Customers can buy; orders carry immutable artwork; fulfilment manual |
+| **M3** | C6 C7 E1 E2 E3 E4a E4b E5 S5 S6 G5 P0 P1 O2 O4 | Customers can buy; orders carry immutable artwork; fulfilment manual |
 | **M4** | P2 P3 P4 O3 O5 O6 E6 | Hands-off fulfilment, cost and privacy controls, monitoring |
 | **M5** | X1 X2 X3 (X4 X5 only if justified) | Catalog growth, second product, channel decision |
 
@@ -153,7 +153,8 @@ flowchart TD
         E1[E1 Catalog product + variants]
         E2[E2 Cart line design attach]
         E3[E3 Checkout validation]
-        E4[E4 Order design snapshot]
+        E4a[E4a Order snapshot, flag off]
+        E4b[E4b Real order source]
         E5[E5 Admin snapshot & artwork access]
         E6[E6 Confirmation thumbnail]
     end
@@ -201,8 +202,8 @@ flowchart TD
     F1 --> E1
     E1 --> E2
     C6 --> E2
-    E2 --> E3 --> E4 --> E5
-    E4 --> E6
+    E2 --> E3 --> E4a --> E4b --> E5
+    E4b --> E6
     P0 --> G5
     G4 --> G5
     C6 --> G5
@@ -211,7 +212,7 @@ flowchart TD
     P1 --> P2 --> P3 --> P4
     F1 --> O1
     C2 --> O2
-    E4 --> O2
+    E4a --> O2
     C4 --> O3
     C4 --> O4
     F3 --> O5
@@ -322,7 +323,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 #### G5 · Production artwork preparation — size M
 
 - **Goal:** From the approved artwork, produce the production file matching the POD specification from P0 (resolution, dimensions, transparency, colour profile), compute checksum, store as `production` asset linked to the approved design version.
-- **Scope:** Upscaling policy decided (reject vs upscale) based on P0; validation against spec; job `integration.sync.metaldogs.prepare_production_artwork`. Reclaim of C6 `failed`/`cancelled` may set `attempts=0` and raise `max_retries` together; stale `processing` must leave `attempts` alone (zombie Fail fence) and raise `max_retries` only (C6 enqueued with `MaxRetries=1`).
+- **Scope:** Upscaling policy decided (reject vs upscale) based on P0; validation against spec; job `integration.sync.metaldogs.prepare_production_artwork`. Reclaim of C6 `failed`/`cancelled` may set `attempts=0` and raise `max_retries` together; stale `processing` must leave `attempts` alone (zombie Fail fence) and raise `max_retries` only (C6 enqueued with `MaxRetries=1`). When the handler sets `production_status=ready`, it calls `(*metaldogs.Plugin).FillSnapshotProduction` for that design version (E4a, [CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)). Until then the only writer of snapshot production columns is the `reconcile_snapshots` cron, and that fill runs only with an `OrderSource` bound (E4b).
 - **Tests:** Unit tests for spec validation; feature test: approve → job → production asset recorded with checksum; failure path marks `production_failed` with reason.
 - **Safe delivery:** Runs only for approved designs; failures are visible in admin (E5) and do not block checkout until P2 requires it.
 - **Docs:** `architecture/flows/checkout-snapshot-and-fulfillment.md`; runbook `production-artwork-failed.md` section inside `generation-job-stuck-or-failed.md`.
@@ -374,7 +375,7 @@ Each slice uses the same card. "Safe delivery" explains why the site does not br
 - **Goal:** `POST /api/customizer/designs/{id}/approve` (idempotent) freezes the current artwork as `DesignVersion` with checksum, template version, texts, provider/model/prompt versions; design → `approved`; enqueues `integration.sync.metaldogs.prepare_production_artwork` (G5, if P0 closed; otherwise job type registered but handler no-ops with a `pending_spec` log). Approved designs reject further edits and regeneration; "change it" creates a new design cloned from the approved one.
 - **Tests:** Unit: approve only from `preview_ready`; immutability enforced; feature: double approve returns same version; clone creates new draft with new token (source bytes Put-copied). DSN: `ApproveBound` unique + status race.
 - **Safe delivery:** Flagged; migrations `013`/`014` (versions + append-only/FK); prepare stub fails once (`MaxRetries=1`); approve conflict never uses `Admin.Retry` (type-scoped cancelled/stale-processing UPDATEs; failed/done stay terminal).
-- **Docs:** ADR-0005 Accepted for DesignVersion/approve (OrderDesignSnapshot remains E4).
+- **Docs:** ADR-0005 Accepted for DesignVersion/approve. OrderDesignSnapshot is implemented in E4a and inactive (flag off, no real order source) ([CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)).
 
 #### C7 · Regeneration limits — size S — **DONE** (CR-17)
 
@@ -445,16 +446,26 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 - **Tests:** `TestCheckout_DesignSale` calls `POST /api/v1/checkout` on an isolated database with the manual payment provider ([CR-30](cr-rounds/CR-30-e3-checkout-validation.md)). A refused design is `422` `plugin.metaldogs.design_unavailable` with every failing line. A port failure is `503` `plugin.metaldogs.validation_unavailable` and `retryable: true`. A logged-in cart is refused the same way.
 - **Safe delivery:** The step exists only when the plugin is enabled. It does nothing to a cart whose lines are other loaded products.
 - **Manual verification:** Not recorded. SSR confirm exists upstream (PR-1598). Guest checkout with Stripe test mode is still a maintainer checklist ([`runbooks/checkout-manual-verification.md`](runbooks/checkout-manual-verification.md)). E3 is not an end-to-end Stripe proof until that checklist is filled in.
-- **Known limits:** A cart line does not extend a design's lifetime, so a design can expire between add and pay (retention is O2). Reorder of an `ordered` design through the add-to-cart route is still `409`; that decision belongs to E4. A race between this step and order creation is E4 (snapshot at order creation, plus reconciliation). Merging a guest cart copies `metaldogs.design_id` without hooks; this step is the check.
+- **Known limits:** A cart line does not extend a design's lifetime, so a design can expire between add and pay (retention is O2). Reorder of an `ordered` design through the add-to-cart route stays `409` `invalid_transition`; re-order is a clone, then a new approval (E4a, [CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)). A race between this step and order creation is the E4a snapshot plus reconciliation. That code is inactive until E4b: the flag defaults off and no real order source is bound. Merging a guest cart copies `metaldogs.design_id` without hooks; this step is the check.
 - **Docs:** [`architecture/api.md`](architecture/api.md); [`architecture/flows/design-to-order.md`](architecture/flows/design-to-order.md); [CR-30](cr-rounds/CR-30-e3-checkout-validation.md).
 
-#### E4 · Order design snapshot — size M
+#### E4a · Order design snapshot (plugin) — size M — **DONE** (CR-32, 2026-11-23)
 
-- **Goal:** On order creation (event handler, idempotent on `order_line_id`), create `OrderDesignSnapshot` referencing the approved `DesignVersion`, artwork asset and checksum, template version, texts, provider/model/prompt versions; design → `ordered`; retention of referenced assets switched to "keep until fulfilled + N days".
-- **Scope:** Handler runs via queue job for reliability (transactional enqueue with the Shopanda order commit if the event is synchronous; otherwise idempotent async handler with reconciliation sweep).
-- **Tests:** Unit: snapshot content; feature: order created → snapshot exists; duplicate event → one snapshot; reconciliation sweep finds orders with design lines and no snapshot.
-- **Safe delivery:** Flagged; reconciliation is read-only until enabled.
-- **Docs:** `architecture/flows/checkout-snapshot-and-fulfillment.md`; runbook `order-without-design-snapshot.md`.
+- **Goal:** After an order id is known, write one immutable `OrderDesignSnapshot` per custom-tee line, move the design `approved → ordered`, and keep snapshot artwork and production assets out of plugin deletion. The line key is `(order_id, variant_id)`. Delivery is `order.created` → one `dispatch_snapshot_order` job → one `snapshot_order_design` job (UUID v5 of the order id) → idempotent insert. A periodic report finds design lines with no snapshot. The operator's `--fix` is the only enqueue from that report.
+- **Status:** Code is in the tree and dark. `plugins.metaldogs.order_snapshot.enabled` defaults to false (`configs/config.example.product.yaml`). While it is false the handler and the `reconcile_snapshots` cron are not registered, and `metaldogs:snapshots reconcile --fix` is refused. No `OrderSource` adapter is bound, so `metaldogs:snapshots reconcile` (with or without `--order`) exits `order source is not bound` and prints nothing. With the flag on and no source, that cron fails every run and logs `metaldogs.reconcile_snapshots.failed`, not `metaldogs.reconcile_snapshots.gap`. An alert on the gap line is not configured. The report runs only when a source is bound. Tests use an in-memory fake. A real checkout does not create a snapshot.
+- **Scope:** Migration `015` `metaldogs_order_design_snapshots` (append-only; production columns once, from NULL). Plugin port `ports.OrderSource` (`Lines`, `ListCreatedSince`). Retention helper `AssetsReferencedBySnapshots` on every plugin deletion path. `FillSnapshotProduction` for a later `ready` version. Nothing under `internal/*`, `pkg/*`, or core `cmd/api/*`.
+- **Tests:** Postgres seam runs `snapshot_order_design` for an order id with the fake source ([CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)). With that fake source bound, `metaldogs:snapshots reconcile` reports a seeded line with no snapshot and `--fix` enqueues one job. The cron logs `metaldogs.reconcile_snapshots.gap` and, when the flag is on and the source is bound, fills production columns once. Without a bound source the command prints nothing.
+- **Safe delivery:** Flag off. Rollback is the flag, or leave it off. Migration `015` stays.
+- **Known limits:** `Host.Orders()` is `FindByID` only, so E4a cannot see lines or list recent orders. `order.created` is published before `SnapshotCartItemToOrderItem`, and the payload has no extension values, so a live handler would miss `metaldogs.design_id`. `OrderSource.Lines` does not tell a missing order from an order with no design lines; both end the job `done`. The sweep looks back 30 days (`ReconcileLookback`); older orders need `--order`. `prepare_production_artwork` still terminals `pending_spec` and does not call `FillSnapshotProduction`; G5 must, when it sets `production_status=ready`. Deletion functions are not scheduled (O2). After-`shipped` retention is O2. Add-to-cart of an `ordered` design stays `409`; re-order is a clone. E5, E6, and track P are out of this slice.
+- **Docs:** [ADR-0005](adr/0005-immutable-order-design-snapshot.md) decision 4; [`architecture/flows/checkout-snapshot-and-fulfillment.md`](architecture/flows/checkout-snapshot-and-fulfillment.md); [`architecture/domain-model.md`](architecture/domain-model.md); [`architecture/flows/design-to-order.md`](architecture/flows/design-to-order.md); runbooks [`order-without-design-snapshot.md`](runbooks/order-without-design-snapshot.md) (last exercised: never) and [`asset-retention-and-deletion.md`](runbooks/asset-retention-and-deletion.md); [CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md).
+
+#### E4b · Order source adapter — size S — **blocked**
+
+- **Blocked on:** a Shopanda pin that contains both of the following, then an UPG ticket that merges `main` (do not rebase; same pattern as E3 / UPG10).
+  1. `pluginsdk.OrderPort` gains `Lines` (with extension values) and `ListCreatedSince`.
+  2. `order.created` is published after the cart→order extension copy, or a later event is added, and at-least-once delivery and idempotency are documented.
+- **Goal:** Bind `ports.OrderSource` to `Host.Orders()`. One end-to-end case: real `POST /api/v1/checkout` (as `TestCheckout_DesignSale`), then run `snapshot_order_design`; the snapshot row exists. Turn `plugins.metaldogs.order_snapshot.enabled` on only when that adapter is bound and M3 starts. Until then the flag stays false.
+- **Out of scope for E4a:** any edit under `internal/*`, `pkg/*`, or core `cmd/api/*`, and any read of core order tables.
 
 #### E5 · Admin snapshot and artwork access — size S
 
@@ -483,7 +494,7 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 
 #### P2 · Automated submission — size L
 
-- **Goal:** `FulfillmentProvider` port + adapter; job `integration.sync.metaldogs.submit_fulfillment` after payment confirmed and production artwork ready; idempotent on snapshot id; configurable manual-approval gate (default on) before submission.
+- **Goal:** `FulfillmentProvider` port + adapter; job `integration.sync.metaldogs.submit_fulfillment` after payment confirmed and production artwork ready; idempotent on `(order_id, variant_id)`; configurable manual-approval gate (default on) before submission.
 - **Tests:** Contract tests with sanitized fixtures; feature: paid order → job → `submitted` with external id; provider 5xx → retry; 4xx validation → `submission_failed` terminal with reason.
 - **Safe delivery:** Flag off; gate on when flag first enabled.
 - **Docs:** runbook `pod-submission-failed.md`.
@@ -509,6 +520,7 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 #### O2 · Retention and deletion — size M
 
 - **Goal:** Scheduler job enforces policy: unattached uploads (hours), source photos of unordered designs (days), unordered designs (days), ordered artwork (kept until fulfilled + N days, then source deleted, approved/production artwork retained per legal/warranty policy); GDPR delete request hook removes customer-linked assets; every deletion logged (ids only).
+- **Entry:** The only retention deletion paths are `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns` (E4a, [CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)). O2 schedules those three and applies policy, including after `shipped`, by calling them. It does not add its own `UPDATE` of `deleted_at` on the same rows. The GDPR hook in the goal is separate from that sweep.
 - **Tests:** Unit: policy decision table; feature: sweep deletes exactly the expected rows/objects; ordered designs never swept.
 - **Safe delivery:** Dry-run mode first (logs what would be deleted), then enable.
 - **Docs:** runbook `asset-retention-and-deletion.md`; policy table in `architecture/domain-model.md`.
@@ -581,6 +593,6 @@ Frontend test tooling choice (runner, E2E driver) is made in S1 and documented i
 | Verify-items in §1 turn out false | Fallbacks listed per item; decided in F1 before C-track starts |
 | Cost blow-up from retries or abuse | C4 per-design mutex and bounded retries; C7 attempt limits; O3 caps; O4 rate limits |
 | Private photos leaked via URLs or logs | F4 private bucket; short-TTL signed URLs; logging rules in `AGENTS.md`; O2 retention |
-| Order references artwork that later changes | C6 frozen `DesignVersion` with checksum; E4 snapshot; retention keeps ordered assets |
+| Order references artwork that later changes | C6 frozen `DesignVersion` with checksum; E4a snapshot is implemented and inactive (flag off, no real order source) until E4b; retention helper keeps assets a snapshot names |
 | Print quality differs from preview | P0 physical sample before M3; G5 validates against the spec; explicit preview vs production wording in S4 |
 | Mobile camera capture inconsistent | S2 always offers gallery; S6 device matrix |

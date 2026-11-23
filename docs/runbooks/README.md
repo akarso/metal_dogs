@@ -12,7 +12,7 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 | [`ai-provider-outage-and-cost-cap.md`](ai-provider-outage-and-cost-cap.md) | Provider errors, rate limits, cost cap reached | C4, O3 |
 | [`template-publishing.md`](template-publishing.md) | Adding, changing, publishing, or retiring templates | G2, X1 |
 | [`checkout-manual-verification.md`](checkout-manual-verification.md) | Maintainer checklist before treating guest SSR checkout and Stripe test mode as done | E3 |
-| [`order-without-design-snapshot.md`](order-without-design-snapshot.md) | Reconciliation alert; paid order with design line but no snapshot | E4 |
+| [`order-without-design-snapshot.md`](order-without-design-snapshot.md) | Log `metaldogs.reconcile_snapshots.gap` (`missing_snapshot`, `snapshot_job_failed`); no alert configured. Paid order with a design line but no snapshot. Last exercised: never | E4a |
 | [`manual-pod-fulfillment.md`](manual-pod-fulfillment.md) | Fulfilling an order by hand (M3 default; automation fallback) | P1 |
 | [`pod-submission-failed.md`](pod-submission-failed.md) | Automated submission failed or stale | P2, P4 |
 | [`asset-retention-and-deletion.md`](asset-retention-and-deletion.md) | Retention sweep issues; GDPR deletion request | O2 |
@@ -22,5 +22,5 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 
 - Processes: `app serve` (HTTP), `app worker` (jobs), `app scheduler` (cron). In dev, `app dev` runs all three.
 - Correlation: every HTTP request and job log line carries `correlation_id`; design-scoped lines carry `design_id`; job lines carry `job_id`. Search logs by these ids, never by customer data.
-- Feature flags (`plugins.metaldogs.*`): `enabled`, `customizer_public`, `generation.provider`, `generation.max_attempts_per_design`, `generation.max_retries`, `generation.cooldown_seconds`, `cost.daily_cap`, `fulfillment.auto_submit`, `fulfillment.manual_gate`, `retention.dry_run`. Exact keys are confirmed as slices land.
+- Feature flags (`plugins.metaldogs.*`): `enabled`, `customizer_public`, `generation.provider`, `generation.max_attempts_per_design`, `generation.max_retries`, `generation.cooldown_seconds`, `order_snapshot.enabled` (default false; E4a, [CR-32](../cr-rounds/CR-32-e4a-order-design-snapshot.md)), `cost.daily_cap`, `fulfillment.auto_submit`, `fulfillment.manual_gate`, `retention.dry_run`. Exact keys are confirmed as slices land.
 - Never paste signed URLs, tokens, provider payloads, or photos into tickets or chat.

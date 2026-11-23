@@ -10,18 +10,27 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 // GenerationJobRepo is a Postgres adapter for ports.GenerationJobRepository.
 type GenerationJobRepo struct {
-	db *sql.DB
+	db      *sql.DB
+	keptLog pluginsdk.Logger
 }
 
 // NewGenerationJobRepo returns a GenerationJobRepo backed by db.
 func NewGenerationJobRepo(db *sql.DB) *GenerationJobRepo {
 	return &GenerationJobRepo{db: db}
+}
+
+// SetKeptLog records one line when a live asset replace skips a snapshot-referenced asset.
+func (r *GenerationJobRepo) SetKeptLog(log pluginsdk.Logger) {
+	if r != nil {
+		r.keptLog = log
+	}
 }
 
 var _ ports.GenerationJobRepository = (*GenerationJobRepo)(nil)
@@ -247,7 +256,7 @@ func (r *GenerationJobRepo) PersistArtwork(ctx context.Context, j domain.Generat
 		return nil, fmt.Errorf("metaldogs persist artwork begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	prior, err := softDeleteLiveAssetType(ctx, tx, artwork.OwnerRef, domain.AssetTypeArtwork, artwork.CreatedAt)
+	prior, err := softDeleteLiveAssetType(ctx, tx, artwork.OwnerRef, domain.AssetTypeArtwork, artwork.CreatedAt, r.keptLog)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +297,7 @@ func (r *GenerationJobRepo) CompleteSuccess(ctx context.Context, j domain.Genera
 		return nil, fmt.Errorf("metaldogs generation complete begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	prior, err := softDeleteLiveAssetType(ctx, tx, mockup.OwnerRef, domain.AssetTypeMockup, design.UpdatedAt)
+	prior, err := softDeleteLiveAssetType(ctx, tx, mockup.OwnerRef, domain.AssetTypeMockup, design.UpdatedAt, r.keptLog)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +338,7 @@ func (r *GenerationJobRepo) FinalizeSuccess(ctx context.Context, j domain.Genera
 		return nil, fmt.Errorf("metaldogs generation finalize begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	prior, err := softDeleteLiveAssetType(ctx, tx, mockup.OwnerRef, domain.AssetTypeMockup, design.UpdatedAt)
+	prior, err := softDeleteLiveAssetType(ctx, tx, mockup.OwnerRef, domain.AssetTypeMockup, design.UpdatedAt, r.keptLog)
 	if err != nil {
 		return nil, err
 	}
@@ -360,29 +369,34 @@ func (r *GenerationJobRepo) FinalizeSuccess(ctx context.Context, j domain.Genera
 	return prior, nil
 }
 
-func softDeleteLiveAssetType(ctx context.Context, tx *sql.Tx, ownerRef, assetType string, at time.Time) ([]ports.DeletedBlobRef, error) {
+func softDeleteLiveAssetType(ctx context.Context, tx *sql.Tx, ownerRef, assetType string, at time.Time, log pluginsdk.Logger) ([]ports.DeletedBlobRef, error) {
 	if ownerRef == "" || assetType == "" {
 		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, `
-		UPDATE metaldogs_assets SET deleted_at = $3
+	ids, err := queryIDs(ctx, tx, `
+		SELECT id::text FROM metaldogs_assets
 		WHERE owner_ref = $1 AND type = $2 AND deleted_at IS NULL
-		RETURNING id, COALESCE(storage_key, '')
-	`, ownerRef, assetType, at.UTC())
+		ORDER BY id
+		FOR UPDATE
+	`, ownerRef, assetType)
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs soft-delete prior %s: %w", assetType, err)
 	}
-	defer rows.Close()
-	var out []ports.DeletedBlobRef
-	for rows.Next() {
-		var ref ports.DeletedBlobRef
-		if err := rows.Scan(&ref.AssetID, &ref.StorageKey); err != nil {
-			return nil, fmt.Errorf("metaldogs soft-delete prior %s scan: %w", assetType, err)
-		}
-		out = append(out, ref)
+	drop, keep, err := partitionSnapshotAssets(ctx, tx, ids)
+	if err != nil {
+		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("metaldogs soft-delete prior %s rows: %w", assetType, err)
+	logAssetsKept(log, retentionPathReplaceLiveAsset, keep)
+	var out []ports.DeletedBlobRef
+	for _, id := range drop {
+		key, err := assetStorageKey(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := markAssetDeleted(ctx, tx, id, at); err != nil {
+			return nil, fmt.Errorf("metaldogs soft-delete prior %s: %w", assetType, err)
+		}
+		out = append(out, ports.DeletedBlobRef{AssetID: id, StorageKey: key})
 	}
 	return out, nil
 }

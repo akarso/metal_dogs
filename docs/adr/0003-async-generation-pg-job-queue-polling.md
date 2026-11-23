@@ -16,6 +16,7 @@ Shopanda (inspected at the F0 pin) provides a PostgreSQL-backed job queue with r
 1. All long-running work runs as Shopanda **integration sync jobs** registered by the `metaldogs` plugin via `pluginsdk` (`RegisterManual` / `RegisterOnEvent` / `RegisterCron` as appropriate). Queue type strings are exactly:
    - `integration.sync.metaldogs.generate`
    - `integration.sync.metaldogs.prepare_production_artwork`
+   - `integration.sync.metaldogs.dispatch_snapshot_order` (enqueues the snapshot job)
    - `integration.sync.metaldogs.snapshot_order_design`
    - `integration.sync.metaldogs.submit_fulfillment`
    - `integration.sync.metaldogs.retention_sweep`

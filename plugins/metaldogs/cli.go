@@ -21,6 +21,7 @@ const (
 	CommandEval        = "metaldogs:eval"
 	CommandTemplates   = "metaldogs:templates"
 	CommandCatalogSeed = "metaldogs:catalog-seed"
+	CommandSnapshots   = "metaldogs:snapshots"
 )
 
 func registerCLICommands(h pluginsdk.Host, p *Plugin) {
@@ -79,6 +80,13 @@ func registerCLICommands(h pluginsdk.Host, p *Plugin) {
 		Description: "Load the Metal Dogs catalog CSV (draft product, idempotent by SKU)",
 		RequiresDB:  true,
 		Run:         p.runCatalogSeed,
+	})
+
+	reg.RegisterCommand(pluginsdk.CLICommand{
+		Name:        CommandSnapshots,
+		Description: "Report design lines with no snapshot: reconcile [--order=<id>] [--fix]. Report only; --fix enqueues snapshot_order_design. Production fill runs on the reconcile_snapshots cron.",
+		RequiresDB:  true,
+		Run:         p.runSnapshots,
 	})
 }
 

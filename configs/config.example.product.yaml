@@ -7,3 +7,5 @@
 #       max_retries: 3
 #       max_attempts_per_design: 3
 #       cooldown_seconds: 30
+#     order_snapshot:            # or order_snapshot_enabled; env SHOPANDA_PLUGINS_METALDOGS_ORDER_SNAPSHOT_ENABLED
+#       enabled: false           # when false, snapshot jobs and reconcile_snapshots are not registered, and metaldogs:snapshots reconcile --fix is refused. E4a binds no OrderSource, so reconcile (with or without --order) exits "order source is not bound" and prints nothing. When true with no source, snapshot_order_design and reconcile_snapshots fail every run the same way. The report prints only when a source is bound.

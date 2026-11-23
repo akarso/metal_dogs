@@ -189,6 +189,20 @@ func (d *Design) Approve(versionID string, at time.Time) error {
 	return nil
 }
 
+// MarkOrdered moves approved → ordered. Already ordered is a no-op.
+func (d *Design) MarkOrdered(at time.Time) error {
+	switch d.Status {
+	case DesignApproved:
+		d.Status = DesignOrdered
+		d.UpdatedAt = at.UTC()
+		return nil
+	case DesignOrdered:
+		return nil
+	default:
+		return &ErrInvalidTransition{From: d.Status, Command: "MarkOrdered"}
+	}
+}
+
 // CloneDraft returns a new draft design copied from an approved (or ordered) design.
 // Caller supplies new id, source asset id, and owner token hash.
 func (d Design) CloneDraft(newID, newSourceAssetID string, ownerTokenHash []byte, at time.Time) (Design, error) {

@@ -142,6 +142,31 @@ func TestDesign_Approve(t *testing.T) {
 	}
 }
 
+func TestDesign_MarkOrdered(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
+	d := domain.Design{Status: domain.DesignApproved, UpdatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
+	if err := d.MarkOrdered(now); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != domain.DesignOrdered || !d.UpdatedAt.Equal(now) || !d.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("%+v", d)
+	}
+	updated := d.UpdatedAt
+	if err := d.MarkOrdered(now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != domain.DesignOrdered || !d.UpdatedAt.Equal(updated) {
+		t.Fatalf("second MarkOrdered changed %+v", d)
+	}
+	for _, st := range []string{domain.DesignDraft, domain.DesignPreviewReady, domain.DesignExpired} {
+		bad := domain.Design{Status: st}
+		if err := bad.MarkOrdered(now); err == nil {
+			t.Fatalf("status %s must reject MarkOrdered", st)
+		}
+	}
+}
+
 func TestDesign_CloneDraft(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)

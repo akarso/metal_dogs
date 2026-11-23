@@ -25,13 +25,17 @@ const permJobsRead = "jobs.read"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
-	assets       ports.AssetStore
-	uploads      *application.UploadService
-	designs      *application.DesignService
-	generate     *application.GenerateService
-	worker       *application.GenerateWorker
-	host         cartSurface
-	syncJobNames []string
+	assets               ports.AssetStore
+	uploads              *application.UploadService
+	designs              *application.DesignService
+	generate             *application.GenerateService
+	worker               *application.GenerateWorker
+	host                 cartSurface
+	syncJobNames         []string
+	jobs                 ports.JobAccess
+	orderSource          ports.OrderSource
+	snapshotClock        ports.Clock
+	orderSnapshotEnabled bool
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.
@@ -60,7 +64,7 @@ func (p *Plugin) Needs() []pluginsdk.Capability {
 }
 
 // New returns the Metal Dogs plugin.
-func New() *Plugin { return &Plugin{} }
+func New() *Plugin { return &Plugin{snapshotClock: ports.SystemClock{}} }
 
 // Name returns the stable plugin identity.
 func (p *Plugin) Name() string { return PluginName }
@@ -141,6 +145,7 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 	}
 
 	jobs := p.jobAccess(h)
+	p.jobs = jobs
 	if dbOK && db != nil {
 		var genErr error
 		p.generate, p.worker, genErr = newGenerateServices(jobs, store, db, providerName, maxRetries, maxAttempts, cooldownSecs, log)
@@ -215,6 +220,18 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		}
 		p.noteSyncJob(generateJobName)
 	}
+	p.orderSnapshotEnabled = settings.OrderSnapshotEnabled
+	if settings.OrderSnapshotEnabled {
+		if err := registerSnapshotOrder(syncAPI, p); err != nil {
+			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
+		}
+		p.noteSyncJob(SnapshotOrderJobName)
+		p.noteSyncJob(SnapshotOrderDispatchJobName)
+		if err := registerReconcileSnapshots(syncAPI, p); err != nil {
+			return fmt.Errorf("metaldogs plugin: reconcile_snapshots: %w", err)
+		}
+		p.noteSyncJob(ReconcileSnapshotsJobName)
+	}
 	return nil
 }
 
@@ -238,8 +255,10 @@ func newUploadService(store ports.AssetStore, db *sql.DB, log pluginsdk.Logger) 
 	if store == nil || db == nil {
 		return nil
 	}
+	assets := postgres.NewAssetRepo(db)
+	assets.SetKeptLog(log)
 	svc := &application.UploadService{
-		Assets: postgres.NewAssetRepo(db),
+		Assets: assets,
 		Store:  store,
 		IDs:    ports.UUIDGenerator{},
 		Clock:  ports.SystemClock{},
@@ -269,10 +288,16 @@ func newDesignService(store ports.AssetStore, db *sql.DB, templates *application
 			})
 		}
 	}
+	designs := postgres.NewDesignRepo(db)
+	designs.SetKeptLog(log)
+	assets := postgres.NewAssetRepo(db)
+	assets.SetKeptLog(log)
+	jobs := postgres.NewGenerationJobRepo(db)
+	jobs.SetKeptLog(log)
 	svc := &application.DesignService{
-		Designs:     postgres.NewDesignRepo(db),
-		Assets:      postgres.NewAssetRepo(db),
-		Jobs:        postgres.NewGenerationJobRepo(db),
+		Designs:     designs,
+		Assets:      assets,
+		Jobs:        jobs,
 		Versions:    versions,
 		Templates:   templates,
 		Store:       store,
@@ -315,8 +340,11 @@ func newGenerateServices(
 		return nil, nil, err
 	}
 	jobs := postgres.NewGenerationJobRepo(db)
+	jobs.SetKeptLog(log)
 	designs := postgres.NewDesignRepo(db)
+	designs.SetKeptLog(log)
 	assets := postgres.NewAssetRepo(db)
+	assets.SetKeptLog(log)
 	tplStore := postgres.NewTemplateStore(db)
 	worker := &application.GenerateWorker{
 		Designs:          designs,

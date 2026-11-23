@@ -163,6 +163,7 @@ func (m *designAssetRepo) ClearStorageKey(_ context.Context, assetID string) err
 
 type designBlobStore struct {
 	objects map[string][]byte
+	deletes int
 }
 
 func (m *designBlobStore) Put(_ context.Context, key string, r io.Reader, _ string) error {
@@ -190,6 +191,7 @@ func (m *designBlobStore) SignedGetURL(_ context.Context, key string, _ time.Dur
 	return "https://signed.example/" + key, nil
 }
 func (m *designBlobStore) Delete(_ context.Context, key string) error {
+	m.deletes++
 	if _, ok := m.objects[key]; !ok {
 		return os.ErrNotExist
 	}
@@ -1666,7 +1668,7 @@ func TestDesignService_Get_JobLookupErrorPreservesCause(t *testing.T) {
 	inner := &designJobRepo{byID: map[string]domain.GenerationJob{}}
 	svc := &application.DesignService{
 		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
-		Jobs: &errDesignJobRepo{inner: inner, err: boom},
+		Jobs:      &errDesignJobRepo{inner: inner, err: boom},
 		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
 		Store:     &designBlobStore{objects: map[string][]byte{"src-job-err": {1}}},
 		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
@@ -1719,9 +1721,9 @@ func TestDesignService_Get_ArtworkLookupError(t *testing.T) {
 	designs := &designMemRepo{}
 	jobs := &designJobRepo{byID: map[string]domain.GenerationJob{}}
 	svc := &application.DesignService{
-		Designs: &bindingDesignRepo{designs: designs, assets: inner},
-		Assets:  &errAssetRepo{designAssetRepo: *inner, getErr: boom, failID: artID},
-		Jobs:    jobs,
+		Designs:   &bindingDesignRepo{designs: designs, assets: inner},
+		Assets:    &errAssetRepo{designAssetRepo: *inner, getErr: boom, failID: artID},
+		Jobs:      jobs,
 		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
 		Store:     &designBlobStore{objects: map[string][]byte{"src-art-err": {1}, "art-err": {2}}},
 		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
@@ -1779,7 +1781,7 @@ func TestDesignService_Get_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
 	inner := &designJobRepo{byID: map[string]domain.GenerationJob{}}
 	svc := &application.DesignService{
 		Designs: &bindingDesignRepo{designs: designs, assets: assets}, Assets: assets,
-		Jobs: &errDesignJobRepo{inner: inner, err: boom},
+		Jobs:      &errDesignJobRepo{inner: inner, err: boom},
 		Templates: &application.TemplateCatalog{Store: &designTplStore{rows: map[string]domain.Template{tplID: publishedTpl(tplID)}}},
 		Store:     &designBlobStore{objects: map[string][]byte{"src-preview-err": {1}}},
 		IDs:       testutil.NewSeqGenerator("des"), Clock: testutil.NewFakeClock(now),
@@ -1808,7 +1810,6 @@ func TestDesignService_Get_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
 		t.Fatalf("want wrapped cause %v, got %v", boom, err)
 	}
 }
-
 
 func TestDesignService_Approve_PreviewJobErrorWhenCooldownDisabled(t *testing.T) {
 	t.Parallel()

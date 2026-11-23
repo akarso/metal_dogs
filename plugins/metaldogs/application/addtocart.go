@@ -28,7 +28,7 @@ func (a *AddToCart) Execute(ctx context.Context, w http.ResponseWriter, r *http.
 	if err != nil {
 		return "", err
 	}
-	// Add route stays approved-only. Selling an already ordered design is an E4 decision.
+	// Re-order uses CloneDraft. This route stays approved-only (409 for ordered).
 	if d.Status != domain.DesignApproved {
 		return "", &DesignError{Code: DesignErrInvalidTransition, Message: "design is not ready"}
 	}

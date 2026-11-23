@@ -148,8 +148,10 @@ sequenceDiagram
         Shop-->>Cust: 422 plugin.metaldogs.design_unavailable, lines and retryable false. No reservation and no order
     else no custom-tee line, or every custom-tee line passes
         API-->>Shop: ok
-        Shop->>Shop: reserve stock, create order, copy metaldogs.design_id onto the order line
+        Shop->>Shop: reserve stock, persist order
         Shop-->>API: event order.created
+        Note over Shop: At the current pin this event is published before the extension copy
+        Shop->>Shop: SnapshotCartItemToOrderItem copies metaldogs.design_id (order_id, variant_id)
     end
     Note over API,Q: continues in checkout-snapshot-and-fulfillment.md
 ```
@@ -165,7 +167,7 @@ sequenceDiagram
 | Job | transient provider error | Progress continues (attempt count visible) | Automatic |
 | Job | terminal failure | Mapped friendly reason | Retry if attempts remain |
 | Reload mid-flow | — | Flow resumes from stored design id/token | Automatic |
-| Add to cart | design not approved | `409` `invalid_transition` ("design is not ready") | Approve |
+| Add to cart | design not approved, including `ordered` | `409` `invalid_transition` ("design is not ready") | Approve. An `ordered` design is re-ordered through `POST …/clone`, then approved, then added |
 | Add to cart | unknown, foreign, or expired design | `404` `not_found` | Use the caller's own approved design |
 | Add to cart | variant is not the custom tee, or the body is invalid | `422` `unprocessable` | Pick a size of `mdogs-tee` |
 | Add to cart | that size already has another design, or a custom-tee line with no design id | `409` `conflict`; cart unchanged | Remove the line, then add again |
@@ -177,6 +179,6 @@ sequenceDiagram
 ## Limits of this checkout step
 
 - A line in the cart does not extend `expires_at`. The design can expire after add and before pay. Retention stays O2.
-- The add-to-cart route still accepts only `approved`. Buying an `ordered` design again through that route is an E4 decision.
-- The step runs before reserve and order creation. A design that changes after the step and before the order row is E4 (snapshot plus reconciliation).
+- The add-to-cart route accepts only `approved`. An `ordered` design keeps `409` `invalid_transition`. Re-order is `CloneDraft` (`POST /api/customizer/designs/{id}/clone`), which already accepts `ordered`, then a new approval. Recorded in E4a ([ADR-0005](../../adr/0005-immutable-order-design-snapshot.md), [CR-32](../../cr-rounds/CR-32-e4a-order-design-snapshot.md)).
+- The step runs before reserve and order creation. A design that changes after the step and before the order row is the E4a snapshot plus reconciliation. That path is implemented and inactive: the flag defaults off and no real order source is bound. E4b turns it on after the Shopanda pin.
 - Guest checkout on the SSR pages with Stripe test mode is not recorded. SSR confirm exists upstream (PR-1598). The maintainer checklist is [`docs/runbooks/checkout-manual-verification.md`](../../runbooks/checkout-manual-verification.md).

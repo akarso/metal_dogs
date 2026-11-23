@@ -3,11 +3,37 @@ package metaldogs
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
+	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
+
+func (p *Plugin) OrderSource() ports.OrderSource {
+	if p == nil {
+		return nil
+	}
+	return p.orderSource
+}
+
+func (p *Plugin) SetOrderSource(src ports.OrderSource) {
+	if p != nil {
+		p.orderSource = src
+	}
+}
+
+func (p *Plugin) SetSnapshotClock(c ports.Clock) {
+	if p != nil {
+		p.snapshotClock = c
+	}
+}
+
+// SetReconcileOutput captures metaldogs:snapshots reconcile lines. Nil restores stdout.
+func SetReconcileOutput(w io.Writer) {
+	reconcileOutput = w
+}
 
 // Host.Cart returns a bound port only for the SDK *cartPort, so a failing Get wraps the host instead of BindCartPort.
 func (p *Plugin) FailCartGetForTest(err error) {
