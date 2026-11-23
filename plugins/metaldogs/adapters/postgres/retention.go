@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -229,6 +230,10 @@ func designAssetIDs(ctx context.Context, q dbSession, designID string) ([]string
 
 func partitionSnapshotAssets(ctx context.Context, q dbSession, assetIDs []string) (drop, keep []string, err error) {
 	assetIDs = uniqueStrings(assetIDs)
+	// FOR UPDATE before the snapshot read so CommitOrder's FOR SHARE cannot commit a reference between the check and deleted_at.
+	if err := lockAssetsForUpdate(ctx, q, assetIDs); err != nil {
+		return nil, nil, err
+	}
 	referenced, err := AssetsReferencedBySnapshots(ctx, q, assetIDs)
 	if err != nil {
 		return nil, nil, err
@@ -244,6 +249,23 @@ func partitionSnapshotAssets(ctx context.Context, q dbSession, assetIDs []string
 		drop = append(drop, id)
 	}
 	return drop, keep, nil
+}
+
+func lockAssetsForUpdate(ctx context.Context, q dbSession, assetIDs []string) error {
+	ids := canonicalUUIDs(assetIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Strings(ids)
+	if _, err := queryIDs(ctx, q, `
+		SELECT id::text FROM metaldogs_assets
+		WHERE id = ANY($1::uuid[])
+		ORDER BY id
+		FOR UPDATE
+	`, ids); err != nil {
+		return fmt.Errorf("metaldogs retention lock assets: %w", err)
+	}
+	return nil
 }
 
 func markAssetsDeleted(ctx context.Context, db dbSession, ids []string, at time.Time) error {

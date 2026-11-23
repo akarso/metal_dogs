@@ -120,6 +120,114 @@ func TestRetention_NoSnapshotStillDeletes(t *testing.T) {
 	}
 }
 
+func TestRetention_DeleteWaitsForShareLockThenKeepsReference(t *testing.T) {
+	db := testutil.OpenIsolated(t, "retention_lock")
+	ctx := context.Background()
+	now := time.Date(2026, 11, 23, 4, 20, 0, 0, time.UTC)
+
+	t.Run("soft delete", func(t *testing.T) {
+		id := uuid.NewString()
+		insertRetentionAsset(t, db, id, domain.AssetTypeArtwork, "", now, now.Add(time.Hour))
+		release := holdAssetShare(t, db, id)
+		done := start(t, func() error {
+			return postgres.NewAssetRepo(db).SoftDelete(ctx, id, now)
+		})
+		waitForAssetLockWait(t, db, release.pid)
+		insertRetentionSnapshot(t, db, id, "", now)
+		release.commit()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		assertAssetActive(t, db, id, true)
+	})
+
+	t.Run("replace source", func(t *testing.T) {
+		designID, sourceID := seedDraftDesign(t, db, now)
+		fresh := uuid.NewString()
+		insertRetentionAsset(t, db, fresh, domain.AssetTypeSource, "", now, now.Add(time.Hour))
+		got, ok, err := postgres.NewDesignRepo(db).GetByID(ctx, designID)
+		if err != nil || !ok {
+			t.Fatalf("design ok=%v err=%v", ok, err)
+		}
+		expectedUpdated := got.UpdatedAt
+		release := holdAssetShare(t, db, sourceID)
+		done := start(t, func() error {
+			got.SourceAssetID = fresh
+			got.UpdatedAt = now.Add(time.Minute)
+			_, err := postgres.NewDesignRepo(db).ReplaceSource(ctx, got, sourceID, expectedUpdated, now.Add(time.Hour))
+			return err
+		})
+		waitForAssetLockWait(t, db, release.pid)
+		insertRetentionSnapshot(t, db, sourceID, "", now)
+		release.commit()
+		if err := <-done; err == nil {
+			t.Fatal("replace of a snapshot-referenced source must not commit")
+		}
+		assertAssetActive(t, db, sourceID, true)
+		assertDesignStatus(t, db, designID, domain.DesignDraft)
+	})
+}
+
+type shareHold struct {
+	pid    int
+	commit func()
+}
+
+func holdAssetShare(t *testing.T, db *sql.DB, id string) shareHold {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if err := tx.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := tx.QueryRow(`
+		SELECT id::text FROM metaldogs_assets WHERE id = $1::uuid FOR SHARE
+	`, id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback() })
+	return shareHold{pid: pid, commit: func() {
+		t.Helper()
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}}
+}
+
+func start(t *testing.T, fn func() error) <-chan error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	return done
+}
+
+func waitForAssetLockWait(t *testing.T, db *sql.DB, holderPID int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		err := db.QueryRow(`
+			SELECT COUNT(*) FROM pg_stat_activity
+			WHERE pid <> $1
+			  AND wait_event_type = 'Lock'
+			  AND query LIKE '%metaldogs_assets%'
+			  AND query LIKE '%FOR UPDATE%'
+		`, holderPID).Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("deletion did not wait on the asset row lock")
+}
+
 func TestRetention_SoftDeleteAndReplaceSkipReferenced(t *testing.T) {
 	db := testutil.OpenIsolated(t, "retention_soft")
 	ctx := context.Background()

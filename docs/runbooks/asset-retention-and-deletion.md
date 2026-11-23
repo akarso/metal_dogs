@@ -9,6 +9,8 @@
 
 The `integration.sync.metaldogs.retention_sweep` scheduler task applies the policy table in `docs/architecture/domain-model.md` to `metaldogs_assets` and `metaldogs_designs`: it deletes storage objects, marks asset rows `deleted_at`, and moves never-ordered designs to `expired`. Assets referenced by an `OrderDesignSnapshot` with incomplete fulfilment are never deleted. Deletions are logged with ids only.
 
+O2's sweep calls `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns`. Those functions already skip snapshot-referenced assets. O2 does not add a second deletion of the same rows.
+
 ## Routine checks
 
 - Sweep runs on schedule (`./app schedule:list`), finishes within its window, and the deletion count is within the normal band. A sudden spike means a policy or clock bug: stop and check before the next run.

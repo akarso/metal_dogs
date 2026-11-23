@@ -18,9 +18,9 @@ No scheduler and no sweep were added. Nothing calls the three retention function
 | Replace source | `DesignRepo.ReplaceSource` → `softDeleteAsset` | Previous source asset and, when the row was marked deleted, its blob | Same. The replace transaction does not commit while the old row is still the live source |
 | Replace live asset | `GenerationJobRepo.PersistArtwork`, `CompleteSuccess`, `FinalizeSuccess` → `softDeleteLiveAssetType` | Previous live asset of that owner and type, then its blob | Same |
 
-Searched `deleted_at`, `delete_after`, and design expiry handling under `plugins/metaldogs`. The three retention functions were not in the tree; O2 still owns scheduling them. `delete_after` updates that only move the clock are not deletion paths.
+Searched `deleted_at`, `delete_after`, and design expiry handling under `plugins/metaldogs`. Those three functions were not in the tree; this ticket added them so every deletion decision goes through one helper. Nothing schedules them. O2 calls `CleanupDueAssets`, `CleanupUnattachedUploads`, and `ExpireDesigns` and does not write a second soft-delete of the same rows. Scheduling and the post-`shipped` policy stay in O2. `delete_after` updates that only move the clock are not deletion paths.
 
-`CommitOrder` and `FillProduction` take `FOR SHARE` on the live asset rows they are about to reference, in the same transaction as the write. Cleanup takes `FOR UPDATE` on those rows before it decides. A missing or already soft-deleted asset fails the snapshot write and leaves the order unchanged.
+`partitionSnapshotAssets` takes `SELECT … FOR UPDATE` on the asset rows (`ORDER BY id`) before `AssetsReferencedBySnapshots`. Every deletion path calls that helper, including `AssetRepo.SoftDelete` and `softDeleteAsset` (`ReplaceSource`). `CommitOrder` and `FillProduction` take `FOR SHARE` on the live asset rows they are about to reference, in the same transaction as the write, so a snapshot commit cannot land between the check and `deleted_at`. A missing or already soft-deleted asset fails the snapshot write and leaves the order unchanged.
 
 ## Replace of a protected asset returns an error
 
