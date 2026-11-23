@@ -13,7 +13,7 @@ The flag defaults to false, so the cron is not registered and that line is not e
 
 The cron, once `hostorders` is bound, only lists orders created in the last 30 days. `snapshot_job_pending` means the snapshot job is still pending, processing, or reclaiming. `inspect_failed` means that order could not be read; other orders are still listed.
 
-- Operator cannot find artwork for an order in admin (`E5`).
+- Operator artwork fetch ([`manual-pod-fulfillment.md`](manual-pod-fulfillment.md), E5) returns `200` with `lines: []` for an order that exists and has no snapshot, or `404` when the order itself is missing.
 
 ## Impact
 
@@ -119,7 +119,7 @@ M3 sets `plugins.metaldogs.order_snapshot.enabled`. This slice leaves it false. 
 
 ## Verification
 
-- Snapshot exists for every design line of the order; design `status = ordered`; `E5` admin view shows the artwork with matching checksum.
+- Snapshot exists for every design line of the order; design `status = ordered`. `./app metaldogs:order-artwork <order_id>` (flag on) prints a line per snapshot with the same checksums. There is no admin theme page.
 - If production artwork became ready after the snapshot, `production_asset_id` and `production_checksum` are set. A second fill does not change them.
 
 ## Prevention / follow-up

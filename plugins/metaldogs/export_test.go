@@ -3,6 +3,7 @@ package metaldogs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -22,6 +23,29 @@ func (p *Plugin) SetOrderSource(src ports.OrderSource) {
 	if p != nil {
 		p.orderSource = src
 	}
+}
+
+func (p *Plugin) SetOrderLookup(lookup ports.OrderLookup) {
+	if p != nil {
+		p.orderLookup = lookup
+	}
+}
+
+func (p *Plugin) SetAssetStore(store ports.AssetStore) {
+	if p != nil {
+		p.assets = store
+	}
+}
+
+func (p *Plugin) RunOrderArtwork(ctx pluginsdk.CLIContext, args []string) error {
+	if p == nil {
+		return fmt.Errorf("%s: plugins.metaldogs.order_snapshot.enabled is false", CommandOrderArtwork)
+	}
+	return p.runOrderArtwork(ctx, args)
+}
+
+func SetOrderArtworkOutput(w io.Writer) {
+	orderArtworkOutput = w
 }
 
 func (p *Plugin) SetSnapshotClock(c ports.Clock) {

@@ -111,6 +111,22 @@ func TestStore_WrapsSignedURLStorage(t *testing.T) {
 	if inner.lastDisp != media.DispositionAttachment {
 		t.Fatalf("bin disposition = %q, want attachment", inner.lastDisp)
 	}
+	pngKey := "private/blobs/metaldogs/production/2026/11/prod.png"
+	if err := store.Put(ctx, pngKey, bytes.NewReader([]byte("png")), "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SignedGetURL(ctx, pngKey, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if inner.lastDisp != media.DispositionInline {
+		t.Fatalf("png SignedGetURL disposition = %q, want inline", inner.lastDisp)
+	}
+	if _, err := store.SignedGetURLDisposition(ctx, pngKey, time.Minute, ports.SignedDispositionAttachment); err != nil {
+		t.Fatal(err)
+	}
+	if inner.lastDisp != media.DispositionAttachment {
+		t.Fatalf("png production disposition = %q, want attachment", inner.lastDisp)
+	}
 	if err := store.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}

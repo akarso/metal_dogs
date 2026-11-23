@@ -110,4 +110,4 @@ Seam: run `snapshot_order_design` for an `order_id` on isolated Postgres with th
 - G5: call `FillSnapshotProduction` when a version becomes `ready`.
 - O2: schedule `CleanupDueAssets`, `CleanupUnattachedUploads`, and `ExpireDesigns`. Those are the only retention deletion paths. Do not add a separate `UPDATE` of `deleted_at`. Decide the after-`shipped` grace.
 - O5: exercise `docs/runbooks/order-without-design-snapshot.md` and replace "Last exercised: never".
-- E5 / E6: admin read and confirmation thumbnail. Out of E4a.
+- E6: confirmation thumbnail. Out of E4a. E5 artwork access closed in [CR-35](CR-35-e5-artwork-access.md).

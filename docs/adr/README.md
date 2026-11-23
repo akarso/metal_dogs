@@ -9,7 +9,7 @@ New ADRs are written when a slice closes with a decision (see "Docs" lines in [`
 | [0001](0001-metal-dogs-as-shopanda-external-plugin.md) | Metal Dogs backend is a Shopanda external plugin in an upstream-tracking fork | Accepted | F0 |
 | [0002](0002-storefront-customizer-and-shopanda-checkout.md) | Custom vanilla-JS customizer; Shopanda SSR for cart and checkout | Proposed | S1 / E3 |
 | [0003](0003-async-generation-pg-job-queue-polling.md) | Asynchronous generation on Shopanda's PostgreSQL job queue with HTTP polling | Accepted | C4 |
-| [0004](0004-private-object-storage-signed-urls.md) | Private S3-compatible storage with short-lived signed URLs | Accepted | F4 |
+| [0004](0004-private-object-storage-signed-urls.md) | Private S3-compatible storage with short-lived signed URLs | Accepted. E5 ([CR-35](../cr-rounds/CR-35-e5-artwork-access.md)) signs order artwork for 300s behind `order_snapshot.enabled` and audits each URL | F4 / E5 |
 | [0005](0005-immutable-order-design-snapshot.md) | Approval freezes a `DesignVersion`; orders carry an `OrderDesignSnapshot` | Accepted (DesignVersion / C6). Snapshot implemented in E4a; E4b binds `Host.Orders()` when the flag is on (flag still defaults off) | C6 / E4a / E4b |
 | [0006](0006-design-and-job-status-model.md) | Separate status machines for `Design`, `GenerationJob`, and fulfilment | Accepted | C3 |
 | [0007](0007-guest-design-ownership-tokens.md) | Guest designs are protected by per-design capability tokens | Accepted | C3 |

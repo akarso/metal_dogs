@@ -101,6 +101,7 @@ func testApp(t *testing.T, enabled bool) *plugin.App {
 	if enabled {
 		app.RegisterMediaStorage(&fakeSigned{})
 	}
+	app.SetPermissionRegistry(rbac.NewRegistry())
 	return app
 }
 

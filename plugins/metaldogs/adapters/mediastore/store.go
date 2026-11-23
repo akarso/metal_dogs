@@ -13,7 +13,10 @@ import (
 )
 
 // Compile-time check.
-var _ ports.AssetStore = (*Store)(nil)
+var (
+	_ ports.AssetStore        = (*Store)(nil)
+	_ ports.DispositionSigner = (*Store)(nil)
+)
 
 // contentTypedSaver is optional on platform backends that honor MIME on write.
 type contentTypedSaver interface {
@@ -172,23 +175,43 @@ func (s *Store) Delete(_ context.Context, key string) error {
 // SignedGetURL issues a short-lived platform signed URL. Inline disposition
 // only for allowlisted preview image extensions; otherwise attachment.
 func (s *Store) SignedGetURL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	_, inlineOK := resolveContentType(key, "")
+	disp := ports.SignedDispositionAttachment
+	if inlineOK {
+		disp = ports.SignedDispositionInline
+	}
+	return s.SignedGetURLDisposition(ctx, key, ttl, disp)
+}
+
+// SignedGetURLDisposition signs key with disp. Production artwork passes
+// attachment so an image extension is still a download.
+func (s *Store) SignedGetURLDisposition(ctx context.Context, key string, ttl time.Duration, disp ports.SignedDisposition) (string, error) {
 	if err := rejectKey(key); err != nil {
 		return "", err
 	}
-	ttl = ports.CapSignedGetTTL(ttl)
-	filename := path.Base(key)
-	_, inlineOK := resolveContentType(key, "")
-	disp := pluginsdk.MediaDispositionAttachment
-	if inlineOK {
-		disp = pluginsdk.MediaDispositionInline
+	platform, err := platformDisposition(disp)
+	if err != nil {
+		return "", err
 	}
+	ttl = ports.CapSignedGetTTL(ttl)
 	url, err := s.inner.SignedURL(ctx, key, pluginsdk.SignURLOptions{
 		TTL:         ttl,
-		Filename:    filename,
-		Disposition: disp,
+		Filename:    path.Base(key),
+		Disposition: platform,
 	})
 	if err != nil {
 		return "", fmt.Errorf("mediastore: signed get: %w", err)
 	}
 	return url, nil
+}
+
+func platformDisposition(disp ports.SignedDisposition) (pluginsdk.MediaDisposition, error) {
+	switch disp {
+	case ports.SignedDispositionInline:
+		return pluginsdk.MediaDispositionInline, nil
+	case ports.SignedDispositionAttachment:
+		return pluginsdk.MediaDispositionAttachment, nil
+	default:
+		return "", fmt.Errorf("mediastore: disposition required")
+	}
 }

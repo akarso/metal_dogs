@@ -132,7 +132,7 @@ sequenceDiagram
 | One snapshot per order line | Unique `(order_id, variant_id)`; insert is `ON CONFLICT DO NOTHING`. A repeated `order.created` is the same dispatcher job and the same snapshot job (see Event delivery) |
 | Snapshot eventually exists even if the event is lost | Once an `OrderSource` is bound, cron `reconcile_snapshots` logs `metaldogs.reconcile_snapshots.gap` and does not enqueue. No alert is configured on that line. The flag defaults off, so the cron is not registered. With the flag on, `Init` calls `Require(CapOrders)` and binds `hostorders` when `Host.Orders()` is present. A root that asserts capabilities fails boot if that port is unbound (`required capability "orders" not bound`). A root that does not assert capabilities leaves the source nil and the cron logs no gap. `metaldogs:snapshots reconcile --fix` enqueues `snapshot_order_design` once per affected order (UUID v5 job id) only when the flag is on and a source is bound |
 | No double POD orders | `submit_fulfillment` idempotent on `(order_id, variant_id)`; provider idempotency key is that pair where supported; status `submitting` lock. The snapshot table has no surrogate id |
-| Operator can always fulfil by hand | P1 manual path and runbook independent of P2 automation |
+| Operator can always fulfil by hand | P1 manual path and runbook independent of P2 automation. The download is E5 ([CR-35](../../cr-rounds/CR-35-e5-artwork-access.md)): `metaldogs:order-artwork` and `GET /api/v1/admin/orders/{order_id}/artwork` when `order_snapshot.enabled` is true. Each URL is a row in `metaldogs_artwork_access_log`. See [`manual-pod-fulfillment.md`](../../runbooks/manual-pod-fulfillment.md) |
 
 ## Line key and the order source
 

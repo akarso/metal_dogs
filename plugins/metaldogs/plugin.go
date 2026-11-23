@@ -24,6 +24,14 @@ const PluginName = "metaldogs"
 // permJobsRead is core rbac.JobsRead ("jobs.read"); Host.RegisterAdminRoute takes the string.
 const permJobsRead = "jobs.read"
 
+// PermissionSnapshotsRead is the admin-only artwork access permission.
+const PermissionSnapshotsRead = "metaldogs.snapshots.read"
+
+// OrderArtworkAdminRoute is GET artwork for one order.
+const OrderArtworkAdminRoute = "GET /api/v1/admin/orders/{order_id}/artwork"
+
+const roleAdmin = "admin"
+
 // Plugin is the Metal Dogs Shopanda external plugin.
 type Plugin struct {
 	assets               ports.AssetStore
@@ -35,6 +43,7 @@ type Plugin struct {
 	syncJobNames         []string
 	jobs                 ports.JobAccess
 	orderSource          ports.OrderSource
+	orderLookup          ports.OrderLookup
 	snapshotClock        ports.Clock
 	orderSnapshotEnabled bool
 }
@@ -226,6 +235,13 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		// Host.Orders is closed until this plugin declares CapOrders.
 		h.Require(pluginsdk.CapOrders)
 		p.orderSource = hostorders.FromHost(h)
+		registerOrderArtworkCommand(h, p)
+		if err := h.RegisterPermission(PermissionSnapshotsRead, roleAdmin); err != nil {
+			return fmt.Errorf("metaldogs plugin: snapshots read permission: %w", err)
+		}
+		if err := h.RegisterAdminRoute(OrderArtworkAdminRoute, PermissionSnapshotsRead, httpapi.OrderArtwork(p.openOrderArtwork)); err != nil {
+			return fmt.Errorf("metaldogs plugin: order artwork route: %w", err)
+		}
 		if err := registerSnapshotOrder(syncAPI, p); err != nil {
 			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
 		}

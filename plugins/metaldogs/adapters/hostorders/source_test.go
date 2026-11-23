@@ -2,6 +2,7 @@ package hostorders
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,28 @@ func TestSource_ListCreatedSincePassesOrder(t *testing.T) {
 	}
 }
 
+func TestSource_ExistsUsesFindByID(t *testing.T) {
+	t.Parallel()
+	const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	fake := &findOrders{hit: map[string]*extapi.OrderView{id: {ID: id}}}
+	lookup, ok := New(fake).(ports.OrderLookup)
+	if !ok || lookup == nil {
+		t.Fatal("source does not implement OrderLookup")
+	}
+	got, err := lookup.Exists(context.Background(), id)
+	if err != nil || !got || fake.calls != 1 {
+		t.Fatalf("exists=%v err=%v calls=%d", got, err, fake.calls)
+	}
+	got, err = lookup.Exists(context.Background(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+	if err != nil || got || fake.calls != 2 {
+		t.Fatalf("missing exists=%v err=%v calls=%d", got, err, fake.calls)
+	}
+	fake.fail = errors.New("orders down")
+	if _, err := lookup.Exists(context.Background(), id); err == nil || fake.calls != 3 {
+		t.Fatalf("err=%v calls=%d", err, fake.calls)
+	}
+}
+
 func TestFromHost_AbsentIsNil(t *testing.T) {
 	t.Parallel()
 	if FromHost(nil) != nil {
@@ -165,6 +188,21 @@ func (f *fakeOrders) LinesForOrders(_ context.Context, orderIDs []string) (map[s
 		out[id] = lines
 	}
 	return out, nil
+}
+
+type findOrders struct {
+	fakeOrders
+	hit   map[string]*extapi.OrderView
+	calls int
+	fail  error
+}
+
+func (f *findOrders) FindByID(_ context.Context, id string) (*extapi.OrderView, error) {
+	f.calls++
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	return f.hit[id], nil
 }
 
 func (f *fakeOrders) ListCreatedSince(_ context.Context, since time.Time, afterID string, limit int) ([]extapi.OrderView, error) {
