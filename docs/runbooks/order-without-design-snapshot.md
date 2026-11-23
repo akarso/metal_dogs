@@ -9,7 +9,7 @@
 
 The signal is the log line `metaldogs.reconcile_snapshots.gap` from scheduler job `integration.sync.metaldogs.reconcile_snapshots`. `reason` is `missing_snapshot`, or `snapshot_job_failed` (the text is `snapshot_job_failed:` plus that job's last error). An alert on that line is not configured yet.
 
-The flag defaults to false, so the cron is not registered and that line is not emitted. With the flag on, `Init` binds `adapters/hostorders` when `Host.Orders()` is present, and the cron emits the gap line for the last 30 days (see below). If that port is absent, the source stays nil, the cron fails every run, logs `metaldogs.reconcile_snapshots.failed`, and emits no gap line. `./app metaldogs:snapshots reconcile` with no source (with or without `--order`) exits `order source is not bound` and prints nothing (see Remediation).
+The flag defaults to false, so the cron is not registered and that line is not emitted. With the flag on, `Init` calls `Require(CapOrders)` and binds `adapters/hostorders` when `Host.Orders()` is present, and the cron emits the gap line for the last 30 days (see below). A root that asserts capabilities fails boot if that port is unbound (`required capability "orders" not bound`). A root that does not assert capabilities leaves the source nil: the cron fails the run, logs `metaldogs.reconcile_snapshots.failed`, and emits no gap line. `./app metaldogs:snapshots reconcile` with no source (with or without `--order`) exits `order source is not bound` and prints nothing (see Remediation).
 
 The cron, once `hostorders` is bound, only lists orders created in the last 30 days. `snapshot_job_pending` means the snapshot job is still pending, processing, or reclaiming. `inspect_failed` means that order could not be read; other orders are still listed.
 
@@ -37,7 +37,7 @@ Fulfilment is blocked for that order. The approved artwork still exists as a `De
 
 `./app jobs:list --type=integration.sync.metaldogs.snapshot_order_design --status=failed` shows a job the queue has finished retrying. The reconcile reason is `snapshot_job_failed:` plus that job's last error.
 
-The handler writes nothing for that order: no row in `metaldogs_order_design_snapshots`, and the Shopanda order is left as it was. The design stays `approved` when the failure is a missing design, a missing approved version, a missing pinned template, or a commit that rolled back. A flag that is on with no `OrderSource` bound (orders port absent) fails the same way (`order source is not bound`). The default is that the flag is off, so these jobs are not registered and a real order has no snapshot. With the flag on and `Host.Orders()` present, a custom-tee line gets a snapshot (see below).
+The handler writes nothing for that order: no row in `metaldogs_order_design_snapshots`, and the Shopanda order is left as it was. The design stays `approved` when the failure is a missing design, a missing approved version, a missing pinned template, or a commit that rolled back. On a root that asserts capabilities, a flag that is on with no orders port fails boot (`required capability "orders" not bound`) before a job is stored. A root that does not assert capabilities runs the job and fails it (`order source is not bound`). The default is that the flag is off, so these jobs are not registered and a real order has no snapshot. With the flag on and `Host.Orders()` present, a custom-tee line gets a snapshot (see below).
 
 Do not `INSERT` or `UPDATE` `metaldogs_order_design_snapshots` by hand. The table rejects deletes and rejects updates outside the two production columns, and a hand-written row would skip the `approved → ordered` transition. Repair is `--fix`, which only enqueues the job, after the cause is fixed and the flag is on.
 
@@ -45,7 +45,7 @@ Do not `INSERT` or `UPDATE` `metaldogs_order_design_snapshots` by hand. The tabl
 
 1. Job failed or never enqueued, design version intact → report, then repair. The report prints `order_id`, `line_key` (`order_id/variant_id`), and `reason`. It does not insert a snapshot and does not set production fields.
 
-   - No `OrderSource` bound (flag off, or flag on and `Host.Orders()` absent). Exits `metaldogs:snapshots reconcile: metaldogs reconcile: order source is not bound` and prints nothing:
+   - No `OrderSource` bound. That is the flag off, or a root that does not assert capabilities with the flag on and `Host.Orders()` absent. A root that asserts capabilities, with the flag on and that port unbound, does not reach this command: boot fails with `required capability "orders" not bound`. The unbound-source exit is `metaldogs:snapshots reconcile: metaldogs reconcile: order source is not bound` and it prints nothing:
 
      ```bash
      ./app metaldogs:snapshots reconcile
@@ -81,7 +81,7 @@ Do not `INSERT` or `UPDATE` `metaldogs_order_design_snapshots` by hand. The tabl
      ./app metaldogs:snapshots reconcile --order=<order_id> --fix
      ```
 
-   - Cron `integration.sync.metaldogs.reconcile_snapshots` (`@every 5m`) is registered only when the flag is on. With no source it fails every run (`order source is not bound`), logs `metaldogs.reconcile_snapshots.failed`, and emits no `metaldogs.reconcile_snapshots.gap` line. With `hostorders` bound it logs that gap line, does not insert snapshots or enqueue jobs, and sets production asset and checksum once if they are still NULL and the version is `ready`. `inspect_failed` on one order does not drop the other lines. There is no separate cron command; the row is this type:
+   - Cron `integration.sync.metaldogs.reconcile_snapshots` (`@every 5m`) is registered only when the flag is on. A root that asserts capabilities fails boot if `Host.Orders()` is unbound. A root that does not assert capabilities fails the run (`order source is not bound`), logs `metaldogs.reconcile_snapshots.failed`, and emits no `metaldogs.reconcile_snapshots.gap` line. With `hostorders` bound it logs that gap line, does not insert snapshots or enqueue jobs, and sets production asset and checksum once if they are still NULL and the version is `ready`. `inspect_failed` on one order does not drop the other lines. A canceled `LinesForOrders` page returns that error and does not read each order. There is no separate cron command; the row is this type:
 
      ```bash
      ./app jobs:list --type=integration.sync.metaldogs.reconcile_snapshots --limit=20
@@ -97,7 +97,7 @@ Irreversible: refunds and customer communication. Never insert snapshot rows by 
 M3 sets `plugins.metaldogs.order_snapshot.enabled`. This slice leaves it false. Check these first:
 
 1. The pin is `e062d4d3` or later. `OrderPort` has `Lines`, `LinesForOrders`, and `ListCreatedSince`. `finishCreatedOrder` copies cart extensions, then publishes `order.created`. `pluginsdk.WithEventJobID` is present.
-2. `Host.Orders()` is present. `Init` calls `Require(CapOrders)` and `hostorders.FromHost`. If that port is absent the source stays nil and every snapshot job fails with `order source is not bound`.
+2. `Host.Orders()` is present. `Init` calls `Require(CapOrders)` and `hostorders.FromHost`. A root that asserts capabilities fails boot if that port is unbound (`required capability "orders" not bound`; no skip list omits `CapOrders`). A root that does not assert capabilities leaves the source nil and the snapshot job fails with `order source is not bound`.
 3. Migration `015` is applied (`metaldogs_order_design_snapshots`).
 4. Restart, then use the checks below. Do not insert snapshot rows by hand.
 

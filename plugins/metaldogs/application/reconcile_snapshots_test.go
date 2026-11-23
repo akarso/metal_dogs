@@ -150,6 +150,81 @@ func TestReconcileRun_PagesEachOrderOnce(t *testing.T) {
 	}
 }
 
+func TestReconcileRun_PageBatchContextSkipsLineFallback(t *testing.T) {
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	ids := make([]string, reconcilePageSize)
+	for i := range ids {
+		ids[i] = uuid.NewString()
+	}
+	sort.Strings(ids)
+	orders := &pageOrderStub{
+		ids:      ids,
+		when:     now.Add(-time.Hour),
+		batchErr: context.Canceled,
+	}
+	svc := &ReconcileSnapshots{
+		Orders:    orders,
+		Snapshots: reconcileSnapStub{},
+		Clock:     reconcileClock(now),
+	}
+	gaps, err := svc.Run(context.Background(), "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(gaps) != 0 || orders.lineCalls != 0 || len(orders.lists) != 1 || len(orders.batches) != 1 {
+		t.Fatalf("gaps=%d lines=%d lists=%d batches=%d", len(gaps), orders.lineCalls, len(orders.lists), len(orders.batches))
+	}
+
+	orders.lists = nil
+	orders.batches = nil
+	orders.batchErr = context.DeadlineExceeded
+	gaps, err = svc.Run(context.Background(), "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(gaps) != 0 || orders.lineCalls != 0 || len(orders.lists) != 1 {
+		t.Fatalf("gaps=%d lines=%d lists=%d", len(gaps), orders.lineCalls, len(orders.lists))
+	}
+
+	orders.lists = nil
+	orders.batches = nil
+	orders.batchErr = errors.New("batch unavailable")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	gaps, err = svc.Run(ctx, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(gaps) != 0 || orders.lineCalls != 0 || len(orders.lists) != 1 {
+		t.Fatalf("gaps=%d lines=%d lists=%d", len(gaps), orders.lineCalls, len(orders.lists))
+	}
+}
+
+func TestReconcileRun_PageBatchErrorFallsBackPerOrder(t *testing.T) {
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	id := uuid.NewString()
+	orders := &pageOrderStub{
+		ids:      []string{id},
+		when:     now.Add(-time.Hour),
+		batchErr: errors.New("batch unavailable"),
+		lines: map[string][]ports.OrderLine{
+			id: {{VariantID: uuid.NewString(), SKU: "TEE-M", Quantity: 1, DesignID: "des-1"}},
+		},
+	}
+	svc := &ReconcileSnapshots{
+		Orders:    orders,
+		Snapshots: reconcileSnapStub{},
+		Clock:     reconcileClock(now),
+	}
+	gaps, err := svc.Run(context.Background(), "")
+	if err != nil || len(gaps) != 1 || gaps[0].OrderID != id || gaps[0].Reason != ReconcileReasonMissing {
+		t.Fatalf("err=%v gaps=%+v", err, gaps)
+	}
+	if orders.lineCalls != 1 || len(orders.batches) != 1 {
+		t.Fatalf("lines=%d batches=%d", orders.lineCalls, len(orders.batches))
+	}
+}
+
 type pageListCall struct {
 	since time.Time
 	after string
@@ -163,6 +238,7 @@ type pageOrderStub struct {
 	lists     []pageListCall
 	batches   [][]string
 	lineCalls int
+	batchErr  error
 }
 
 func (o *pageOrderStub) Lines(_ context.Context, orderID string) ([]ports.OrderLine, error) {
@@ -172,6 +248,9 @@ func (o *pageOrderStub) Lines(_ context.Context, orderID string) ([]ports.OrderL
 
 func (o *pageOrderStub) LinesForOrders(_ context.Context, orderIDs []string) (map[string][]ports.OrderLine, error) {
 	o.batches = append(o.batches, append([]string(nil), orderIDs...))
+	if o.batchErr != nil {
+		return nil, o.batchErr
+	}
 	out := make(map[string][]ports.OrderLine, len(orderIDs))
 	for _, id := range orderIDs {
 		if lines, ok := o.lines[id]; ok {

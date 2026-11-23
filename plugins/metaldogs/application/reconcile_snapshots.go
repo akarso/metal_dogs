@@ -87,6 +87,9 @@ func (r *ReconcileSnapshots) Run(ctx context.Context, orderID string) ([]Reconci
 		gaps = append(gaps, found...)
 		if err != nil {
 			failed = errors.Join(failed, err)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return gaps, failed
+			}
 		}
 		after = ids[len(ids)-1]
 		if len(ids) < reconcilePageSize {
@@ -106,7 +109,13 @@ func (r *ReconcileSnapshots) now() time.Time {
 func (r *ReconcileSnapshots) pageGaps(ctx context.Context, ids []string) ([]ReconcileGap, error) {
 	batch, err := r.Orders.LinesForOrders(ctx, ids)
 	if err != nil {
-		// The batch error names no order. Read each id so one failure stays inspect_failed.
+		// A canceled page is one failure. Any other batch error names no order, so each id is read once.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("metaldogs reconcile: lines: %w", errors.Join(ctxErr, err))
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("metaldogs reconcile: lines: %w", err)
+		}
 		return r.pageGapsByLine(ctx, ids)
 	}
 	var gaps []ReconcileGap

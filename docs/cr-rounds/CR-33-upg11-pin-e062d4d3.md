@@ -43,7 +43,7 @@ No conflict under `internal/`, `pkg/`, or `cmd/api`. Those paths match the pin e
 
 `themes/default` is unchanged in this range. The product does not override those templates.
 
-`plugins/metaldogs` behaviour is unchanged. The dispatch comment records that `WithEventJobID` is unused and the snapshot job id stays UUID v5. It does not call `Lines`, `LinesForOrders`, `ListCreatedSince`, or `WithEventJobID`. `orderIDFromSnapshotPayload` already reads a top-level `order_id` and falls back to `data.order_id`. The feature test counted dispatcher jobs under `payload->'payload'->'data'`. The pin stores a flattened event payload, so that count was 0 while the job row existed. The three queries in `snapshot_order_test.go` now use `payload->'payload'->>'order_id'`.
+At this pin bump, `plugins/metaldogs` did not gain an order adapter. The dispatch comment recorded that `WithEventJobID` was unused and the snapshot job id stayed UUID v5. The plugin did not call `Lines`, `LinesForOrders`, `ListCreatedSince`, or `WithEventJobID`. Those calls are [CR-34](CR-34-e4b-order-source.md). `orderIDFromSnapshotPayload` already reads a top-level `order_id` and falls back to `data.order_id`. The feature test counted dispatcher jobs under `payload->'payload'->'data'`. The pin stores a flattened event payload, so that count was 0 while the job row existed. The three queries in `snapshot_order_test.go` now use `payload->'payload'->>'order_id'`.
 
 ### Allowlist after this bump
 
