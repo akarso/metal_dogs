@@ -149,9 +149,9 @@ sequenceDiagram
     else no custom-tee line, or every custom-tee line passes
         API-->>Shop: ok
         Shop->>Shop: reserve stock, persist order
-        Shop-->>API: event order.created
-        Note over Shop: At the current pin this event is published before the extension copy
         Shop->>Shop: SnapshotCartItemToOrderItem copies metaldogs.design_id (order_id, variant_id)
+        Shop-->>API: event order.created
+        Note over Shop: Published after the extension copy. A snapshot error still publishes
     end
     Note over API,Q: continues in checkout-snapshot-and-fulfillment.md
 ```

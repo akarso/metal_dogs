@@ -446,7 +446,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			if err := db.QueryRowContext(ctx, `
 				SELECT count(*) FROM jobs
 				WHERE type = $1
-				  AND payload->'payload'->'data'->>'order_id' = $2
+				  AND payload->'payload'->>'order_id' = $2
 			`, dispatchType, orderID).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
@@ -470,7 +470,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			if _, err := db.ExecContext(ctx, `
 				UPDATE jobs SET run_at = NOW()
 				WHERE type = $1 AND status = 'pending'
-				  AND payload->'payload'->'data'->>'order_id' = $2
+				  AND payload->'payload'->>'order_id' = $2
 			`, dispatchType, orderID); err != nil {
 				t.Fatal(err)
 			}
@@ -502,7 +502,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		if err := db.QueryRowContext(ctx, `
 			SELECT count(*) FILTER (WHERE status <> 'done')
 			FROM jobs
-			WHERE type = $1 AND payload->'payload'->'data'->>'order_id' = $2
+			WHERE type = $1 AND payload->'payload'->>'order_id' = $2
 		`, dispatchType, orderID).Scan(&dispatchNotDone); err != nil {
 			t.Fatal(err)
 		}

@@ -17,7 +17,7 @@ import (
 const SnapshotOrderJobName = "snapshot_order_design"
 
 // SnapshotOrderDispatchJobName is the order.created job that only enqueues the snapshot.
-// RegisterOnEvent cannot set a job id, so this job stays short and the snapshot id is UUID v5.
+// Dispatch stays short: the snapshot job id is UUID v5 of the order id (WithEventJobID is not used).
 const SnapshotOrderDispatchJobName = "dispatch_snapshot_order"
 
 // snapshotOrderNamespace is the UUID v5 namespace for snapshot_order_design job ids.
