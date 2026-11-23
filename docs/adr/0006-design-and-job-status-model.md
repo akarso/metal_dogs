@@ -3,7 +3,7 @@
 - **Status:** Accepted (C3 / CR-13 Design machine; C4 / CR-14 GenerationJob machine + transitions)
 - **Date:** 2026-10-15
 - **Accepted:** 2026-11-10
-- **Related slices:** `C3`, `C4`, `C6`, `E4`, `P1`–`P4`
+- **Related slices:** `C3`, `C4`, `C6`, `E4`, `G5a`, `P1`–`P4`
 - **Related ADRs:** [ADR-0005](0005-immutable-order-design-snapshot.md)
 
 ## Context
@@ -18,7 +18,7 @@ Three independent enums, each enforced by domain code, each documented as a stat
 | --- | --- | --- |
 | `Design` | `draft`, `generating`, `generation_failed`, `preview_ready`, `approved`, `ordered`, `expired` | Customer-facing. `upload_received` is not a status: the design simply has a `source_asset_id`. Readiness to generate is a predicate (`texts valid && photo attached && attempts < limit`), not a state. |
 | `GenerationJob` | `queued`, `running`, `validating`, `succeeded`, `failed`, `cancelled` | One per attempt. `failed` carries `terminal_reason`. `validating` is kept as a distinct state because validation is a separate stage with its own failure codes. |
-| `DesignVersion.production_status` | `pending`, `preparing`, `ready`, `failed` | Production artwork preparation for the approved version. Replaces `production_ready` on the design. |
+| `DesignVersion.production_status` | `pending`, `preparing`, `ready`, `failed` | Production artwork for the approved version. Replaces `production_ready` on the design. `failed` stores nullable `production_failure_reason` (migration `017`, G5a / [CR-36](../cr-rounds/CR-36-g5a-production-artwork.md)). Only `production_*` columns may change after insert. |
 | `FulfillmentRecord` | `pending`, `awaiting_artwork`, `awaiting_approval`, `submitting`, `submitted`, `submitted_manually`, `submission_failed`, `in_production`, `shipped`, `cancelled` | Per order snapshot. |
 
 Rules:
