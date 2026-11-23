@@ -6,18 +6,27 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 // AssetRepo is a Postgres adapter for ports.AssetRepository (metadata, not blobs).
 type AssetRepo struct {
-	db *sql.DB
+	db      *sql.DB
+	keptLog pluginsdk.Logger
 }
 
 // NewAssetRepo returns an AssetRepo backed by db.
 func NewAssetRepo(db *sql.DB) *AssetRepo {
 	return &AssetRepo{db: db}
+}
+
+// SetKeptLog records one line when SoftDelete skips a snapshot-referenced asset.
+func (s *AssetRepo) SetKeptLog(log pluginsdk.Logger) {
+	if s != nil {
+		s.keptLog = log
+	}
 }
 
 var _ ports.AssetRepository = (*AssetRepo)(nil)
@@ -70,16 +79,29 @@ func (s *AssetRepo) GetByID(ctx context.Context, id string) (domain.Asset, bool,
 }
 
 // SoftDelete marks the asset deleted_at (idempotent if already deleted).
+// A snapshot-referenced asset is left active. That skip is not an error.
 func (s *AssetRepo) SoftDelete(ctx context.Context, id string, at time.Time) error {
 	if id == "" {
 		return fmt.Errorf("metaldogs assets: id required")
 	}
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE metaldogs_assets SET deleted_at = $2
-		WHERE id = $1 AND deleted_at IS NULL
-	`, id, at.UTC())
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("metaldogs assets soft delete: %w", err)
+		return fmt.Errorf("metaldogs assets soft delete begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	drop, keep, err := partitionSnapshotAssets(ctx, tx, []string{id})
+	if err != nil {
+		return err
+	}
+	if len(keep) > 0 {
+		logAssetsKept(s.keptLog, retentionPathSoftDelete, keep)
+		return nil
+	}
+	if err := markAssetsDeleted(ctx, tx, drop, at); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("metaldogs assets soft delete commit: %w", err)
 	}
 	return nil
 }
@@ -168,19 +190,25 @@ func clearOwnerRef(ctx context.Context, db execContexter, assetID, ownerRef stri
 	return nil
 }
 
-func softDeleteAsset(ctx context.Context, db execContexter, id string, at time.Time) error {
+// softDeleteAsset marks id deleted inside the caller's transaction.
+// deleted is false when a snapshot still references the asset (row unchanged).
+// Already-deleted or missing rows report deleted=true so blob cleanup can continue.
+func softDeleteAsset(ctx context.Context, db dbSession, id string, at time.Time, log pluginsdk.Logger) (bool, error) {
 	if id == "" {
-		return fmt.Errorf("metaldogs assets: id required")
+		return false, fmt.Errorf("metaldogs assets: id required")
 	}
-	_, err := db.ExecContext(ctx, `
-		UPDATE metaldogs_assets SET deleted_at = $2
-		WHERE id = $1 AND deleted_at IS NULL
-	`, id, at.UTC())
+	drop, keep, err := partitionSnapshotAssets(ctx, db, []string{id})
 	if err != nil {
-		return fmt.Errorf("metaldogs assets soft delete: %w", err)
+		return false, err
 	}
-	// Idempotent: already soft-deleted (or missing) is fine for replace after retention.
-	return nil
+	if len(keep) > 0 {
+		logAssetsKept(log, retentionPathReplaceSource, keep)
+		return false, nil
+	}
+	if err := markAssetsDeleted(ctx, db, drop, at); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func touchAssetDeleteAfter(ctx context.Context, db execContexter, id string, deleteAfter time.Time) error {

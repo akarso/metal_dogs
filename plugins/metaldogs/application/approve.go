@@ -300,6 +300,13 @@ func (s *DesignService) Clone(ctx context.Context, designID, bearerToken string)
 			s.cleanupErr("soft_delete", newUploadID, key, softErr)
 			return
 		}
+		// SoftDelete leaves a snapshot-referenced row active; do not remove its blob.
+		if _, stillActive, getErr := s.Assets.GetByID(cctx, newUploadID); getErr != nil {
+			s.cleanupErr("get", newUploadID, key, getErr)
+			return
+		} else if stillActive {
+			return
+		}
 		if delErr := s.Store.Delete(cctx, key); delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
 			s.cleanupErr("delete", newUploadID, key, delErr)
 			return

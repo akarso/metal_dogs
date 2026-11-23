@@ -7,18 +7,27 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 )
 
 // DesignRepo is a Postgres adapter for ports.DesignRepository.
 type DesignRepo struct {
-	db *sql.DB
+	db      *sql.DB
+	keptLog pluginsdk.Logger
 }
 
 // NewDesignRepo returns a DesignRepo backed by db.
 func NewDesignRepo(db *sql.DB) *DesignRepo {
 	return &DesignRepo{db: db}
+}
+
+// SetKeptLog records one line when ReplaceSource skips a snapshot-referenced asset.
+func (r *DesignRepo) SetKeptLog(log pluginsdk.Logger) {
+	if r != nil {
+		r.keptLog = log
+	}
 }
 
 var _ ports.DesignRepository = (*DesignRepo)(nil)
@@ -120,9 +129,12 @@ func (r *DesignRepo) ReplaceSource(ctx context.Context, d domain.Design, expecte
 		if err != nil {
 			return "", err
 		}
-		oldKey = key
-		if err := softDeleteAsset(ctx, tx, expectedOldAssetID, d.UpdatedAt); err != nil {
+		deleted, err := softDeleteAsset(ctx, tx, expectedOldAssetID, d.UpdatedAt, r.keptLog)
+		if err != nil {
 			return "", err
+		}
+		if deleted {
+			oldKey = key
 		}
 	}
 	if err := bindOwnerRef(ctx, tx, d.SourceAssetID, d.ID, newAssetDeleteAfter); err != nil {
