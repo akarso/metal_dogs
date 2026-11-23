@@ -14,10 +14,14 @@ type OrderLine struct {
 	DesignID  string
 }
 
-// OrderSource is the plugin-owned view of orders. E4a has no core adapter.
+// OrderSource is the plugin-owned view of orders.
 type OrderSource interface {
 	Lines(ctx context.Context, orderID string) ([]OrderLine, error)
-	// ListCreatedSince returns order ids with created_at >= since, id > afterID,
-	// ordered by id, at most limit. limit <= 0 returns no ids.
+	// LinesForOrders returns lines for each order id the source has.
+	// Missing ids are omitted. One call covers a page of ids.
+	LinesForOrders(ctx context.Context, orderIDs []string) (map[string][]OrderLine, error)
+	// ListCreatedSince returns order ids with created_at >= since, ordered by
+	// (created_at, id). afterID continues after that order and must itself
+	// fall inside the since window. limit must be 1..100.
 	ListCreatedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error)
 }

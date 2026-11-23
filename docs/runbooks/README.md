@@ -12,7 +12,7 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 | [`ai-provider-outage-and-cost-cap.md`](ai-provider-outage-and-cost-cap.md) | Provider errors, rate limits, cost cap reached | C4, O3 |
 | [`template-publishing.md`](template-publishing.md) | Adding, changing, publishing, or retiring templates | G2, X1 |
 | [`checkout-manual-verification.md`](checkout-manual-verification.md) | Maintainer checklist before treating guest SSR checkout and Stripe test mode as done | E3 |
-| [`order-without-design-snapshot.md`](order-without-design-snapshot.md) | Log `metaldogs.reconcile_snapshots.gap` (`missing_snapshot`, `snapshot_job_failed`); no alert configured. Paid order with a design line but no snapshot. Last exercised: never | E4a |
+| [`order-without-design-snapshot.md`](order-without-design-snapshot.md) | Log `metaldogs.reconcile_snapshots.gap` (`missing_snapshot`, `snapshot_job_failed`); no alert configured. Flag off emits nothing. Flag on with `hostorders` bound: check both job types and the snapshot row. Last exercised: never | E4a / E4b |
 | [`manual-pod-fulfillment.md`](manual-pod-fulfillment.md) | Fulfilling an order by hand (M3 default; automation fallback) | P1 |
 | [`pod-submission-failed.md`](pod-submission-failed.md) | Automated submission failed or stale | P2, P4 |
 | [`asset-retention-and-deletion.md`](asset-retention-and-deletion.md) | Retention sweep issues; GDPR deletion request | O2 |

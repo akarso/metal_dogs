@@ -70,7 +70,13 @@ func TestSnapshotOrder_FlagOnRegistersManualAndDispatcher(t *testing.T) {
 	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
 	p := initMetalDogs(t, app)
 	if p.OrderSource() != nil {
-		t.Fatal("flag on must not bind an order source")
+		t.Fatal("flag on without Host.Orders must leave the source nil")
+	}
+	err := findSnapshotHandler(t, app)(context.Background(), extapi.SyncJobContext{
+		Payload: map[string]interface{}{"order_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "order source is not bound") {
+		t.Fatalf("fail-closed: %v", err)
 	}
 	var manual, event bool
 	for _, sj := range app.SyncJobs() {
@@ -91,10 +97,53 @@ func TestSnapshotOrder_FlagOnRegistersManualAndDispatcher(t *testing.T) {
 			if sj.Job.Trigger.Kind != extapi.SyncTriggerEvent || sj.Job.Trigger.EventName != extapi.EventOrderCreated {
 				t.Fatalf("dispatch trigger %+v", sj.Job.Trigger)
 			}
+			if sj.Job.EventJobID == nil {
+				t.Fatal("dispatcher has no event job id")
+			}
+			if got := sj.Job.EventJobID(nil); got != "" {
+				t.Fatalf("nil payload %q", got)
+			}
+			if got := sj.Job.EventJobID(map[string]interface{}{"order_id": "  "}); got != "" {
+				t.Fatalf("blank order id %q", got)
+			}
+			const orderID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+			got := sj.Job.EventJobID(map[string]interface{}{"order_id": orderID})
+			if got != metaldogs.DispatchSnapshotOrderJobID(orderID) || got == metaldogs.SnapshotOrderJobID(orderID) {
+				t.Fatalf("dispatch id %s snapshot %s", got, metaldogs.SnapshotOrderJobID(orderID))
+			}
+			parsed, err := uuid.Parse(got)
+			if err != nil || parsed.Version() != 5 {
+				t.Fatalf("id %s err %v", got, err)
+			}
 		}
 	}
 	if !manual || !event {
 		t.Fatalf("manual=%v event=%v", manual, event)
+	}
+}
+
+func TestSnapshotOrder_FlagOnBindsHostOrders(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
+	if err := app.BindOrdersPort(pluginsdk.NewOrdersPort(idleOrderRepo{})); err != nil {
+		t.Fatal(err)
+	}
+	p := initMetalDogs(t, app)
+	if p.OrderSource() == nil {
+		t.Fatal("flag on with Host.Orders bound must set the order source")
+	}
+}
+
+func TestSnapshotOrder_FlagOffIgnoresHostOrders(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	if err := app.BindOrdersPort(pluginsdk.NewOrdersPort(idleOrderRepo{})); err != nil {
+		t.Fatal(err)
+	}
+	p := initMetalDogs(t, app)
+	if p.OrderSource() != nil {
+		t.Fatal("flag off must leave the order source unset")
 	}
 }
 
@@ -439,6 +488,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			}
 		}
 		dispatchType := "integration.sync.metaldogs.dispatch_snapshot_order"
+		wantDispatchID := metaldogs.DispatchSnapshotOrderJobID(orderID)
 		deadline := time.Now().Add(2 * time.Second)
 		var n int
 		var sample string
@@ -450,17 +500,27 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			`, dispatchType, orderID).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
-			if n >= 2 || time.Now().After(deadline) {
+			if n > 1 || time.Now().After(deadline) {
 				break
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		if n != 2 {
+		if n != 1 {
 			_ = db.QueryRowContext(ctx, `
 				SELECT coalesce(payload::text, '') FROM jobs
 				WHERE type = $1 ORDER BY created_at DESC LIMIT 1
 			`, dispatchType).Scan(&sample)
 			t.Fatalf("dispatcher jobs=%d payload=%s", n, sample)
+		}
+		var gotDispatchID string
+		if err := db.QueryRowContext(ctx, `
+			SELECT id FROM jobs
+			WHERE type = $1 AND payload->'payload'->>'order_id' = $2
+		`, dispatchType, orderID).Scan(&gotDispatchID); err != nil {
+			t.Fatal(err)
+		}
+		if gotDispatchID != wantDispatchID || gotDispatchID == metaldogs.SnapshotOrderJobID(orderID) {
+			t.Fatalf("dispatch id %s want %s snapshot %s", gotDispatchID, wantDispatchID, metaldogs.SnapshotOrderJobID(orderID))
 		}
 		worker := platformjobs.NewWorker(queue, log, time.Millisecond)
 		if err := integration.RegisterSyncJobHandlers(app, worker); err != nil {

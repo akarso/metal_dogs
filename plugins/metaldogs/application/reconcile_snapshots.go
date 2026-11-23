@@ -83,11 +83,12 @@ func (r *ReconcileSnapshots) Run(ctx context.Context, orderID string) ([]Reconci
 		if len(ids) == 0 {
 			break
 		}
-		for _, id := range ids {
-			found, err := r.finishOrder(ctx, id)
-			gaps = append(gaps, found...)
-			if err != nil {
-				failed = errors.Join(failed, err)
+		found, err := r.pageGaps(ctx, ids)
+		gaps = append(gaps, found...)
+		if err != nil {
+			failed = errors.Join(failed, err)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return gaps, failed
 			}
 		}
 		after = ids[len(ids)-1]
@@ -103,6 +104,56 @@ func (r *ReconcileSnapshots) now() time.Time {
 		return time.Now().UTC()
 	}
 	return r.Clock.Now().UTC()
+}
+
+func (r *ReconcileSnapshots) pageGaps(ctx context.Context, ids []string) ([]ReconcileGap, error) {
+	batch, err := r.Orders.LinesForOrders(ctx, ids)
+	if err != nil {
+		// A canceled page is one failure. Any other batch error names no order, so each id is read once.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("metaldogs reconcile: lines: %w", errors.Join(ctxErr, err))
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("metaldogs reconcile: lines: %w", err)
+		}
+		return r.pageGapsByLine(ctx, ids)
+	}
+	var gaps []ReconcileGap
+	var failed error
+	for _, id := range ids {
+		found, err := r.finishLines(ctx, id, batch[id])
+		gaps = append(gaps, found...)
+		if err != nil {
+			failed = errors.Join(failed, err)
+		}
+	}
+	return gaps, failed
+}
+
+func (r *ReconcileSnapshots) pageGapsByLine(ctx context.Context, ids []string) ([]ReconcileGap, error) {
+	var gaps []ReconcileGap
+	var failed error
+	for _, id := range ids {
+		found, err := r.finishOrder(ctx, id)
+		gaps = append(gaps, found...)
+		if err != nil {
+			failed = errors.Join(failed, err)
+		}
+	}
+	return gaps, failed
+}
+
+func (r *ReconcileSnapshots) finishLines(ctx context.Context, orderID string, lines []ports.OrderLine) ([]ReconcileGap, error) {
+	found, err := r.inspectLines(ctx, orderID, lines)
+	if err == nil {
+		return found, nil
+	}
+	found = append(found, ReconcileGap{
+		OrderID: orderID,
+		LineKey: LineKey(orderID, ""),
+		Reason:  ReconcileReasonInspectFailed + ": " + oneLine(err.Error()),
+	})
+	return found, err
 }
 
 func (r *ReconcileSnapshots) finishOrder(ctx context.Context, orderID string) ([]ReconcileGap, error) {
@@ -135,6 +186,10 @@ func (r *ReconcileSnapshots) inspect(ctx context.Context, orderID string) ([]Rec
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs reconcile: lines %s: %w", orderID, err)
 	}
+	return r.inspectLines(ctx, orderID, lines)
+}
+
+func (r *ReconcileSnapshots) inspectLines(ctx context.Context, orderID string, lines []ports.OrderLine) ([]ReconcileGap, error) {
 	snaps, err := r.Snapshots.ListByOrder(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs reconcile: snapshots %s: %w", orderID, err)

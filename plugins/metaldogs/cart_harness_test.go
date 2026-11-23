@@ -179,6 +179,9 @@ func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, plu
 	}
 	log := logger.NewWithWriter(io.Discard, "error")
 	bus := event.NewBus(log)
+	if pluginApp != nil && pluginApp.Bus != nil {
+		bus = pluginApp.Bus
+	}
 	values := extensionapp.NewValueService(extReg, extValues)
 	var hookReg *hooks.Registry
 	if pluginApp != nil {
@@ -267,6 +270,7 @@ func openStorefront(t *testing.T, db *sql.DB, extReg *extensionapp.Registry, plu
 		if pluginApp != nil {
 			createOrder = checkoutApp.NewCreateOrderStep(orders, variants, nil, values, products, components, prices)
 		}
+		createOrder = createOrder.WithStockEventPublishing(bus, log)
 		coreSteps := []checkoutApp.Step{
 			checkoutApp.NewValidateCartStep(variants, products, components, stock),
 			checkoutApp.NewRecalculatePricingStep(pipeline),

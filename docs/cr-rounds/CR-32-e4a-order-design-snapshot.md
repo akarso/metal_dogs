@@ -13,7 +13,7 @@ Plugin-side order snapshot. Dark. A real checkout does not write a row.
 - `ports.OrderSource`: `Lines`, `ListCreatedSince`. E4a ships an in-memory fake used by tests. No adapter over `Host.Orders()`. No reads of core tables.
 - Flag `plugins.metaldogs.order_snapshot.enabled`, default false. Off: `snapshot_order_design`, `dispatch_snapshot_order`, and `reconcile_snapshots` are not registered. With an `OrderSource` bound, `metaldogs:snapshots reconcile` reports and refuses `--fix`. E4a binds no source, so the command exits `order source is not bound` and prints nothing.
 - On: `order.created` enqueues `dispatch_snapshot_order` (`RegisterOnEvent`). That job enqueues `snapshot_order_design` with `WithJobID` = UUID v5 of the canonical order id. One plugin transaction inserts every design line (`ON CONFLICT DO NOTHING`) and moves each design `approved → ordered` (already `ordered` is a no-op). A missing design, approved version, or pinned template fails the job, writes nothing, and leaves the Shopanda order untouched. Retries end `failed`.
-- `metaldogs:snapshots reconcile` reports `order_id`, `line_key` (`order_id/variant_id`), `reason` only when an `OrderSource` is bound. Default window is 30 days. `--order` inspects one id. `--fix` enqueues one snapshot job per affected order and skips `inspect_failed`. Cron `reconcile_snapshots` (`@every 5m`) logs the same report as `metaldogs.reconcile_snapshots.gap` and does not enqueue. No alert is configured on that line. Production fill on that cron runs only with a bound source (E4b). In E4a the flag is off, so the cron is not registered. With the flag on and no source it fails every run (`order source is not bound`), logs `metaldogs.reconcile_snapshots.failed`, emits no gap line, and fills nothing.
+- `metaldogs:snapshots reconcile` reports `order_id`, `line_key` (`order_id/variant_id`), `reason` only when an `OrderSource` is bound. Default window is 30 days. `--order` inspects one id. `--fix` enqueues one snapshot job per affected order and skips `inspect_failed`. Cron `reconcile_snapshots` (`@every 5m`) logs the same report as `metaldogs.reconcile_snapshots.gap` and does not enqueue. No alert is configured on that line. Production fill on that cron runs only with a bound source (E4b). In E4a the flag is off, so the cron is not registered. At this close, with the flag on and no source, that cron fails every run (`order source is not bound`), logs `metaldogs.reconcile_snapshots.failed`, emits no gap line, and fills nothing. Current boot behaviour is [CR-34](CR-34-e4b-order-source.md).
 - `AssetsReferencedBySnapshots` is the deletion check on every plugin path that soft-deletes an asset. Nothing schedules those paths.
 
 ## Decisions
@@ -25,7 +25,7 @@ Plugin-side order snapshot. Dark. A real checkout does not write a row.
 
 ## Platform dependencies (closed on the pin by CR-33)
 
-At E4a close these two gaps were still open. Pin `e062d4d3` ([CR-33](CR-33-upg11-pin-e062d4d3.md)) has both. E4b is not done. This round did not edit `internal/*`, `pkg/*`, or core `cmd/api/*`.
+At E4a close these two gaps were still open. Pin `e062d4d3` ([CR-33](CR-33-upg11-pin-e062d4d3.md)) has both. E4b was not part of this round; it closed in [CR-34](CR-34-e4b-order-source.md). This round did not edit `internal/*`, `pkg/*`, or core `cmd/api/*`.
 
 What was true at E4a close (pin `c25f3e7e`):
 
@@ -36,7 +36,7 @@ On `e062d4d3`: `OrderPort` has `Lines`, `LinesForOrders`, and `ListCreatedSince`
 
 ## Known limits
 
-- Flag off and no real order source. Tests are not a checkout.
+- At this round's close: flag off and no real order source. Tests are not a checkout. The adapter is [CR-34](CR-34-e4b-order-source.md).
 - `OrderSource.Lines` does not distinguish a missing order from an order whose lines have no design id. Both end the job `done` with no log.
 - Sweep lookback is 30 days. Older orders need `--order`.
 - A protected asset on `ReplaceSource` is not a quiet skip: the unique live `(owner_ref, type)` index makes the replace transaction fail. That path is not reachable from a snapshot (see below).
@@ -70,7 +70,7 @@ That path is not reachable from an order snapshot. A snapshot names only `artwor
 
 ## Sweep (ticket 04)
 
-When an `OrderSource` is bound, `metaldogs:snapshots reconcile` prints one line per design line that has no snapshot: `order_id`, `line_key` (`order_id/variant_id`), `reason`. An unscoped run reads `OrderSource.ListCreatedSince` from `now - 30 days` (`ReconcileLookback`) and `Lines`. `--order` inspects that id through `Lines` and does not scan the list, including when the order is older than 30 days. A line that already has a snapshot is left out. `reason` is `missing_snapshot`, `snapshot_job_pending` while `snapshot_order_design` is pending, processing, or reclaiming, or `snapshot_job_failed:` plus the job's last error when that job is terminal-failed. A read error for one order is `inspect_failed` and the run continues with the other orders; the command still returns that error after the report. `--fix` enqueues `snapshot_order_design` with the UUID v5 job id and skips `inspect_failed`, so a second `--fix` does not add a job. With an `OrderSource` bound and `plugins.metaldogs.order_snapshot.enabled` false, the command still reports and returns an error on `--fix`. Until E4b binds that source, `metaldogs:snapshots reconcile` (with or without `--order`) exits `order source is not bound` and prints nothing; `--fix` while the flag is false returns the refusal. The CLI does not write snapshot rows or production columns.
+When an `OrderSource` is bound, `metaldogs:snapshots reconcile` prints one line per design line that has no snapshot: `order_id`, `line_key` (`order_id/variant_id`), `reason`. An unscoped run reads `OrderSource.ListCreatedSince` from `now - 30 days` (`ReconcileLookback`) and `Lines`. `--order` inspects that id through `Lines` and does not scan the list, including when the order is older than 30 days. A line that already has a snapshot is left out. `reason` is `missing_snapshot`, `snapshot_job_pending` while `snapshot_order_design` is pending, processing, or reclaiming, or `snapshot_job_failed:` plus the job's last error when that job is terminal-failed. A read error for one order is `inspect_failed` and the run continues with the other orders; the command still returns that error after the report. `--fix` enqueues `snapshot_order_design` with the UUID v5 job id and skips `inspect_failed`, so a second `--fix` does not add a job. With an `OrderSource` bound and `plugins.metaldogs.order_snapshot.enabled` false, the command still reports and returns an error on `--fix`. Before E4b bound that source, `metaldogs:snapshots reconcile` (with or without `--order`) exited `order source is not bound` and printed nothing; `--fix` while the flag is false returns the refusal. The bound path is [CR-34](CR-34-e4b-order-source.md). The CLI does not write snapshot rows or production columns.
 
 Cron `reconcile_snapshots` (`@every 5m`, `integration.sync.metaldogs.reconcile_snapshots`) is registered only when that flag is on. It logs the same lines (`metaldogs.reconcile_snapshots.gap`) and does not insert snapshots or enqueue jobs. No alert is configured on that line. It uses the same 30-day window. The cron calls `FillSnapshotProduction` only when `OrderSource` is bound, for snapshots whose production columns are still NULL and whose design version is `ready`. Without that source the job errors every run (`metaldogs.reconcile_snapshots.failed`) and fills nothing. In E4a the flag is off, so the cron is not registered. A second fill is a no-op (`ErrProductionAlreadySet` on a direct second write). `Plugin.FillSnapshotProduction` is the other caller. `prepare_production_artwork` still returns `pending_spec` and does not set `production_status=ready`, so it does not call the fill. G5, when it marks a version `ready`, has to call `FillSnapshotProduction` for that version.
 
@@ -95,18 +95,18 @@ Seam: run `snapshot_order_design` for an `order_id` on isolated Postgres with th
 
 ## Documentation updated
 
-- [x] `docs/ROADMAP.md`: E4a **DONE** (CR-32). E4b listed as blocked on `OrderPort` lines/listing, `order.created` after the extension copy, and a pin bump. Known limits written. §1 rows for the extension copy and `order.created` match the pin.
-- [x] `docs/architecture/flows/checkout-snapshot-and-fulfillment.md`: delivery (event, one job per order, sweep), line key `(order_id, variant_id)`, event-before-copy caveat, two Shopanda changes. No claim that a real order is snapshotted.
+- [x] `docs/ROADMAP.md`: E4a **DONE** (CR-32). The adapter slice stayed open at this close. [CR-34](CR-34-e4b-order-source.md) marks it done. Known limits written. §1 rows for the extension copy and `order.created` match the pin.
+- [x] `docs/architecture/flows/checkout-snapshot-and-fulfillment.md` at this close: delivery (event, one job per order, sweep), line key `(order_id, variant_id)`, and the two Shopanda changes still open then. Current ordering and the adapter are [CR-34](CR-34-e4b-order-source.md). No claim that a real order is snapshotted while the flag is off.
 - [x] `docs/architecture/domain-model.md`: snapshot columns and the pair key. `docs/architecture/flows/design-to-order.md`: `ordered` keeps `409`; re-order is a clone.
 - [x] `docs/architecture/api.md`: add-to-cart does not read or write the order snapshot; `ordered` stays `409`.
-- [x] ADR-0005 status: implemented in E4a, not active (flag off, no real order source). Decision 4 states the line key. `docs/adr/README.md` matches.
+- [x] ADR-0005 status at this close: implemented in E4a, flag off. Decision 4 states the line key. Current status (E4b binds `Host.Orders()` when the flag is on; the flag still defaults off) is [CR-34](CR-34-e4b-order-source.md). `docs/adr/README.md` matches that status.
 - [x] `docs/runbooks/order-without-design-snapshot.md`: `metaldogs:snapshots reconcile`, `--fix`, `--order`, `jobs:list` types, terminal-failed means nothing written and the order is untouched, never insert rows by hand. Last exercised: never. `docs/runbooks/asset-retention-and-deletion.md`: the helper, unscheduled, after-`shipped` still O2.
 - [x] `plugins/metaldogs/README.md` and `docs/runbooks/README.md`. The plugin README does not say the unbound reconcile command prints a report. The runbook signal is `metaldogs.reconcile_snapshots.gap`; no alert is configured. Fulfilment docs name the line key `(order_id, variant_id)`. `AGENTS.md` already lists `metaldogs:snapshots reconcile`. `docs/README.md` and `storefront/README.md` unchanged.
 - [x] Safe delivery: flag off. Privacy: ids only on the snapshot logs.
 
 ## Follow-ups
 
-- E4b: adapter and one real checkout test, after the pin that contains both Shopanda changes. Flag stays off until that adapter is bound.
+- E4b: adapter and one real checkout test, after the pin that contains both Shopanda changes. Flag stays off until that adapter is bound. Done in [CR-34](CR-34-e4b-order-source.md).
 - G5: call `FillSnapshotProduction` when a version becomes `ready`.
 - O2: schedule `CleanupDueAssets`, `CleanupUnattachedUploads`, and `ExpireDesigns`. Those are the only retention deletion paths. Do not add a separate `UPDATE` of `deleted_at`. Decide the after-`shipped` grace.
 - O5: exercise `docs/runbooks/order-without-design-snapshot.md` and replace "Last exercised: never".
