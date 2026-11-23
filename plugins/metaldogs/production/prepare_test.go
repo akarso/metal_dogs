@@ -26,7 +26,7 @@ func TestPrepare_Rules(t *testing.T) {
 		{name: "jpeg", png: []byte{0xff, 0xd8, 0xff, 0xd9}, code: CodeArtworkUnreadable},
 		{name: "truncated", png: mustPNG(t, 8, 8, false)[:12], code: CodeArtworkUnreadable},
 		{name: "aspect", png: mustPNG(t, 30, 10, false), code: CodeAspectMismatch},
-		{name: "aspect just over 1pct", png: mustPNG(t, 102, 100, false), spec: specSize(100, 100), code: CodeAspectMismatch},
+		{name: "aspect just over 1pct", png: mustPNG(t, 100, 99, false), spec: specSize(100, 100), code: CodeAspectMismatch},
 		{name: "too small reject", png: mustPNG(t, 10, 10, false), spec: specSize(20, 20), code: CodeTooSmall},
 		{name: "one axis small reject", png: mustPNG(t, 198, 200, false), spec: specSize(200, 200), code: CodeTooSmall},
 		{name: "transparency", png: mustPNG(t, 20, 20, false), spec: specTransparency(specSize(20, 20)), code: CodeTransparencyRequired},
