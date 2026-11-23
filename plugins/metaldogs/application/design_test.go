@@ -1237,6 +1237,18 @@ func (r *versionMemRepo) GetByDesignID(_ context.Context, designID string) (doma
 	return cp, true, nil
 }
 
+func (r *versionMemRepo) MarkProductionPreparing(context.Context, string) error {
+	return fmt.Errorf("metaldogs: production transition not supported")
+}
+
+func (r *versionMemRepo) MarkProductionFailed(context.Context, string, string) error {
+	return fmt.Errorf("metaldogs: production transition not supported")
+}
+
+func (r *versionMemRepo) CommitProductionReady(context.Context, string, domain.Asset) error {
+	return fmt.Errorf("metaldogs: production transition not supported")
+}
+
 func (r *versionMemRepo) ApproveBound(_ context.Context, d domain.Design, v domain.DesignVersion) error {
 	if d.ID == "" || v.ID == "" || v.DesignID != d.ID || d.ApprovedVersionID != v.ID {
 		return fmt.Errorf("approve id mismatch")

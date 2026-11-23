@@ -10,6 +10,7 @@ import (
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
+	"github.com/akarso/shopanda/plugins/metaldogs/production"
 )
 
 func (p *Plugin) OrderSource() ports.OrderSource {
@@ -46,6 +47,24 @@ func (p *Plugin) RunOrderArtwork(ctx pluginsdk.CLIContext, args []string) error 
 
 func SetOrderArtworkOutput(w io.Writer) {
 	orderArtworkOutput = w
+}
+
+func (p *Plugin) SetProductionSpec(spec *production.Spec) {
+	if p == nil {
+		return
+	}
+	if spec == nil {
+		p.productionSpec = nil
+		return
+	}
+	copied := *spec
+	p.productionSpec = &copied
+}
+
+func (p *Plugin) SetProductionFill(fn func(context.Context, string) error) {
+	if p != nil {
+		p.productionFill = fn
+	}
 }
 
 func (p *Plugin) SetSnapshotClock(c ports.Clock) {

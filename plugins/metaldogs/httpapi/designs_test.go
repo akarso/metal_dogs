@@ -785,6 +785,18 @@ func (r *dVersionRepo) GetByDesignID(_ context.Context, designID string) (domain
 	}
 	return r.byID[id], true, nil
 }
+func (r *dVersionRepo) MarkProductionPreparing(context.Context, string) error {
+	return fmt.Errorf("metaldogs: production transition not supported")
+}
+
+func (r *dVersionRepo) MarkProductionFailed(context.Context, string, string) error {
+	return fmt.Errorf("metaldogs: production transition not supported")
+}
+
+func (r *dVersionRepo) CommitProductionReady(context.Context, string, domain.Asset) error {
+	return fmt.Errorf("metaldogs: production transition not supported")
+}
+
 func (r *dVersionRepo) ApproveBound(_ context.Context, d domain.Design, v domain.DesignVersion) error {
 	if d.ID == "" || v.DesignID != d.ID || d.ApprovedVersionID != v.ID {
 		return fmt.Errorf("id mismatch")

@@ -23,7 +23,7 @@ func TestPrepareProductionHandler_PendingSpecFails(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	app := &plugin.App{Logger: logger.NewWithWriter(&buf, "info")}
-	h := prepareProductionHandler(app.Logger)
+	h := prepareProductionHandler(New(), app.Logger)
 	err := h(context.Background(), extapi.SyncJobContext{
 		Payload: map[string]interface{}{
 			"design_version_id": "ver-1",
@@ -41,7 +41,7 @@ func TestPrepareProductionHandler_PendingSpecFails(t *testing.T) {
 
 func TestPrepareProductionHandler_MissingPayloadFails(t *testing.T) {
 	t.Parallel()
-	h := prepareProductionHandler(logger.NewWithWriter(ioDiscard{}, "error"))
+	h := prepareProductionHandler(New(), logger.NewWithWriter(ioDiscard{}, "error"))
 	if err := h(context.Background(), extapi.SyncJobContext{Payload: map[string]interface{}{}}); err == nil {
 		t.Fatal("missing ids must fail")
 	}
@@ -280,7 +280,7 @@ func (r prepareResult) RowsAffected() (int64, error) { return int64(r), nil }
 func TestEnqueuePrepare_ExistingPendingRowSkipsEnqueue(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
-	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {
+	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), New(), app.Logger); err != nil {
 		t.Fatal(err)
 	}
 	admin := &conflictAdmin{status: jobs.StatusPending}
@@ -320,7 +320,7 @@ func (q *appearOnEnqueue) Enqueue(context.Context, jobs.Job) error {
 func TestEnqueuePrepare_TerminalRowAfterNilGetIsRequeued(t *testing.T) {
 	t.Parallel()
 	app := &plugin.App{}
-	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), app.Logger); err != nil {
+	if err := registerPrepareProduction(pluginsdk.New(app, PluginName).Integration(PluginName), New(), app.Logger); err != nil {
 		t.Fatal(err)
 	}
 	jobType, err := extapi.SyncJobType(PluginName, prepareProductionJobName)

@@ -3,24 +3,36 @@ package metaldogs
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
+	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
+	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/observability"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
+	"github.com/akarso/shopanda/plugins/metaldogs/production"
 )
 
 const prepareProductionJobName = "prepare_production_artwork"
 
-// prepareProductionMaxRetries: C6 stub always errors — MaxRetries=1 makes the first
-// failure terminal (failed) without a 3-attempt backoff loop. G5 reclaim of
-// failed/cancelled may set attempts=0 and raise max_retries together; stale
-// processing must leave attempts alone (zombie Fail fence) and raise max_retries only.
-const prepareProductionMaxRetries = 1
+// prepareProductionMaxRetries lets a transient storage or database error retry.
+// Platform Fail stays pending while attempts < max_retries. Permanent outcomes
+// (pending_spec, validation) set max_retries = attempts so this delivery is the last.
+// Reclaim of failed/cancelled still resets attempts and may raise max_retries;
+// stale processing must leave attempts alone (zombie Fail fence).
+const prepareProductionMaxRetries = 3
+
+// prepareTerminalizeSQL ends retry for this processing row only.
+const prepareTerminalizeSQL = `
+		UPDATE jobs
+		SET max_retries = attempts
+		WHERE id = $1 AND status = 'processing' AND attempts >= 1 AND attempts < max_retries
+	`
 
 // Stale processing re-pends without touching attempts (matches platform Requeue).
 const prepareStaleProcessingSQL = `
@@ -37,36 +49,120 @@ const prepareCancelledSQL = `
 		WHERE id = $1 AND type = $2 AND status = 'cancelled'
 	`
 
-func registerPrepareProduction(reg *pluginsdk.SyncJobs, log pluginsdk.Logger) error {
+func registerPrepareProduction(reg *pluginsdk.SyncJobs, p *Plugin, log pluginsdk.Logger) error {
 	return reg.RegisterManual(
 		prepareProductionJobName,
-		prepareProductionHandler(log),
+		prepareProductionHandler(p, log),
 		pluginsdk.MaxRetries(prepareProductionMaxRetries),
 	)
 }
 
-func prepareProductionHandler(log pluginsdk.Logger) extapi.SyncJobHandler {
-	return func(_ context.Context, job extapi.SyncJobContext) error {
+func prepareProductionHandler(p *Plugin, log pluginsdk.Logger) extapi.SyncJobHandler {
+	return func(ctx context.Context, job extapi.SyncJobContext) error {
 		fields := observability.JobLogFields(job)
-		fields["pending_spec"] = true
 		versionID, _ := job.Payload["design_version_id"].(string)
 		designID, _ := job.Payload["design_id"].(string)
 		versionID = strings.TrimSpace(versionID)
 		designID = strings.TrimSpace(designID)
 		fields["design_version_id"] = versionID
 		fields["design_id"] = designID
-		err := fmt.Errorf("metaldogs: prepare_production_artwork pending_spec until G5/P0")
-		switch {
-		case job.Logger != nil:
-			job.Logger.Error("metaldogs.prepare_production_artwork.pending_spec", err, fields)
-		case log != nil:
-			log.Error("metaldogs.prepare_production_artwork.pending_spec", err, fields)
+		var spec *production.Spec
+		if p != nil {
+			spec = p.productionSpec
+		}
+		if spec == nil {
+			fields["pending_spec"] = true
+			err := fmt.Errorf("metaldogs: prepare_production_artwork pending_spec until G5/P0")
+			logPrepare(job, log, "metaldogs.prepare_production_artwork.pending_spec", err, fields)
+			terminalizePrepareJob(ctx, job)
+			if versionID == "" || designID == "" {
+				return fmt.Errorf("metaldogs prepare: design_version_id and design_id required")
+			}
+			return err
 		}
 		if versionID == "" || designID == "" {
 			return fmt.Errorf("metaldogs prepare: design_version_id and design_id required")
 		}
-		return err
+		db := job.DB
+		if db == nil && p != nil {
+			bound, err := pluginDB(p)
+			if err != nil {
+				logPrepare(job, log, "metaldogs.prepare_production_artwork.retry", &application.PrepareRetryError{Op: "database"}, fields)
+				return &application.PrepareRetryError{Op: "database"}
+			}
+			db = bound
+		}
+		if db == nil {
+			logPrepare(job, log, "metaldogs.prepare_production_artwork.retry", &application.PrepareRetryError{Op: "database"}, fields)
+			return &application.PrepareRetryError{Op: "database"}
+		}
+		copied := *spec
+		var store ports.AssetStore
+		var clock ports.Clock
+		if p != nil {
+			store = p.assets
+			clock = p.snapshotClock
+		}
+		wrote, err := (&application.PrepareProduction{
+			Versions: postgres.NewDesignVersionRepo(db),
+			Assets:   postgres.NewAssetRepo(db),
+			Designs:  postgres.NewDesignRepo(db),
+			Store:    store,
+			Spec:     &copied,
+			Clock:    clock,
+		}).Execute(ctx, versionID, designID)
+		if err != nil {
+			var permanent *application.PreparePermanentError
+			if errors.As(err, &permanent) {
+				fields["reason"] = permanent.Code
+				logPrepare(job, log, "metaldogs.prepare_production_artwork.failed", permanent, fields)
+				terminalizePrepareJob(ctx, job)
+				return permanent
+			}
+			op := "database"
+			var retry *application.PrepareRetryError
+			if errors.As(err, &retry) && retry.Op != "" {
+				op = retry.Op
+			}
+			fields["op"] = op
+			wrapped := &application.PrepareRetryError{Op: op}
+			logPrepare(job, log, "metaldogs.prepare_production_artwork.retry", wrapped, fields)
+			return wrapped
+		}
+		if !wrote || p == nil {
+			return nil
+		}
+		var ferr error
+		if p.productionFill != nil {
+			ferr = p.productionFill(ctx, versionID)
+		} else {
+			ferr = p.FillSnapshotProduction(ctx, versionID)
+		}
+		if ferr != nil {
+			fields["op"] = "fill_snapshot"
+			logPrepare(job, log, "metaldogs.prepare_production_artwork.fill_snapshot", ferr, fields)
+		}
+		return nil
 	}
+}
+
+func logPrepare(job extapi.SyncJobContext, log pluginsdk.Logger, msg string, err error, fields map[string]interface{}) {
+	switch {
+	case job.Logger != nil:
+		job.Logger.Error(msg, err, fields)
+	case log != nil:
+		log.Error(msg, err, fields)
+	}
+}
+
+func terminalizePrepareJob(ctx context.Context, job extapi.SyncJobContext) {
+	if job.DB == nil || strings.TrimSpace(job.JobID) == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, _ = job.DB.ExecContext(ctx, prepareTerminalizeSQL, job.JobID)
 }
 
 // enqueuePrepareProduction enqueues prepare_production_artwork with platform job id =

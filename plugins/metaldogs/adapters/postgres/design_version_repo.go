@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -29,7 +30,8 @@ var _ ports.DesignVersionRepository = (*DesignVersionRepo)(nil)
 const designVersionColumns = `
 	id, design_id, template_id, template_version, texts,
 	artwork_asset_id, artwork_checksum, production_asset_id, production_checksum,
-	production_status, provider, model, prompt_version, parameters, approved_at
+	production_status, provider, model, prompt_version, parameters, approved_at,
+	production_failure_reason
 `
 
 func (r *DesignVersionRepo) GetByID(ctx context.Context, id string) (domain.DesignVersion, bool, error) {
@@ -206,11 +208,12 @@ func insertDesignVersion(ctx context.Context, db versionExecer, v domain.DesignV
 func scanDesignVersion(row designScanner) (domain.DesignVersion, bool, error) {
 	var v domain.DesignVersion
 	var texts, params []byte
-	var prodAsset, prodChecksum sql.NullString
+	var prodAsset, prodChecksum, failReason sql.NullString
 	err := row.Scan(
 		&v.ID, &v.DesignID, &v.TemplateID, &v.TemplateVersion, &texts,
 		&v.ArtworkAssetID, &v.ArtworkChecksum, &prodAsset, &prodChecksum,
 		&v.ProductionStatus, &v.Provider, &v.Model, &v.PromptVersion, &params, &v.ApprovedAt,
+		&failReason,
 	)
 	if err == sql.ErrNoRows {
 		return domain.DesignVersion{}, false, nil
@@ -230,6 +233,9 @@ func scanDesignVersion(row designScanner) (domain.DesignVersion, bool, error) {
 	if prodChecksum.Valid {
 		v.ProductionChecksum = prodChecksum.String
 	}
+	if failReason.Valid {
+		v.ProductionFailureReason = failReason.String
+	}
 	v.ParametersJSON = append([]byte(nil), params...)
 	v.ApprovedAt = v.ApprovedAt.UTC()
 	return v, true, nil
@@ -238,4 +244,148 @@ func scanDesignVersion(row designScanner) (domain.DesignVersion, bool, error) {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func (r *DesignVersionRepo) MarkProductionPreparing(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("metaldogs design_versions: id required")
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions
+		SET production_status = 'preparing'
+		WHERE id = $1 AND production_status = 'pending'
+	`, id)
+	if err != nil {
+		return fmt.Errorf("metaldogs design_versions preparing: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	return r.productionTransitionMiss(ctx, id, true)
+}
+
+func (r *DesignVersionRepo) MarkProductionFailed(ctx context.Context, id, reason string) error {
+	id = strings.TrimSpace(id)
+	reason = strings.TrimSpace(reason)
+	if id == "" {
+		return fmt.Errorf("metaldogs design_versions: id required")
+	}
+	if !productionReasonOK(reason) {
+		return fmt.Errorf("metaldogs design_versions: failure reason invalid")
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions
+		SET production_status = 'failed', production_failure_reason = $2
+		WHERE id = $1 AND production_status IN ('pending', 'preparing')
+	`, id, reason)
+	if err != nil {
+		return fmt.Errorf("metaldogs design_versions failed: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	return r.productionTransitionMiss(ctx, id, false)
+}
+
+func (r *DesignVersionRepo) CommitProductionReady(ctx context.Context, id string, asset domain.Asset) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("metaldogs design_versions: id required")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("metaldogs design_versions ready begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	err = tx.QueryRowContext(ctx, `
+		SELECT production_status FROM metaldogs_design_versions WHERE id = $1 FOR UPDATE
+	`, id).Scan(&status)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("metaldogs design_versions: %s not found", id)
+	}
+	if err != nil {
+		return fmt.Errorf("metaldogs design_versions ready lock: %w", err)
+	}
+	switch status {
+	case domain.ProductionReady:
+		return ports.ErrProductionAlreadyReady
+	case domain.ProductionPending, domain.ProductionPreparing:
+	default:
+		return ports.ErrProductionNotOpen
+	}
+	if err := insertAsset(ctx, tx, asset); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions
+		SET production_status = 'ready',
+		    production_asset_id = $2,
+		    production_checksum = $3,
+		    production_failure_reason = NULL
+		WHERE id = $1 AND production_status IN ('pending', 'preparing')
+	`, id, asset.ID, asset.Checksum)
+	if err != nil {
+		return fmt.Errorf("metaldogs design_versions ready: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ports.ErrProductionNotOpen
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("metaldogs design_versions ready commit: %w", err)
+	}
+	return nil
+}
+
+func (r *DesignVersionRepo) productionTransitionMiss(ctx context.Context, id string, preparing bool) error {
+	v, ok, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("metaldogs design_versions: %s not found", id)
+	}
+	switch v.ProductionStatus {
+	case domain.ProductionPreparing:
+		if preparing {
+			return nil
+		}
+		return ports.ErrProductionNotOpen
+	case domain.ProductionReady:
+		return ports.ErrProductionAlreadyReady
+	case domain.ProductionFailed:
+		if preparing {
+			return ports.ErrProductionNotOpen
+		}
+		return nil
+	default:
+		return ports.ErrProductionNotOpen
+	}
+}
+
+func productionReasonOK(reason string) bool {
+	if reason == "" || len(reason) > 64 {
+		return false
+	}
+	for _, r := range reason {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
