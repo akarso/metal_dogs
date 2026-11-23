@@ -41,8 +41,6 @@ These are the two known gaps. This round does not edit `internal/*`, `pkg/*`, or
 
 ## Deletion paths (ticket 03)
 
-## Deletion paths (ticket 03)
-
 `AssetsReferencedBySnapshots` is the only check for "does an order snapshot name this asset?" It matches `artwork_asset_id` and `production_asset_id`. A protected asset is left active (not an error) and logged once as `metaldogs.retention.asset_kept` with `path` and `asset_id`. An asset with no snapshot row is deleted as that path already deleted it.
 
 No scheduler and no sweep were added. Nothing calls the three retention functions until a later slice does.
