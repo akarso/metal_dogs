@@ -23,12 +23,16 @@ Plugin-side order snapshot. Dark. A real checkout does not write a row.
 - E4a depends on a plugin-owned port so E4b only swaps the adapter.
 - Production artwork copied when the version is `ready` at snapshot time; otherwise NULL, filled once later. G5 must call `(*metaldogs.Plugin).FillSnapshotProduction` when it sets `production_status=ready`. The prepare stub does not.
 
-## Platform dependencies (already on the Shopanda roadmap)
+## Platform dependencies (closed on the pin by CR-33)
 
-These are the two known gaps. This round does not edit `internal/*`, `pkg/*`, or core `cmd/api/*`, and does not open a new platform gap.
+At E4a close these two gaps were still open. Pin `e062d4d3` ([CR-33](CR-33-upg11-pin-e062d4d3.md)) has both. E4b is not done. This round did not edit `internal/*`, `pkg/*`, or core `cmd/api/*`.
 
-1. `pluginsdk.OrderPort` is `FindByID` only (`pkg/pluginsdk/ports.go`). E4b needs `Lines` (extension values) and `ListCreatedSince`.
-2. `CreateOrderStep` calls `publishOrderCreated` and then `SnapshotCartItemToOrderItem` (`internal/application/checkout/create_order_step.go`). `order.created` therefore runs before `metaldogs.design_id` is on the order line. Payload is `OrderCreatedData` (order id, customer id, contact email, currency, item count). E4b needs the event after that copy, or a later event, with at-least-once and idempotency documented, and a pin bump that contains both changes. Merge `main`; do not rebase.
+What was true at E4a close (pin `c25f3e7e`):
+
+1. `pluginsdk.OrderPort` was `FindByID` only (`pkg/pluginsdk/ports.go`). E4b needed `Lines` (extension values) and `ListCreatedSince`.
+2. `CreateOrderStep` called `publishOrderCreated` and then `SnapshotCartItemToOrderItem`. `order.created` therefore ran before `metaldogs.design_id` was on the order line.
+
+On `e062d4d3`: `OrderPort` has `Lines`, `LinesForOrders`, and `ListCreatedSince`. `finishCreatedOrder` snapshots, then publishes. A snapshot error still publishes.
 
 ## Known limits
 

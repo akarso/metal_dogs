@@ -97,9 +97,9 @@ sequenceDiagram
     Shop->>API: metaldogs_design_sale before reserve_inventory
     API-->>Shop: ok, or 422 plugin.metaldogs.design_unavailable with the failing lines and no order
     Shop->>Shop: persist order
-    Shop->>Ev: order.created
-    Note over Shop: Pin publishes this before SnapshotCartItemToOrderItem. The line does not have metaldogs.design_id yet
     Shop->>Shop: copy metaldogs.design_id onto the order line (order_id, variant_id)
+    Shop->>Ev: order.created
+    Note over Shop: Published after the copy. A snapshot error still publishes, then the step returns the error
     Ev->>Q: dispatch_snapshot_order (new id per event)
     W->>Q: enqueue snapshot_order_design once (UUID v5 of the order id)
     W->>W: for each line with design_id: insert snapshot by (order_id, variant_id)
@@ -134,20 +134,18 @@ sequenceDiagram
 | No double POD orders | `submit_fulfillment` idempotent on `(order_id, variant_id)`; provider idempotency key is that pair where supported; status `submitting` lock. The snapshot table has no surrogate id |
 | Operator can always fulfil by hand | P1 manual path and runbook independent of P2 automation |
 
-## Line key and what E4b waits on
+## Line key and what E4b still has to do
 
 Shopanda order items have no id of their own. The snapshot line key is `(order_id, variant_id)`, the same pair core uses for `order_item` extension values. [ADR-0005](../../adr/0005-immutable-order-design-snapshot.md) decision 4 called that pair `order_line_id`. The table primary key is the pair (`015_create_order_design_snapshots.sql`).
 
-E4b is blocked on both of these, already on the Shopanda roadmap, plus a pin bump that contains them (merge `main`, same pattern as E3 / UPG10):
+Both platform items are on pin `e062d4d3` ([CR-33](../../cr-rounds/CR-33-upg11-pin-e062d4d3.md)). E4b is not done. Leave `plugins.metaldogs.order_snapshot.enabled` false until an adapter is bound.
 
-1. `pluginsdk.OrderPort` gains `Lines` (extension values included) and `ListCreatedSince`. At this pin `OrderPort` is only `FindByID` (`pkg/pluginsdk/ports.go`). E4a reads orders through the plugin port `ports.OrderSource` and does not query core tables.
-2. `order.created` is published after the cart→order extension copy, or a later event is added, and at-least-once delivery plus idempotency are documented. At this pin `CreateOrderStep` saves the order, calls `publishOrderCreated`, and only then `SnapshotCartItemToOrderItem` (`internal/application/checkout/create_order_step.go`). The payload is `OrderCreatedData` (`OrderID`, `CustomerID`, `ContactEmail`, `Currency`, `ItemCount`) and carries no line extensions. A job that ran on this event and read the order line would not see `metaldogs.design_id` yet.
-
-Until both land, leave `plugins.metaldogs.order_snapshot.enabled` false.
+1. `pluginsdk.OrderPort` has `Lines`, `LinesForOrders` (extension values; line key `(order_id, variant_id)`), and `ListCreatedSince` (limit 1..100) (`pkg/pluginsdk/ports.go`). E4a reads orders through the plugin port `ports.OrderSource` and does not query core tables.
+2. `finishCreatedOrder` snapshots cart→order extensions, then publishes `order.created` (`internal/application/checkout/create_order_step.go`). A snapshot error still publishes, then returns the error. `Workflow.Execute` retries `create_order` once when `created_order_id` is set and `order_created_published` is not. The payload is `OrderCreatedData` (`OrderID`, `CustomerID`, `ContactEmail`, `Currency`, `ItemCount`) and carries no line extensions. At-least-once: a handler must be idempotent.
 
 ## Event delivery
 
-`RegisterOnEvent` cannot set a job id. `NewSyncJobEnvelope` uses `id.New()`, and `pluginsdk.WithJobID` applies only to `SyncJobs.Enqueue`. `snapshot_order_design` is registered with `RegisterManual`. `dispatch_snapshot_order` is `RegisterOnEvent` on `order.created` and only calls `EnqueueSnapshotOrder`, which enqueues with `WithJobID` set to the UUID v5 of the canonical order id. A non-UUID order id fails the dispatcher and does not enqueue a snapshot job. Two events insert two dispatcher jobs and one snapshot job. The snapshot write is one row: `INSERT … ON CONFLICT (order_id, variant_id) DO NOTHING`. `approved → ordered` does nothing when the design is already `ordered`.
+`RegisterOnEvent` can set a job id with `pluginsdk.WithEventJobID` (PR-1602). Metal Dogs does not call it. `snapshot_order_design` is registered with `RegisterManual`. `dispatch_snapshot_order` is `RegisterOnEvent` on `order.created` and only calls `EnqueueSnapshotOrder`, which enqueues with `WithJobID` set to the UUID v5 of the canonical order id. A non-UUID order id fails the dispatcher and does not enqueue a snapshot job. Two events insert two dispatcher jobs and one snapshot job. The snapshot write is one row: `INSERT … ON CONFLICT (order_id, variant_id) DO NOTHING`. `approved → ordered` does nothing when the design is already `ordered`.
 
 A build failure logs `metaldogs.snapshot_order_design.failed` for that line. A commit that rolls back logs `failed` once per design line in the order (order id, variant id, design id). Lines with no design id are skipped. An order the source does not return and an order whose lines have no design id both end the job `done` with no log: `OrderSource.Lines` does not distinguish them. E4b has to, or a missing order looks like a successful skip.
 
@@ -157,6 +155,6 @@ A build failure logs `metaldogs.snapshot_order_design.failed` for that line. A c
 
 ## Open items to verify (tracked in ROADMAP §1)
 
-- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). E3 contract-tests `POST /api/v1/checkout` re-validation with manual payment (CR-30), including `plugin.metaldogs.design_unavailable` and a retryable `503`. Core copies the field onto the order line after `order.created`. E4a does not read that copy. E4b will, after the two Shopanda changes above. SSR confirm exists upstream (PR-1598). Guest Stripe test mode is not recorded.
+- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). E3 contract-tests `POST /api/v1/checkout` re-validation with manual payment (CR-30), including `plugin.metaldogs.design_unavailable` and a retryable `503`. Core copies the field onto the order line before `order.created`. E4a does not read that copy. E4b is not done. SSR confirm exists upstream (PR-1598). Guest Stripe test mode is not recorded.
 - `order.created` is confirmed at this pin and is not inside the order transaction: the order row is already saved, and there is no transactional enqueue. `payment.confirmed` and the shipment update API stay track P.
 - Shopanda API for updating shipment/tracking from a plugin.

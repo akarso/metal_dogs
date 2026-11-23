@@ -159,9 +159,9 @@ type Plugin interface {
 
 Extension mechanisms (events, pricing/checkout/composition pipelines, permissions, plugin CLI, public HTTP routes) are wired through `PluginRegistry` at startup. Plugins register at **compile time** via `register_plugins.go` — there is no runtime `.so` discovery. See [PLUGINS.md](PLUGINS.md#deferred-capabilities) for why `.so` loading stays deferred.
 
-See [Developer Guide](https://github.com/akarso/shopanda/blob/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/docs/guides/DEVELOPER.md) for how to enable core plugins and add an external plugin. Reference implementation: [`plugins/example/`](plugins/example/).
+See [Developer Guide](https://github.com/akarso/shopanda/blob/e062d4d3d479a3a18c695d80931a15e5cd9e6885/docs/guides/DEVELOPER.md) for how to enable core plugins and add an external plugin. Reference implementation: [`plugins/example/`](plugins/example/).
 
-**Product sites** (own git remote, optional CI): [Building a product site](https://github.com/akarso/shopanda/blob/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/docs/guides/PRODUCT_SITES.md) · `bash scripts/product-init.sh --slug myproduct` · portable checks via `make check` / [`scripts/ci/`](scripts/ci/) · sample pipelines in [`ci-samples/`](ci-samples/) (opt-in; local/FTP needs none).
+**Product sites** (own git remote, optional CI): [Building a product site](https://github.com/akarso/shopanda/blob/e062d4d3d479a3a18c695d80931a15e5cd9e6885/docs/guides/PRODUCT_SITES.md) · `bash scripts/product-init.sh --slug myproduct` · portable checks via `make check` / [`scripts/ci/`](scripts/ci/) · sample pipelines in [`ci-samples/`](ci-samples/) (opt-in; local/FTP needs none).
 
 **Not yet supported:** `.so` dynamic loading, plugin marketplace, plugin hot reload. Theme templates reload in `SHOPANDA_DEV_MODE`.
 
@@ -185,7 +185,7 @@ Shopanda uses a minimal default stack (Tier 1 only — no optional services requ
 | **Storefront** | SSR templates | — |
 | **Data exchange** | CSV import/export | — |
 
-Enable optional backends via YAML or environment variables — see [Deployment Guide](https://github.com/akarso/shopanda/blob/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/docs/guides/DEPLOYMENT.md) and `configs/config.example.yaml`.
+Enable optional backends via YAML or environment variables — see [Deployment Guide](https://github.com/akarso/shopanda/blob/e062d4d3d479a3a18c695d80931a15e5cd9e6885/docs/guides/DEPLOYMENT.md) and `configs/config.example.yaml`.
 
 ## Project status
 
@@ -230,7 +230,7 @@ go build -o app ./cmd/api
 
 `./install.sh` is an interactive helper that writes a complete `.env` file. If you prefer to edit configuration manually, skip it and copy `.env.example` yourself.
 
-For a complete operator-focused setup, including Docker, health checks, and environment variables, see [docs/guides/DEPLOYMENT.md](https://github.com/akarso/shopanda/blob/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/docs/guides/DEPLOYMENT.md).
+For a complete operator-focused setup, including Docker, health checks, and environment variables, see [docs/guides/DEPLOYMENT.md](https://github.com/akarso/shopanda/blob/e062d4d3d479a3a18c695d80931a15e5cd9e6885/docs/guides/DEPLOYMENT.md).
 
 ### CLI commands
 
@@ -292,14 +292,14 @@ Run `./app help` for the live command list from the current binary.
 
 **Metal Dogs product docs:** [`docs/README.md`](docs/README.md) (roadmap, ADRs, architecture, runbooks).
 
-**Shopanda platform docs** (not vendored; pinned commit `c25f3e7ead48ff75c53667ec7de3a9ab3f7050df`):
+**Shopanda platform docs** (not vendored; pinned commit `e062d4d3d479a3a18c695d80931a15e5cd9e6885`):
 
-- Guides: https://github.com/akarso/shopanda/tree/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/docs/guides
-- Runbook: https://github.com/akarso/shopanda/blob/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/RUNBOOK.md
+- Guides: https://github.com/akarso/shopanda/tree/e062d4d3d479a3a18c695d80931a15e5cd9e6885/docs/guides
+- Runbook: https://github.com/akarso/shopanda/blob/e062d4d3d479a3a18c695d80931a15e5cd9e6885/RUNBOOK.md
 - Plugin authoring: [`PLUGINS.md`](PLUGINS.md) (local copy; guide links point upstream)
 - Commercial licensing: [`docs/COMMERCIAL.md`](docs/COMMERCIAL.md)
 - Govuln baseline: [`docs/GOVULN_BASELINE.md`](docs/GOVULN_BASELINE.md)
-- C4 diagrams: https://github.com/akarso/shopanda/tree/c25f3e7ead48ff75c53667ec7de3a9ab3f7050df/docs/diagrams
+- C4 diagrams: https://github.com/akarso/shopanda/tree/e062d4d3d479a3a18c695d80931a15e5cd9e6885/docs/diagrams
 
 Upstream pin: [`docs/UPSTREAM_PIN.md`](docs/UPSTREAM_PIN.md). Metal Dogs uses a **main-only** branch policy (no `dev` / promote flow).
 
