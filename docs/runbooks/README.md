@@ -13,7 +13,7 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 | [`template-publishing.md`](template-publishing.md) | Adding, changing, publishing, or retiring templates | G2, X1 |
 | [`checkout-manual-verification.md`](checkout-manual-verification.md) | Maintainer checklist before treating guest SSR checkout and Stripe test mode as done | E3 |
 | [`order-without-design-snapshot.md`](order-without-design-snapshot.md) | Log `metaldogs.reconcile_snapshots.gap` (`missing_snapshot`, `snapshot_job_failed`); no alert configured. Flag off emits nothing. Flag on with `hostorders` bound: check both job types and the snapshot row. Last exercised: never | E4a / E4b |
-| [`manual-pod-fulfillment.md`](manual-pod-fulfillment.md) | Fulfilling an order by hand (M3 default; automation fallback) | P1 |
+| [`manual-pod-fulfillment.md`](manual-pod-fulfillment.md) | Fulfilling an order by hand (M3 default; automation fallback). Artwork fetch (route, CLI, permission, 300s expiry, `metaldogs_artwork_access_log`) is E5, [CR-35](../cr-rounds/CR-35-e5-artwork-access.md). Listing and recording a POD id stay `TBD (P1)` | P1, E5 |
 | [`pod-submission-failed.md`](pod-submission-failed.md) | Automated submission failed or stale | P2, P4 |
 | [`asset-retention-and-deletion.md`](asset-retention-and-deletion.md) | Retention sweep issues; GDPR deletion request | O2 |
 | [`backup-and-restore.md`](backup-and-restore.md) | Restore rehearsal or real recovery | O6 |
@@ -22,5 +22,5 @@ Commands shown are Shopanda CLI commands from the upstream README and must be re
 
 - Processes: `app serve` (HTTP), `app worker` (jobs), `app scheduler` (cron). In dev, `app dev` runs all three.
 - Correlation: every HTTP request and job log line carries `correlation_id`; design-scoped lines carry `design_id`; job lines carry `job_id`. Search logs by these ids, never by customer data.
-- Feature flags (`plugins.metaldogs.*`): `enabled`, `customizer_public`, `generation.provider`, `generation.max_attempts_per_design`, `generation.max_retries`, `generation.cooldown_seconds`, `order_snapshot.enabled` (default false; E4a, [CR-32](../cr-rounds/CR-32-e4a-order-design-snapshot.md)), `cost.daily_cap`, `fulfillment.auto_submit`, `fulfillment.manual_gate`, `retention.dry_run`. Exact keys are confirmed as slices land.
+- Feature flags (`plugins.metaldogs.*`): `enabled`, `customizer_public`, `generation.provider`, `generation.max_attempts_per_design`, `generation.max_retries`, `generation.cooldown_seconds`, `order_snapshot.enabled` (default false; snapshot jobs E4a/E4b, [CR-32](../cr-rounds/CR-32-e4a-order-design-snapshot.md) / [CR-34](../cr-rounds/CR-34-e4b-order-source.md); artwork route, `metaldogs.snapshots.read`, and `metaldogs:order-artwork` E5, [CR-35](../cr-rounds/CR-35-e5-artwork-access.md)), `cost.daily_cap`, `fulfillment.auto_submit`, `fulfillment.manual_gate`, `retention.dry_run`. Exact keys are confirmed as slices land.
 - Never paste signed URLs, tokens, provider payloads, or photos into tickets or chat.

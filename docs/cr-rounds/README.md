@@ -86,3 +86,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-32 | E4a order design snapshot (closed). Platform gaps for E4b closed on pin `e062d4d3` ([CR-33](CR-33-upg11-pin-e062d4d3.md)); E4b closed in [CR-34](CR-34-e4b-order-source.md) | M3 → E4a | [`CR-32-e4a-order-design-snapshot.md`](CR-32-e4a-order-design-snapshot.md) |
 | CR-33 | UPG11 pin `e062d4d3` (ticket 00; PR-1600, PR-1601, PR-1602). E4b closed in [CR-34](CR-34-e4b-order-source.md) | M3 pin | [`CR-33-upg11-pin-e062d4d3.md`](CR-33-upg11-pin-e062d4d3.md) |
 | CR-34 | E4b order source adapter (closed) | M3 → E4b | [`CR-34-e4b-order-source.md`](CR-34-e4b-order-source.md) |
+| CR-35 | E5 admin snapshot and artwork access (closed) | M3 → E5 | [`CR-35-e5-artwork-access.md`](CR-35-e5-artwork-access.md) |

@@ -41,6 +41,7 @@ bash .github/scripts/check-product-docs-links.sh
 # ./app metaldogs:eval -template plugins/metaldogs/templates/….yaml -photos … -out … -provider fake -dog-name Burek
 # ./app metaldogs:templates validate|load|publish|retire …
 # ./app metaldogs:snapshots reconcile [--order=<id>] [--fix]
+# ./app metaldogs:order-artwork <order_id>   # requires order_snapshot.enabled
 ```
 
 DSN-gated feature tests (skip when unset; required in CI `integration` job):

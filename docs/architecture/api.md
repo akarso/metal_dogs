@@ -373,6 +373,53 @@ Captured from `TestCheckout_DesignSale` (two bad lines, then a cart-port failure
 
 `POST /checkout/confirm` shows `apperror.Message` for this `422` and for this `503` (`storefrontCheckoutErrorMessage`). SSR confirm (PR-1598) renders Stripe.js on `checkout_confirm` after POST then 303 then GET. That path has no recorded maintainer walkthrough. Stripe test mode is not part of the measurement. Checklist: [`docs/runbooks/checkout-manual-verification.md`](../runbooks/checkout-manual-verification.md).
 
+## Order artwork (E5)
+
+Registered only when the plugin is enabled and `plugins.metaldogs.order_snapshot.enabled` is true. Same flag as the snapshot jobs. Off: this route and `metaldogs.snapshots.read` are absent. Permission is granted to role `admin` only.
+
+`GET /api/v1/admin/orders/{order_id}/artwork` requires `metaldogs.snapshots.read`. The handler is `httpapi.OrderArtwork`. It calls `application.OrderArtworkAccess.Access` with channel `admin`. The actor is `pluginsdk.CustomerID(r)`: the request identity's user id (`auth.StorefrontActorID`). A guest is `401` from `admin.RequirePermission` before the handler. On `/api/v1/admin/*` a staff Bearer is that identity; a storefront session cookie does not replace it (`storefront.AuthMiddleware`).
+
+`200` body (no `data` wrapper):
+
+```json
+{
+  "order_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "lines": [
+    {
+      "variant_id": "11111111-1111-4111-8111-111111111111",
+      "sku": "TEE-BLK-M",
+      "template_slug": "black-tee",
+      "template_version": 3,
+      "texts": {"dog_name": "Burek"},
+      "provider": "openai",
+      "model": "gpt-image",
+      "prompt_version": "prompt-v7",
+      "approved": {"url": "<signed url, 300s>", "expires_at": "2026-11-23T16:05:00Z", "checksum": "sha256:approved"},
+      "production": {"url": "<signed url, 300s>", "expires_at": "2026-11-23T16:05:00Z", "checksum": "sha256:production"}
+    }
+  ]
+}
+```
+
+`production` is JSON `null` when `production_asset_id` is empty. An existing order with no snapshot rows is `200` and `"lines":[]`. The URL TTL is 300s (`OrderArtworkTTL`), not caller-controlled, and still capped by `MaxSignedGetTTL` (15m). `expires_at` is that deadline. Inline disposition is only for `.jpg` / `.jpeg` / `.png` / `.webp`; any other key (production `.pdf` in the test) is an attachment. The body has no storage key.
+
+The shell command `metaldogs:order-artwork <order_id>` prints the same JSON (actor `cli`, channel `cli`). It does not check `metaldogs.snapshots.read`. Flag off: the command is not registered, and the handler exits non-zero with `plugins.metaldogs.order_snapshot.enabled is false`.
+
+Each signed URL appends one row to `metaldogs_artwork_access_log` before the response is returned. Columns: `order_id`, `variant_id`, `kind` (`approved`|`production`), `actor`, `channel` (`admin`|`cli`), `requested_at`. No URL and no storage key. Update and delete are rejected. If that write fails, the HTTP status is `503` and the body has no URL. The log line is `metaldogs.order_artwork.access` with `order_id` and `actor` only.
+
+Measured by `TestOrderArtworkAdminRoute` (isolated Postgres, `RequirePermission` + `AuthMiddleware`, fake clock). `Fetch` returns the bytes at issue time. After `FakeClock` advances `OrderArtworkTTL + 1s`, `Fetch` fails. `TestOrderArtworkCLI` is the same service with actor `cli`.
+
+| HTTP | `error.code` | `error.message` | When |
+| --- | --- | --- | --- |
+| `200` | — | — | Order exists. `lines` may be empty. `production` may be `null` |
+| `400` | `plugin.metaldogs.invalid_order_id` | `order id is not a uuid` | Path id is not a UUID |
+| `401` | `unauthorized` | `authentication required` | Guest. Platform body from `RequirePermission`. No `plugin.metaldogs` code |
+| `403` | `forbidden` | `insufficient permissions` | Authenticated role without `metaldogs.snapshots.read`. No audit row |
+| `404` | `plugin.metaldogs.order_not_found` | `not found` | Order id is a UUID and `FindByID` misses. No audit row |
+| `503` | `plugin.metaldogs.artwork_unavailable` | `order artwork access failed` | Store, asset, or audit write failed. Body has no URL and no storage key. No new audit row |
+
+Plugin error shape: `{"data":null,"error":{"code":"…","message":"…"}}`.
+
 ## Safe delivery
 
 No published templates ship with C1; list returns `[]` until operators `metaldogs:templates publish`. Uploads, designs, generate, approve, clone, and add-to-cart require media + DB. The design field and `cart.validate` register when the plugin is enabled, including when media is absent. Flag default off. Generate uses the fake provider unless a later slice wires a live provider. Approve enqueues prepare_production_artwork (C6 stub terminals with `pending_spec`; G5 owns reclaim of failed rows). Add to cart uses the same plugin flag. The E1 seed stays draft with stock 0; a buyable tee is published and stocked outside that seed.

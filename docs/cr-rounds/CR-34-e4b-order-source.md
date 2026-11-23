@@ -54,4 +54,4 @@ Real order source for the E4a snapshot path. Dark. The flag stays false.
 - A missing order and an order with no design lines both end the snapshot job `done`. The port returns no lines for a missing id.
 - G5: call `FillSnapshotProduction` when a version becomes `ready`.
 - O5: exercise the runbook and replace "Last exercised: never".
-- E5 / E6 and track P stay out of this slice.
+- E6 and track P stay out of this slice. E5 artwork access closed in [CR-35](CR-35-e5-artwork-access.md).

@@ -1,6 +1,6 @@
 # ADR-0004: Private S3-compatible storage with short-lived signed URLs
 
-- **Status:** Accepted (F4 port; **C2** first Put call site via `POST /api/customizer/uploads`)
+- **Status:** Accepted (F4 port; **C2** first Put call site via `POST /api/customizer/uploads`). **E5** landed ([CR-35](../cr-rounds/CR-35-e5-artwork-access.md), 2026-11-23): `OrderArtworkAccess` signs approved and production snapshot artwork with a fixed 300s TTL through this `SignedGetURL` (still capped at 15m). The route and `metaldogs:order-artwork` register only when `plugins.metaldogs.order_snapshot.enabled` is true. Each issued URL is one append-only row in `metaldogs_artwork_access_log` (no URL, no storage key). URLs are not logged.
 - **Date:** 2026-10-15
 - **Related slices:** `F4`, `C2`, `C5`, `E5`, `E6`, `O2`, `O6`
 - **Related ADRs:** [ADR-0007](0007-guest-design-ownership-tokens.md)
