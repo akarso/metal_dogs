@@ -22,11 +22,10 @@ import (
 )
 
 type memAssetRepo struct {
-	mu             sync.Mutex
-	byID           map[string]domain.Asset
-	insertErr      error
-	softDeleteErr  error
-	softDeleteKeep bool
+	mu            sync.Mutex
+	byID          map[string]domain.Asset
+	insertErr     error
+	softDeleteErr error
 }
 
 func (m *memAssetRepo) Insert(_ context.Context, a domain.Asset) error {
@@ -60,9 +59,6 @@ func (m *memAssetRepo) SoftDelete(_ context.Context, id string, at time.Time) er
 	defer m.mu.Unlock()
 	if m.softDeleteErr != nil {
 		return m.softDeleteErr
-	}
-	if m.softDeleteKeep {
-		return nil
 	}
 	a, ok := m.byID[id]
 	if !ok {
@@ -370,31 +366,6 @@ func TestUploadService_SignFailure_DeleteFails_AfterSoftDelete(t *testing.T) {
 	}
 	if len(cleanupOps) != 1 || cleanupOps[0] != "delete" {
 		t.Fatalf("cleanupOps=%v", cleanupOps)
-	}
-}
-
-func TestUploadService_SignFailure_ActiveAfterSoftDelete_KeepsBlob(t *testing.T) {
-	t.Parallel()
-	store := &memBlobStore{signErr: fmt.Errorf("sign boom")}
-	repo := &memAssetRepo{softDeleteKeep: true}
-	svc := &application.UploadService{
-		Assets: repo,
-		Store:  store,
-		IDs:    testutil.NewSeqGenerator("up"),
-		Clock:  testutil.NewFakeClock(time.Now().UTC()),
-	}
-	_, err := svc.Create(context.Background(), jpegN(t, 300))
-	if err == nil || !strings.Contains(err.Error(), "signed url") || !strings.Contains(err.Error(), "sign boom") || strings.Contains(err.Error(), "blob delete failed") {
-		t.Fatalf("err=%v", err)
-	}
-	if store.deletes != 0 {
-		t.Fatalf("must not Delete blob when the row stays active, deletes=%d", store.deletes)
-	}
-	if len(store.objects) != 1 {
-		t.Fatalf("blob must remain, objects=%d", len(store.objects))
-	}
-	if _, ok, _ := repo.GetByID(context.Background(), "up-0001"); !ok {
-		t.Fatal("row must stay active")
 	}
 }
 

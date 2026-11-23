@@ -9,7 +9,7 @@
 
 The `integration.sync.metaldogs.retention_sweep` scheduler task is still O2. It is not registered. The policy table in `docs/architecture/domain-model.md` is the target. E4a ([CR-32](../cr-rounds/CR-32-e4a-order-design-snapshot.md)) already answers "may this asset be deleted?" with `AssetsReferencedBySnapshots`: a row in `metaldogs_order_design_snapshots` whose `artwork_asset_id` or `production_asset_id` is that asset is left active and logged once as `metaldogs.retention.asset_kept` (`path`, `asset_id`). Fulfilment status is not consulted. The after-`shipped` grace stays in O2.
 
-O2's sweep calls `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns`. Those functions already skip snapshot-referenced assets. O2 does not add a second deletion of the same rows. With `plugins.metaldogs.order_snapshot.enabled` false, no snapshot rows are written, so this skip stays idle.
+O2's sweep calls only `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns`. Those functions already skip snapshot-referenced assets. O2 does not add its own `UPDATE` of `deleted_at` on the same rows. With `plugins.metaldogs.order_snapshot.enabled` false, no snapshot rows are written, so this skip stays idle.
 
 ## Routine checks
 

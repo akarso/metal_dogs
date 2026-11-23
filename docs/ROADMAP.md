@@ -520,7 +520,7 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 #### O2 · Retention and deletion — size M
 
 - **Goal:** Scheduler job enforces policy: unattached uploads (hours), source photos of unordered designs (days), unordered designs (days), ordered artwork (kept until fulfilled + N days, then source deleted, approved/production artwork retained per legal/warranty policy); GDPR delete request hook removes customer-linked assets; every deletion logged (ids only).
-- **Entry:** Call `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns` (E4a, [CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)). O2 schedules them and applies policy, including after `shipped`. It does not add another soft-delete of those rows.
+- **Entry:** The only retention deletion paths are `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns` (E4a, [CR-32](cr-rounds/CR-32-e4a-order-design-snapshot.md)). O2 schedules those three and applies policy, including after `shipped`, by calling them. It does not add its own `UPDATE` of `deleted_at` on the same rows. The GDPR hook in the goal is separate from that sweep.
 - **Tests:** Unit: policy decision table; feature: sweep deletes exactly the expected rows/objects; ordered designs never swept.
 - **Safe delivery:** Dry-run mode first (logs what would be deleted), then enable.
 - **Docs:** runbook `asset-retention-and-deletion.md`; policy table in `architecture/domain-model.md`.

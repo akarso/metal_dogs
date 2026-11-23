@@ -175,13 +175,6 @@ func (s *UploadService) Create(ctx context.Context, raw []byte) (UploadResult, e
 			s.cleanupErr("soft_delete", id, key, softErr)
 			return UploadResult{}, fmt.Errorf("upload: signed url: %w (soft-delete failed: %v)", err, softErr)
 		}
-		// SoftDelete leaves a snapshot-referenced row active; do not remove its blob.
-		if _, stillActive, getErr := s.Assets.GetByID(ctx, id); getErr != nil {
-			s.cleanupErr("get", id, key, getErr)
-			return UploadResult{}, fmt.Errorf("upload: signed url: %w (asset lookup failed: %v)", err, getErr)
-		} else if stillActive {
-			return UploadResult{}, fmt.Errorf("upload: signed url: %w", err)
-		}
 		if delErr := s.Store.Delete(ctx, key); delErr != nil {
 			s.cleanupErr("delete", id, key, delErr)
 			return UploadResult{}, fmt.Errorf("upload: signed url: %w (blob delete failed: %v)", err, delErr)

@@ -50,11 +50,11 @@ No scheduler and no sweep were added. Nothing calls the three retention function
 | Asset cleanup | `postgres.CleanupDueAssets` | Active assets with `delete_after <= now` | Snapshot artwork and production ids |
 | Unattached upload cleanup | `postgres.CleanupUnattachedUploads` | That set where `owner_ref` is null | Same |
 | Design expiry | `postgres.ExpireDesigns` | Assets of designs past `expires_at` in `draft`, `generating`, `generation_failed`, `preview_ready`, `approved` (the expires index). Design becomes `expired` | Same. `ordered` designs are not selected |
-| Compensating soft-delete | `AssetRepo.SoftDelete` (upload sign-failure cleanup, clone cleanup) | The named asset, then its blob only if the row is no longer active | Same |
+| Compensating soft-delete | `AssetRepo.SoftDelete` (upload sign-failure cleanup, clone cleanup) | The asset id minted in that request, then its blob. `SoftDelete` failure leaves the blob | Same. A snapshot cannot name that id yet, so cleanup does not re-read the row |
 | Replace source | `DesignRepo.ReplaceSource` → `softDeleteAsset` | Previous source asset and, when the row was marked deleted, its blob | Same. The replace transaction does not commit while the old row is still the live source |
 | Replace live asset | `GenerationJobRepo.PersistArtwork`, `CompleteSuccess`, `FinalizeSuccess` → `softDeleteLiveAssetType` | Previous live asset of that owner and type, then its blob | Same |
 
-Searched `deleted_at`, `delete_after`, and design expiry handling under `plugins/metaldogs`. Those three functions were not in the tree; this ticket added them so every deletion decision goes through one helper. Nothing schedules them. O2 calls `CleanupDueAssets`, `CleanupUnattachedUploads`, and `ExpireDesigns` and does not write a second soft-delete of the same rows. Scheduling and the post-`shipped` policy stay in O2. `delete_after` updates that only move the clock are not deletion paths.
+Searched `deleted_at`, `delete_after`, and design expiry handling under `plugins/metaldogs`. Those three functions were not in the tree; this ticket added them so every deletion decision goes through one helper. Nothing schedules them. Those three are the only retention deletion paths. O2 calls them and does not add its own `UPDATE` of `deleted_at` on the same rows. Scheduling and the post-`shipped` policy stay in O2. `delete_after` updates that only move the clock are not deletion paths.
 
 `partitionSnapshotAssets` takes `SELECT … FOR UPDATE` on the asset rows (`ORDER BY id`) before `AssetsReferencedBySnapshots`. Every deletion path calls that helper, including `AssetRepo.SoftDelete` and `softDeleteAsset` (`ReplaceSource`). `CommitOrder` and `FillProduction` take `FOR SHARE` on the live asset rows they are about to reference, in the same transaction as the write, so a snapshot commit cannot land between the check and `deleted_at`. A missing or already soft-deleted asset fails the snapshot write and leaves the order unchanged.
 
@@ -104,6 +104,6 @@ Seam: run `snapshot_order_design` for an `order_id` on isolated Postgres with th
 
 - E4b: adapter and one real checkout test, after the pin that contains both Shopanda changes. Flag stays off until that adapter is bound.
 - G5: call `FillSnapshotProduction` when a version becomes `ready`.
-- O2: schedule the three deletion functions and decide the after-`shipped` grace.
+- O2: schedule `CleanupDueAssets`, `CleanupUnattachedUploads`, and `ExpireDesigns`. Those are the only retention deletion paths. Do not add a separate `UPDATE` of `deleted_at`. Decide the after-`shipped` grace.
 - O5: exercise `docs/runbooks/order-without-design-snapshot.md` and replace "Last exercised: never".
 - E5 / E6: admin read and confirmation thumbnail. Out of E4a.
