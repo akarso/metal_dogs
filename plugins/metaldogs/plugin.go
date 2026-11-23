@@ -9,6 +9,7 @@ import (
 
 	"github.com/akarso/shopanda/pkg/extapi"
 	"github.com/akarso/shopanda/pkg/pluginsdk"
+	"github.com/akarso/shopanda/plugins/metaldogs/adapters/hostorders"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
@@ -222,6 +223,9 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 	}
 	p.orderSnapshotEnabled = settings.OrderSnapshotEnabled
 	if settings.OrderSnapshotEnabled {
+		// Host.Orders is closed until this plugin declares CapOrders.
+		h.Require(pluginsdk.CapOrders)
+		p.orderSource = hostorders.FromHost(h)
 		if err := registerSnapshotOrder(syncAPI, p); err != nil {
 			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
 		}

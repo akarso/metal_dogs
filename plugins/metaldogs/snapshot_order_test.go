@@ -70,7 +70,13 @@ func TestSnapshotOrder_FlagOnRegistersManualAndDispatcher(t *testing.T) {
 	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
 	p := initMetalDogs(t, app)
 	if p.OrderSource() != nil {
-		t.Fatal("flag on must not bind an order source")
+		t.Fatal("flag on without Host.Orders must leave the source nil")
+	}
+	err := findSnapshotHandler(t, app)(context.Background(), extapi.SyncJobContext{
+		Payload: map[string]interface{}{"order_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "order source is not bound") {
+		t.Fatalf("fail-closed: %v", err)
 	}
 	var manual, event bool
 	for _, sj := range app.SyncJobs() {
@@ -95,6 +101,31 @@ func TestSnapshotOrder_FlagOnRegistersManualAndDispatcher(t *testing.T) {
 	}
 	if !manual || !event {
 		t.Fatalf("manual=%v event=%v", manual, event)
+	}
+}
+
+func TestSnapshotOrder_FlagOnBindsHostOrders(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
+	if err := app.BindOrdersPort(pluginsdk.NewOrdersPort(idleOrderRepo{})); err != nil {
+		t.Fatal(err)
+	}
+	p := initMetalDogs(t, app)
+	if p.OrderSource() == nil {
+		t.Fatal("flag on with Host.Orders bound must set the order source")
+	}
+}
+
+func TestSnapshotOrder_FlagOffIgnoresHostOrders(t *testing.T) {
+	t.Parallel()
+	app := testApp(t, true)
+	if err := app.BindOrdersPort(pluginsdk.NewOrdersPort(idleOrderRepo{})); err != nil {
+		t.Fatal(err)
+	}
+	p := initMetalDogs(t, app)
+	if p.OrderSource() != nil {
+		t.Fatal("flag off must leave the order source unset")
 	}
 }
 

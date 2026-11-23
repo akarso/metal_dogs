@@ -102,6 +102,23 @@ func (o *reconcileOrderStub) Lines(_ context.Context, orderID string) ([]ports.O
 	return o.lines[orderID], nil
 }
 
+func (o *reconcileOrderStub) LinesForOrders(ctx context.Context, orderIDs []string) (map[string][]ports.OrderLine, error) {
+	out := map[string][]ports.OrderLine{}
+	for _, id := range orderIDs {
+		if _, known := o.lines[id]; !known {
+			if _, failed := o.lineErr[id]; !failed {
+				continue
+			}
+		}
+		lines, err := o.Lines(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = lines
+	}
+	return out, nil
+}
+
 func (o *reconcileOrderStub) ListCreatedSince(_ context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	o.lists++
 	if limit <= 0 {

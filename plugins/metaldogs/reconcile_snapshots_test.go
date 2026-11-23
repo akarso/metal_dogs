@@ -353,6 +353,15 @@ func (o *listingOrders) ListCreatedSince(ctx context.Context, since time.Time, a
 	return o.inner.ListCreatedSince(ctx, since, afterID, limit)
 }
 
+func (o *listingOrders) LinesForOrders(ctx context.Context, orderIDs []string) (map[string][]ports.OrderLine, error) {
+	for _, id := range orderIDs {
+		if err := o.fail[id]; err != nil {
+			return nil, err
+		}
+	}
+	return o.inner.LinesForOrders(ctx, orderIDs)
+}
+
 func runReconcile(t *testing.T, reg *plugin.Registry, args []string) (string, error) {
 	t.Helper()
 	cmd, ok := reg.CLIRegistry().Get(metaldogs.CommandSnapshots)
