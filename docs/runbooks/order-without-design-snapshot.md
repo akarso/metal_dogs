@@ -47,45 +47,45 @@ Do not `INSERT` or `UPDATE` `metaldogs_order_design_snapshots` by hand. The tabl
 
    - E4a, no `OrderSource` bound. Exits `metaldogs:snapshots reconcile: metaldogs reconcile: order source is not bound` and prints nothing:
 
-```bash
-./app metaldogs:snapshots reconcile
-```
+     ```bash
+     ./app metaldogs:snapshots reconcile
+     ```
 
    - `--order` is the same exit and still prints nothing:
 
-```bash
-./app metaldogs:snapshots reconcile --order=<order_id>
-```
+     ```bash
+     ./app metaldogs:snapshots reconcile --order=<order_id>
+     ```
 
    - `--fix` while `plugins.metaldogs.order_snapshot.enabled` is false is refused (`metaldogs:snapshots reconcile: --fix refused while plugins.metaldogs.order_snapshot.enabled is false`), including when no source is bound:
 
-```bash
-./app metaldogs:snapshots reconcile --fix
-```
+     ```bash
+     ./app metaldogs:snapshots reconcile --fix
+     ```
 
    - Report, only after a source is bound. Orders created in the last 30 days:
 
-```bash
-./app metaldogs:snapshots reconcile
-```
+     ```bash
+     ./app metaldogs:snapshots reconcile
+     ```
 
    - `--order` inspects that id even when it is older than 30 days and does not scan the rest:
 
-```bash
-./app metaldogs:snapshots reconcile --order=<order_id>
-```
+     ```bash
+     ./app metaldogs:snapshots reconcile --order=<order_id>
+     ```
 
    - `--fix` (flag must be true) enqueues `snapshot_order_design` (one job id per order; repeating `--fix` is safe) and skips lines whose reason starts with `inspect_failed`:
 
-```bash
-./app metaldogs:snapshots reconcile --order=<order_id> --fix
-```
+     ```bash
+     ./app metaldogs:snapshots reconcile --order=<order_id> --fix
+     ```
 
    - Cron `integration.sync.metaldogs.reconcile_snapshots` (`@every 5m`) is registered only when the flag is on. In E4a it fails every run (`order source is not bound`), logs `metaldogs.reconcile_snapshots.failed`, and emits no `metaldogs.reconcile_snapshots.gap` line. With a source bound it logs that gap line, does not insert snapshots or enqueue jobs, and sets production asset and checksum once if they are still NULL and the version is `ready`. `inspect_failed` on one order does not drop the other lines. There is no separate cron command; the row is this type:
 
-```bash
-./app jobs:list --type=integration.sync.metaldogs.reconcile_snapshots --limit=20
-```
+     ```bash
+     ./app jobs:list --type=integration.sync.metaldogs.reconcile_snapshots --limit=20
+     ```
 2. Job failing repeatedly → read the error; typical causes are a missing variant SKU mapping or a design in an unexpected status. Fix the cause, re-run.
 3. Design version missing because the customer's design was never approved but the line passed validation → bug in the cart hook/checkout step; escalate, add regression test, and contact the customer to re-approve or refund through Shopanda.
 4. Assets deleted by retention → restore from backup if within window; otherwise contact customer and refund.

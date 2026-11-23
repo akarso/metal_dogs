@@ -127,7 +127,7 @@ sequenceDiagram
 
 | Guarantee | Mechanism |
 | --- | --- |
-| Order always references the exact approved artwork | `DesignVersion` frozen at approval with checksum; snapshot copies version fields; assets referenced by a snapshot are excluded from retention until fulfilment completes |
+| Order always references the exact approved artwork | `DesignVersion` frozen at approval with checksum; snapshot copies version fields; assets referenced by a snapshot are excluded from retention until fulfilment completes. In E4a every snapshot reference protects the asset regardless of fulfilment (`AssetsReferencedBySnapshots`); the policy after `shipped` is O2 |
 | Later template or prompt changes do not affect orders | Designs pin `template_version`; templates are versioned and immutable once published; snapshots copy the version number |
 | One snapshot per order line | Unique `(order_id, variant_id)`; insert is `ON CONFLICT DO NOTHING`. A repeated `order.created` is a second dispatcher job and the same snapshot job (see Event delivery) |
 | Snapshot eventually exists even if the event is lost | Once an `OrderSource` is bound, cron `reconcile_snapshots` logs `metaldogs.reconcile_snapshots.gap` and does not enqueue. No alert is configured on that line. In E4a the flag is off, so the cron is not registered; with the flag on and no source it fails every run and logs no gap. `metaldogs:snapshots reconcile --fix` enqueues `snapshot_order_design` once per affected order (UUID v5 job id) only when the flag is on and a source is bound |
