@@ -192,6 +192,43 @@ func TestPlugin_Init_CooldownSecondsBounds(t *testing.T) {
 	}
 }
 
+func TestPlugin_Init_ProductionSpec(t *testing.T) {
+	t.Parallel()
+	log := logger.NewWithWriter(io.Discard, "error")
+	incomplete := &plugin.App{
+		Logger: log,
+		Bus:    event.NewBus(log),
+		Config: &config.Config{Plugins: metalDogsPlugins(true, map[string]string{
+			"production_spec.width_px": "32",
+		})},
+	}
+	err := pluginsdk.Adapt(metaldogs.New()).Init(incomplete)
+	if err == nil || !strings.Contains(err.Error(), "production_spec.height_px") {
+		t.Fatalf("Init err = %v", err)
+	}
+
+	app := &plugin.App{
+		Logger: log,
+		Bus:    event.NewBus(log),
+		Config: &config.Config{Plugins: metalDogsPlugins(true, map[string]string{
+			"production_spec.width_px":             "32",
+			"production_spec.height_px":            "32",
+			"production_spec.dpi":                  "72",
+			"production_spec.require_transparency": "false",
+			"production_spec.color_profile":        "srgb",
+			"production_spec.upscale_policy":       "reject",
+		})},
+	}
+	app.RegisterMediaStorage(&fakeSigned{})
+	app.SetPermissionRegistry(rbac.NewRegistry())
+	reg := plugin.NewRegistry(log)
+	reg.Register(pluginsdk.Adapt(metaldogs.New()))
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("complete spec InitAll = %+v", summary)
+	}
+}
+
 func TestPlugin_Init_WithoutMedia_RoutesRegisteredMediaResolvedLazily(t *testing.T) {
 	t.Parallel()
 	reg := plugin.NewRegistry(logger.NewWithWriter(io.Discard, "error"))
