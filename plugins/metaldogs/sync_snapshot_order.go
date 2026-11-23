@@ -17,11 +17,13 @@ import (
 const SnapshotOrderJobName = "snapshot_order_design"
 
 // SnapshotOrderDispatchJobName is the order.created job that only enqueues the snapshot.
-// Dispatch stays short: the snapshot job id is UUID v5 of the order id (WithEventJobID is not used).
 const SnapshotOrderDispatchJobName = "dispatch_snapshot_order"
 
 // snapshotOrderNamespace is the UUID v5 namespace for snapshot_order_design job ids.
 var snapshotOrderNamespace = uuid.MustParse("0e4a0000-0000-4000-8000-0000000000e4")
+
+// dispatchOrderNamespace is separate: queue job ids are global, so the dispatcher cannot share the snapshot id.
+var dispatchOrderNamespace = uuid.MustParse("0e4b0000-0000-4000-8000-0000000000e4")
 
 // SnapshotOrderJobID is the UUID v5 of orderID. Two enqueues of one order share it.
 // A parseable id is hashed in canonical form, so letter case does not split the job.
@@ -40,7 +42,28 @@ func registerSnapshotOrder(reg *pluginsdk.SyncJobs, p *Plugin) error {
 	if err := reg.RegisterManual(SnapshotOrderJobName, p.snapshotOrderHandler()); err != nil {
 		return err
 	}
-	return reg.RegisterOnEvent(SnapshotOrderDispatchJobName, extapi.EventOrderCreated, p.snapshotOrderDispatchHandler())
+	return reg.RegisterOnEvent(SnapshotOrderDispatchJobName, extapi.EventOrderCreated, p.snapshotOrderDispatchHandler(), pluginsdk.WithEventJobID(dispatchSnapshotEventJobID))
+}
+
+// DispatchSnapshotOrderJobID is the UUID v5 of the dispatcher job type and orderID.
+// A blank order id returns "" so enqueue fails closed: NewSyncJobEnvelopeWithID rejects a non-UUID.
+func DispatchSnapshotOrderJobID(orderID string) string {
+	id := strings.TrimSpace(orderID)
+	if id == "" {
+		return ""
+	}
+	if parsed, err := uuid.Parse(id); err == nil {
+		id = parsed.String()
+	}
+	jobType, err := extapi.SyncJobType(PluginName, SnapshotOrderDispatchJobName)
+	if err != nil {
+		return ""
+	}
+	return uuid.NewSHA1(dispatchOrderNamespace, []byte(jobType+"\x00"+id)).String()
+}
+
+func dispatchSnapshotEventJobID(payload map[string]interface{}) string {
+	return DispatchSnapshotOrderJobID(orderIDFromSnapshotPayload(payload))
 }
 
 func (p *Plugin) snapshotOrderDispatchHandler() extapi.SyncJobHandler {

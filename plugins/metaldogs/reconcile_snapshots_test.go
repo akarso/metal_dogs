@@ -123,6 +123,8 @@ func TestReconcileSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	linesBefore := listed.lineCalls
+	batchesBefore := listed.batches
 	out, err := runReconcile(t, reg, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +145,9 @@ func TestReconcileSnapshots(t *testing.T) {
 	if strings.Count(out, "order_id="+missingOrder) != 1 {
 		t.Fatalf("report %q", out)
 	}
+	if listed.lists != 1 || listed.batches != batchesBefore+1 || listed.lineCalls != linesBefore {
+		t.Fatalf("sweep lists=%d batches=%d lines=%d (before batches=%d lines=%d)", listed.lists, listed.batches, listed.lineCalls, batchesBefore, linesBefore)
+	}
 	heldSnap, ok, err := snaps.Get(ctx, heldOrder, heldVariant)
 	if err != nil || !ok {
 		t.Fatal(err)
@@ -159,8 +164,8 @@ func TestReconcileSnapshots(t *testing.T) {
 	if !strings.Contains(narrow, wantLine) || strings.Contains(narrow, heldOrder) {
 		t.Fatalf("narrow %q", narrow)
 	}
-	if listed.lists != listsBefore {
-		t.Fatalf("scoped reconcile listed orders: before=%d after=%d", listsBefore, listed.lists)
+	if listed.lists != listsBefore || listed.batches != batchesBefore+1 || listed.lineCalls != linesBefore+1 {
+		t.Fatalf("scoped lists=%d batches=%d lines=%d", listed.lists, listed.batches, listed.lineCalls)
 	}
 	staleOut, err := runReconcile(t, reg, []string{"--order=" + staleOrder})
 	if err != nil || !strings.Contains(staleOut, staleOrder+"/"+staleVariant) || !strings.Contains(staleOut, application.ReconcileReasonMissing) {
@@ -183,6 +188,20 @@ func TestReconcileSnapshots(t *testing.T) {
 	}
 	if n := countJobID(t, db, jobID); n != 1 {
 		t.Fatalf("jobs after repeat=%d", n)
+	}
+	alsoOrder := uuid.NewString()
+	alsoVariant := uuid.NewString()
+	src.Add(alsoOrder, created, []ports.OrderLine{{
+		VariantID: alsoVariant, SKU: "TEE-S", Quantity: 1, DesignID: missingSeed.Design.ID,
+	}})
+	if _, err := runReconcile(t, reg, []string{"--fix"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := countJobID(t, db, metaldogs.SnapshotOrderJobID(alsoOrder)); n != 1 {
+		t.Fatalf("second order jobs=%d", n)
+	}
+	if n := countJobID(t, db, jobID); n != 1 {
+		t.Fatalf("first order jobs=%d", n)
 	}
 
 	appOff := testApp(t, true)
@@ -336,12 +355,15 @@ func TestReconcileSnapshots(t *testing.T) {
 }
 
 type listingOrders struct {
-	inner ports.OrderSource
-	fail  map[string]error
-	lists int
+	inner     ports.OrderSource
+	fail      map[string]error
+	lists     int
+	batches   int
+	lineCalls int
 }
 
 func (o *listingOrders) Lines(ctx context.Context, orderID string) ([]ports.OrderLine, error) {
+	o.lineCalls++
 	if err := o.fail[orderID]; err != nil {
 		return nil, err
 	}
@@ -354,6 +376,7 @@ func (o *listingOrders) ListCreatedSince(ctx context.Context, since time.Time, a
 }
 
 func (o *listingOrders) LinesForOrders(ctx context.Context, orderIDs []string) (map[string][]ports.OrderLine, error) {
+	o.batches++
 	for _, id := range orderIDs {
 		if err := o.fail[id]; err != nil {
 			return nil, err

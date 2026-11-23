@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -86,6 +87,116 @@ func TestReconcileRun_WindowDirectInspectAndPending(t *testing.T) {
 	if orders.lists != 0 {
 		t.Fatalf("scoped run listed %d", orders.lists)
 	}
+}
+
+func TestReconcileRun_PagesEachOrderOnce(t *testing.T) {
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	const n = reconcilePageSize + 1
+	ids := make([]string, n)
+	lines := make(map[string][]ports.OrderLine, n)
+	for i := range ids {
+		ids[i] = uuid.NewString()
+		lines[ids[i]] = []ports.OrderLine{{
+			VariantID: uuid.NewString(), SKU: "TEE-M", Quantity: 1, DesignID: "des-page",
+		}}
+	}
+	sort.Strings(ids)
+	orders := &pageOrderStub{ids: ids, when: now.Add(-time.Hour), lines: lines}
+	svc := &ReconcileSnapshots{
+		Orders:    orders,
+		Snapshots: reconcileSnapStub{},
+		Clock:     reconcileClock(now),
+	}
+	gaps, err := svc.Run(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, gap := range gaps {
+		seen[gap.OrderID]++
+		if gap.Reason != ReconcileReasonMissing {
+			t.Fatalf("%s %s", gap.OrderID, gap.Reason)
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("reported %d", len(seen))
+	}
+	for _, id := range ids {
+		if seen[id] != 1 {
+			t.Fatalf("%s count %d", id, seen[id])
+		}
+	}
+	if len(orders.lists) != 2 || len(orders.batches) != 2 {
+		t.Fatalf("lists=%d batches=%d", len(orders.lists), len(orders.batches))
+	}
+	if !orders.lists[0].since.Equal(orders.lists[1].since) || orders.lists[0].after != "" || orders.lists[1].after != ids[reconcilePageSize-1] {
+		t.Fatalf("cursors %+v want after %s", orders.lists, ids[reconcilePageSize-1])
+	}
+	if orders.lists[0].limit != reconcilePageSize || orders.lists[1].limit != reconcilePageSize {
+		t.Fatalf("limits %+v", orders.lists)
+	}
+	if len(orders.batches[0]) != reconcilePageSize || len(orders.batches[1]) != 1 || orders.lineCalls != 0 {
+		t.Fatalf("batch sizes %d %d lines %d", len(orders.batches[0]), len(orders.batches[1]), orders.lineCalls)
+	}
+
+	orders.lists = nil
+	orders.batches = nil
+	one, err := svc.Run(context.Background(), ids[0])
+	if err != nil || len(one) != 1 || one[0].OrderID != ids[0] {
+		t.Fatalf("err=%v gaps=%+v", err, one)
+	}
+	if len(orders.lists) != 0 || len(orders.batches) != 0 || orders.lineCalls != 1 {
+		t.Fatalf("scoped lists=%d batches=%d lines=%d", len(orders.lists), len(orders.batches), orders.lineCalls)
+	}
+}
+
+type pageListCall struct {
+	since time.Time
+	after string
+	limit int
+}
+
+type pageOrderStub struct {
+	ids       []string
+	when      time.Time
+	lines     map[string][]ports.OrderLine
+	lists     []pageListCall
+	batches   [][]string
+	lineCalls int
+}
+
+func (o *pageOrderStub) Lines(_ context.Context, orderID string) ([]ports.OrderLine, error) {
+	o.lineCalls++
+	return o.lines[orderID], nil
+}
+
+func (o *pageOrderStub) LinesForOrders(_ context.Context, orderIDs []string) (map[string][]ports.OrderLine, error) {
+	o.batches = append(o.batches, append([]string(nil), orderIDs...))
+	out := make(map[string][]ports.OrderLine, len(orderIDs))
+	for _, id := range orderIDs {
+		if lines, ok := o.lines[id]; ok {
+			out[id] = lines
+		}
+	}
+	return out, nil
+}
+
+func (o *pageOrderStub) ListCreatedSince(_ context.Context, since time.Time, afterID string, limit int) ([]string, error) {
+	o.lists = append(o.lists, pageListCall{since: since, after: afterID, limit: limit})
+	var out []string
+	for _, id := range o.ids {
+		if o.when.Before(since) {
+			continue
+		}
+		if afterID != "" && id <= afterID {
+			continue
+		}
+		out = append(out, id)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 type reconcileOrderStub struct {

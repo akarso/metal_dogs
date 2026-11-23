@@ -97,6 +97,24 @@ func TestSnapshotOrder_FlagOnRegistersManualAndDispatcher(t *testing.T) {
 			if sj.Job.Trigger.Kind != extapi.SyncTriggerEvent || sj.Job.Trigger.EventName != extapi.EventOrderCreated {
 				t.Fatalf("dispatch trigger %+v", sj.Job.Trigger)
 			}
+			if sj.Job.EventJobID == nil {
+				t.Fatal("dispatcher has no event job id")
+			}
+			if got := sj.Job.EventJobID(nil); got != "" {
+				t.Fatalf("nil payload %q", got)
+			}
+			if got := sj.Job.EventJobID(map[string]interface{}{"order_id": "  "}); got != "" {
+				t.Fatalf("blank order id %q", got)
+			}
+			const orderID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+			got := sj.Job.EventJobID(map[string]interface{}{"order_id": orderID})
+			if got != metaldogs.DispatchSnapshotOrderJobID(orderID) || got == metaldogs.SnapshotOrderJobID(orderID) {
+				t.Fatalf("dispatch id %s snapshot %s", got, metaldogs.SnapshotOrderJobID(orderID))
+			}
+			parsed, err := uuid.Parse(got)
+			if err != nil || parsed.Version() != 5 {
+				t.Fatalf("id %s err %v", got, err)
+			}
 		}
 	}
 	if !manual || !event {
@@ -470,6 +488,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			}
 		}
 		dispatchType := "integration.sync.metaldogs.dispatch_snapshot_order"
+		wantDispatchID := metaldogs.DispatchSnapshotOrderJobID(orderID)
 		deadline := time.Now().Add(2 * time.Second)
 		var n int
 		var sample string
@@ -481,17 +500,27 @@ func TestSnapshotOrder_Job(t *testing.T) {
 			`, dispatchType, orderID).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
-			if n >= 2 || time.Now().After(deadline) {
+			if n > 1 || time.Now().After(deadline) {
 				break
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		if n != 2 {
+		if n != 1 {
 			_ = db.QueryRowContext(ctx, `
 				SELECT coalesce(payload::text, '') FROM jobs
 				WHERE type = $1 ORDER BY created_at DESC LIMIT 1
 			`, dispatchType).Scan(&sample)
 			t.Fatalf("dispatcher jobs=%d payload=%s", n, sample)
+		}
+		var gotDispatchID string
+		if err := db.QueryRowContext(ctx, `
+			SELECT id FROM jobs
+			WHERE type = $1 AND payload->'payload'->>'order_id' = $2
+		`, dispatchType, orderID).Scan(&gotDispatchID); err != nil {
+			t.Fatal(err)
+		}
+		if gotDispatchID != wantDispatchID || gotDispatchID == metaldogs.SnapshotOrderJobID(orderID) {
+			t.Fatalf("dispatch id %s want %s snapshot %s", gotDispatchID, wantDispatchID, metaldogs.SnapshotOrderJobID(orderID))
 		}
 		worker := platformjobs.NewWorker(queue, log, time.Millisecond)
 		if err := integration.RegisterSyncJobHandlers(app, worker); err != nil {
