@@ -63,4 +63,4 @@ Same sixteen paths as [CR-31](CR-31-upg10-pin-c25f3e7e.md). No path was added.
 - `cmd/api/order_port_extensions.go` attaches the value reader for serve and worker.
 - No change in this range to `plugin.App` registration, `plugin.Migrator`, cart, media storage, or the shipment updater.
 
-E4b is not done.
+E4b was not done in this pin bump. The adapter closed in [CR-34](CR-34-e4b-order-source.md).
