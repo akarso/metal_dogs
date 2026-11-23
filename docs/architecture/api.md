@@ -322,7 +322,7 @@ Bearer handling matches Designs (C3): an owner token has no dots, so `AuthMiddle
 
 The field is public, plugin-only write, snapshot storage, UUID-shaped. The trusted-write context is created only around `AddItem`. `EnsureStorefrontCart` and `CatalogPort.FindVariants` run without that grant. The field code and the trust marker are fixed in code.
 
-Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line at checkout, before `order.created` at this pin. E4a does not read that copy. A real order gets a snapshot only in E4b, which is not done. This route does not create the order snapshot. An `ordered` design stays `409` `invalid_transition` here; re-order is clone, then approve.
+Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line at checkout, before `order.created` at this pin. E4b reads that copy through `Host.Orders()` when the flag is on ([CR-34](../cr-rounds/CR-34-e4b-order-source.md)). The flag defaults off. This route does not create the order snapshot. An `ordered` design stays `409` `invalid_transition` here; re-order is clone, then approve.
 
 ### Errors
 
