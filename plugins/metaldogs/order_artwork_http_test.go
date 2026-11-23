@@ -106,7 +106,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 	h := mountArtworkAdmin(t, app)
 
 	status, body := artworkDo(h, "", orderFull)
-	if status != http.StatusUnauthorized || strings.Contains(body, "http") || strings.Contains(body, "private/blobs") {
+	if status != http.StatusUnauthorized || !strings.Contains(body, `"code":"unauthorized"`) || strings.Contains(body, "plugin.metaldogs") || strings.Contains(body, "http") || strings.Contains(body, "private/blobs") {
 		t.Fatalf("anon status=%d body=%s", status, body)
 	}
 

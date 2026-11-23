@@ -15,18 +15,13 @@ const (
 	artworkInvalidOrderCode = "plugin.metaldogs.invalid_order_id"
 	artworkNotFoundCode     = "plugin.metaldogs.order_not_found"
 	artworkUnavailableCode  = "plugin.metaldogs.artwork_unavailable"
-	artworkUnauthenticated  = "plugin.metaldogs.unauthenticated"
 )
 
 // OrderArtwork is GET /api/v1/admin/orders/{order_id}/artwork.
-// The actor is the staff user id already on the request (pluginsdk.CustomerID).
+// Actor is pluginsdk.CustomerID. RequirePermission on the admin route returns 401 for guests before this handler runs.
 func OrderArtwork(open func() (*application.OrderArtworkAccess, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor := pluginsdk.CustomerID(r)
-		if actor == "" {
-			writeArtworkError(w, http.StatusUnauthorized, artworkUnauthenticated, "authentication required")
-			return
-		}
 		svc, err := open()
 		if err != nil || svc == nil {
 			writeArtworkError(w, http.StatusServiceUnavailable, artworkUnavailableCode, "order artwork access failed")
