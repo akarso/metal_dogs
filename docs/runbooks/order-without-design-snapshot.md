@@ -92,6 +92,15 @@ Do not `INSERT` or `UPDATE` `metaldogs_order_design_snapshots` by hand. The tabl
 
 Irreversible: refunds and customer communication. Never insert snapshot rows by hand. See "What a terminal-failed job means".
 
+## Before turning the flag on
+
+M3 sets `plugins.metaldogs.order_snapshot.enabled`. This slice leaves it false. Check these first:
+
+1. The pin is `e062d4d3` or later. `OrderPort` has `Lines`, `LinesForOrders`, and `ListCreatedSince`. `finishCreatedOrder` copies cart extensions, then publishes `order.created`. `pluginsdk.WithEventJobID` is present.
+2. `Host.Orders()` is present. `Init` calls `Require(CapOrders)` and `hostorders.FromHost`. If that port is absent the source stays nil and every snapshot job fails with `order source is not bound`.
+3. Migration `015` is applied (`metaldogs_order_design_snapshots`).
+4. Restart, then use the checks below. Do not insert snapshot rows by hand.
+
 ## With the flag on and the adapter bound
 
 `plugins.metaldogs.order_snapshot.enabled` is true and `Host.Orders()` is present. `Init` requires `CapOrders` and sets `adapters/hostorders`.

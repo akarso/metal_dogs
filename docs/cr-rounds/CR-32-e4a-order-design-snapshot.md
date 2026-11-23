@@ -95,11 +95,11 @@ Seam: run `snapshot_order_design` for an `order_id` on isolated Postgres with th
 
 ## Documentation updated
 
-- [x] `docs/ROADMAP.md`: E4a **DONE** (CR-32). E4b listed as blocked on `OrderPort` lines/listing, `order.created` after the extension copy, and a pin bump. Known limits written. §1 rows for the extension copy and `order.created` match the pin.
-- [x] `docs/architecture/flows/checkout-snapshot-and-fulfillment.md`: delivery (event, one job per order, sweep), line key `(order_id, variant_id)`, event-before-copy caveat, two Shopanda changes. No claim that a real order is snapshotted.
+- [x] `docs/ROADMAP.md`: E4a **DONE** (CR-32). The adapter slice stayed open at this close. [CR-34](CR-34-e4b-order-source.md) marks it done. Known limits written. §1 rows for the extension copy and `order.created` match the pin.
+- [x] `docs/architecture/flows/checkout-snapshot-and-fulfillment.md` at this close: delivery (event, one job per order, sweep), line key `(order_id, variant_id)`, and the two Shopanda changes still open then. Current ordering and the adapter are [CR-34](CR-34-e4b-order-source.md). No claim that a real order is snapshotted while the flag is off.
 - [x] `docs/architecture/domain-model.md`: snapshot columns and the pair key. `docs/architecture/flows/design-to-order.md`: `ordered` keeps `409`; re-order is a clone.
 - [x] `docs/architecture/api.md`: add-to-cart does not read or write the order snapshot; `ordered` stays `409`.
-- [x] ADR-0005 status: implemented in E4a, not active (flag off, no real order source). Decision 4 states the line key. `docs/adr/README.md` matches.
+- [x] ADR-0005 status at this close: implemented in E4a, flag off. Decision 4 states the line key. Current status (E4b binds `Host.Orders()` when the flag is on; the flag still defaults off) is [CR-34](CR-34-e4b-order-source.md). `docs/adr/README.md` matches that status.
 - [x] `docs/runbooks/order-without-design-snapshot.md`: `metaldogs:snapshots reconcile`, `--fix`, `--order`, `jobs:list` types, terminal-failed means nothing written and the order is untouched, never insert rows by hand. Last exercised: never. `docs/runbooks/asset-retention-and-deletion.md`: the helper, unscheduled, after-`shipped` still O2.
 - [x] `plugins/metaldogs/README.md` and `docs/runbooks/README.md`. The plugin README does not say the unbound reconcile command prints a report. The runbook signal is `metaldogs.reconcile_snapshots.gap`; no alert is configured. Fulfilment docs name the line key `(order_id, variant_id)`. `AGENTS.md` already lists `metaldogs:snapshots reconcile`. `docs/README.md` and `storefront/README.md` unchanged.
 - [x] Safe delivery: flag off. Privacy: ids only on the snapshot logs.
