@@ -21,6 +21,7 @@ const (
 // Actor is pluginsdk.CustomerID. RequirePermission on the admin route returns 401 for guests before this handler runs.
 func OrderArtwork(open func() (*application.OrderArtworkAccess, error)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		actor := pluginsdk.CustomerID(r)
 		svc, err := open()
 		if err != nil || svc == nil {
@@ -52,6 +53,7 @@ func writeArtworkAccessError(w http.ResponseWriter, err error) {
 }
 
 func writeArtworkError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{

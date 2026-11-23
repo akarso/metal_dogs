@@ -105,12 +105,12 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 	p.SetSnapshotClock(clock)
 	h := mountArtworkAdmin(t, app)
 
-	status, body := artworkDo(h, "", orderFull)
+	status, body := artworkDo(t, h, "", orderFull)
 	if status != http.StatusUnauthorized || !strings.Contains(body, `"code":"unauthorized"`) || strings.Contains(body, "plugin.metaldogs") || strings.Contains(body, "http") || strings.Contains(body, "private/blobs") {
 		t.Fatalf("anon status=%d body=%s", status, body)
 	}
 
-	status, body = artworkDo(h, "test-token:manager-1:manager", orderFull)
+	status, body = artworkDo(t, h, "test-token:manager-1:manager", orderFull)
 	if status != http.StatusForbidden || strings.Contains(body, "http") || strings.Contains(body, artKey) {
 		t.Fatalf("manager status=%d body=%s", status, body)
 	}
@@ -118,7 +118,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 		t.Fatalf("refused call wrote %d audit rows", n)
 	}
 
-	status, body = artworkDo(h, "test-token:"+adminID+":admin", orderFull)
+	status, body = artworkDo(t, h, "test-token:"+adminID+":admin", orderFull)
 	if status != http.StatusOK {
 		t.Fatalf("admin status=%d body=%s", status, body)
 	}
@@ -158,7 +158,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 		t.Fatal("production url still valid after ttl")
 	}
 
-	status, body = artworkDo(h, "test-token:"+adminID+":admin", orderPreview)
+	status, body = artworkDo(t, h, "test-token:"+adminID+":admin", orderPreview)
 	if status != http.StatusOK || !strings.Contains(body, `"production":null`) {
 		t.Fatalf("preview status=%d body=%s", status, body)
 	}
@@ -177,7 +177,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 	}
 	assertAdminAudit(t, db, orderPreview, adminID, clock.Now(), []string{ports.ArtworkKindApproved})
 
-	status, body = artworkDo(h, "test-token:"+adminID+":admin", orderMissing)
+	status, body = artworkDo(t, h, "test-token:"+adminID+":admin", orderMissing)
 	if status != http.StatusNotFound || !strings.Contains(body, "plugin.metaldogs.order_not_found") {
 		t.Fatalf("missing status=%d body=%s", status, body)
 	}
@@ -185,7 +185,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 		t.Fatalf("missing audit %d", n)
 	}
 
-	status, body = artworkDo(h, "test-token:"+adminID+":admin", orderEmpty)
+	status, body = artworkDo(t, h, "test-token:"+adminID+":admin", orderEmpty)
 	if status != http.StatusOK {
 		t.Fatalf("empty status=%d body=%s", status, body)
 	}
@@ -200,7 +200,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 		t.Fatalf("empty audit %d", n)
 	}
 
-	status, body = artworkDo(h, "test-token:"+adminID+":admin", "not-a-uuid")
+	status, body = artworkDo(t, h, "test-token:"+adminID+":admin", "not-a-uuid")
 	if status != http.StatusBadRequest || !strings.Contains(body, "plugin.metaldogs.invalid_order_id") {
 		t.Fatalf("bad id status=%d body=%s", status, body)
 	}
@@ -212,7 +212,7 @@ func TestOrderArtworkAdminRoute(t *testing.T) {
 		_, _ = db.ExecContext(context.Background(), `ALTER TABLE metaldogs_artwork_access_log_blocked RENAME TO metaldogs_artwork_access_log`)
 	})
 	before := countAuditTable(t, db, "metaldogs_artwork_access_log_blocked", orderFull)
-	status, body = artworkDo(h, "test-token:"+adminID+":admin", orderFull)
+	status, body = artworkDo(t, h, "test-token:"+adminID+":admin", orderFull)
 	if status != http.StatusServiceUnavailable || !strings.Contains(body, "plugin.metaldogs.artwork_unavailable") {
 		t.Fatalf("audit failure status=%d body=%s", status, body)
 	}
@@ -261,13 +261,20 @@ func (artworkTokenParser) Parse(_ context.Context, token string) (identity.Ident
 	return identity.NewIdentity(parts[1], role)
 }
 
-func artworkDo(h http.Handler, token, orderID string) (int, string) {
+func artworkDo(t *testing.T, h http.Handler, token, orderID string) (int, string) {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orders/"+orderID+"/artwork", nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
+	switch rec.Code {
+	case http.StatusOK, http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable:
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Fatalf("Cache-Control %q status %d", cc, rec.Code)
+		}
+	}
 	return rec.Code, rec.Body.String()
 }
 

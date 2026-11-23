@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	domainorder "github.com/akarso/shopanda/internal/domain/order"
 	"github.com/akarso/shopanda/internal/platform/cli"
 	"github.com/akarso/shopanda/internal/platform/plugin"
 	"github.com/akarso/shopanda/pkg/extapi"
@@ -53,6 +54,47 @@ func TestOrderArtworkCommand_RegisteredOnlyWhenFlagOn(t *testing.T) {
 	if !ok || !cmd.RequiresDB {
 		t.Fatalf("flag on cli %+v", cmd)
 	}
+}
+
+func TestOrderArtworkCLI_OrdersBoundAfterInit(t *testing.T) {
+	db := testutil.OpenIsolated(t, "order_artwork_late_port")
+	const orderID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	app := testApp(t, true)
+	app.Bootstrap = &plugin.Bootstrap{DB: db}
+	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
+	reg := plugin.NewRegistry(app.Logger)
+	p := metaldogs.New()
+	reg.Register(pluginsdk.Adapt(p))
+	if summary := reg.InitAll(app); summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll %+v", summary)
+	}
+	if err := app.BindOrdersPort(pluginsdk.NewOrdersPort(foundOrderRepo{idleOrderRepo: idleOrderRepo{}, id: orderID})); err != nil {
+		t.Fatal(err)
+	}
+	p.SetAssetStore(&expiringStore{clock: testutil.NewFakeClock(time.Date(2026, 11, 23, 15, 0, 0, 0, time.UTC))})
+	out, err := runOrderArtwork(t, reg, &artworkCaptureLog{}, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view application.OrderArtwork
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.OrderID != orderID || len(view.Lines) != 0 {
+		t.Fatalf("view %+v", view)
+	}
+}
+
+type foundOrderRepo struct {
+	idleOrderRepo
+	id string
+}
+
+func (r foundOrderRepo) FindByID(_ context.Context, id string) (*domainorder.Order, error) {
+	if id != r.id {
+		return nil, nil
+	}
+	return &domainorder.Order{ID: id}, nil
 }
 
 func TestOrderArtworkCLI(t *testing.T) {

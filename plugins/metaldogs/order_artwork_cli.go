@@ -34,7 +34,7 @@ func (p *Plugin) runOrderArtwork(ctx pluginsdk.CLIContext, args []string) error 
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		return fmt.Errorf("%s: order_id required", CommandOrderArtwork)
 	}
-	if p.orderLookup == nil {
+	if _, err := p.resolveOrderLookup(); err != nil {
 		return fmt.Errorf("%s: order source is not bound", CommandOrderArtwork)
 	}
 	if p.assets == nil {
