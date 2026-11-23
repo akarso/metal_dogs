@@ -35,6 +35,7 @@ type Plugin struct {
 	syncJobNames         []string
 	jobs                 ports.JobAccess
 	orderSource          ports.OrderSource
+	orderLookup          ports.OrderLookup
 	snapshotClock        ports.Clock
 	orderSnapshotEnabled bool
 }
@@ -226,6 +227,10 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		// Host.Orders is closed until this plugin declares CapOrders.
 		h.Require(pluginsdk.CapOrders)
 		p.orderSource = hostorders.FromHost(h)
+		if lookup, ok := p.orderSource.(ports.OrderLookup); ok {
+			p.orderLookup = lookup
+		}
+		registerOrderArtworkCommand(h, p)
 		if err := registerSnapshotOrder(syncAPI, p); err != nil {
 			return fmt.Errorf("metaldogs plugin: snapshot_order_design: %w", err)
 		}

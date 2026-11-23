@@ -14,6 +14,12 @@ type OrderLine struct {
 	DesignID  string
 }
 
+// OrderLookup is order existence from Host.Orders().FindByID.
+// A nil view is not found. Lines cannot tell a missing order from an order with no lines.
+type OrderLookup interface {
+	Exists(ctx context.Context, orderID string) (bool, error)
+}
+
 // OrderSource is the plugin-owned view of orders.
 type OrderSource interface {
 	Lines(ctx context.Context, orderID string) ([]OrderLine, error)

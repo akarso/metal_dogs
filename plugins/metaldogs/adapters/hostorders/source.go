@@ -17,6 +17,7 @@ type Source struct {
 }
 
 var _ ports.OrderSource = (*Source)(nil)
+var _ ports.OrderLookup = (*Source)(nil)
 
 // New wraps a bound orders port. A nil port returns a nil source.
 func New(orders pluginsdk.OrderPort) ports.OrderSource {
@@ -39,6 +40,18 @@ func FromHost(h interface {
 		return nil
 	}
 	return New(orders)
+}
+
+// Exists reports whether FindByID returns an order. A nil view is not found.
+func (s *Source) Exists(ctx context.Context, orderID string) (bool, error) {
+	if s == nil || s.orders == nil {
+		return false, fmt.Errorf("metaldogs orders: port is not bound")
+	}
+	view, err := s.orders.FindByID(ctx, orderID)
+	if err != nil {
+		return false, err
+	}
+	return view != nil, nil
 }
 
 // Lines maps one order. An order the port does not return has no lines.

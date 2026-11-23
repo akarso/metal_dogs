@@ -18,10 +18,11 @@ import (
 
 // Command names registered by the Metal Dogs plugin.
 const (
-	CommandEval        = "metaldogs:eval"
-	CommandTemplates   = "metaldogs:templates"
-	CommandCatalogSeed = "metaldogs:catalog-seed"
-	CommandSnapshots   = "metaldogs:snapshots"
+	CommandEval         = "metaldogs:eval"
+	CommandTemplates    = "metaldogs:templates"
+	CommandCatalogSeed  = "metaldogs:catalog-seed"
+	CommandSnapshots    = "metaldogs:snapshots"
+	CommandOrderArtwork = "metaldogs:order-artwork"
 )
 
 func registerCLICommands(h pluginsdk.Host, p *Plugin) {
