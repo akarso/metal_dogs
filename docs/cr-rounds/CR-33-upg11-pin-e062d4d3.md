@@ -25,7 +25,7 @@ Merge-base of this branch and the previous pin is `c25f3e7e`.
 | File | Kept |
 | --- | --- |
 | `AGENTS.md` | Metal Dogs (`merge=ours`). Upstream added three plugin-recipe rows (`WithEventJobID`, `OrderPort` lines, `order.created` after the snapshot). That table is not in the product file. Build and test commands did not change. |
-| `PLUGINS.md` | Metal Dogs (`merge=ours`). Upstream added one `WithEventJobID` clause to the sync-job row. The product file does not have that clause. |
+| `PLUGINS.md` | Metal Dogs (`merge=ours`) for the row and the pinned-blob observability link. The pin's `WithEventJobID` clause is in the sync-job row. |
 | guides DEVELOPER.md | Deleted (modify/delete). Stub `docs/guides/README.md` stays |
 | guides SYNC_JOB_OBSERVABILITY.md | Deleted (modify/delete). Read it at the pin on GitHub |
 | `docs/phase-17-product-packaging/ROADMAP.md` | Deleted (modify/delete) |
@@ -43,7 +43,7 @@ No conflict under `internal/`, `pkg/`, or `cmd/api`. Those paths match the pin e
 
 `themes/default` is unchanged in this range. The product does not override those templates.
 
-`plugins/metaldogs` production code is unchanged. It does not call `Lines`, `LinesForOrders`, `ListCreatedSince`, or `WithEventJobID`. `orderIDFromSnapshotPayload` already reads a top-level `order_id` and falls back to `data.order_id`. The feature test counted dispatcher jobs under `payload->'payload'->'data'`. The pin stores a flattened event payload, so that count was 0 while the job row existed. The three queries in `snapshot_order_test.go` now use `payload->'payload'->>'order_id'`.
+`plugins/metaldogs` behaviour is unchanged. The dispatch comment records that `WithEventJobID` is unused and the snapshot job id stays UUID v5. It does not call `Lines`, `LinesForOrders`, `ListCreatedSince`, or `WithEventJobID`. `orderIDFromSnapshotPayload` already reads a top-level `order_id` and falls back to `data.order_id`. The feature test counted dispatcher jobs under `payload->'payload'->'data'`. The pin stores a flattened event payload, so that count was 0 while the job row existed. The three queries in `snapshot_order_test.go` now use `payload->'payload'->>'order_id'`.
 
 ### Allowlist after this bump
 
