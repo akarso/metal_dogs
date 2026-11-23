@@ -2,6 +2,7 @@
 -- Tracked as plugin:metaldogs:016_create_artwork_access_log.sql
 
 CREATE TABLE metaldogs_artwork_access_log (
+    id uuid PRIMARY KEY,
     order_id uuid NOT NULL,
     variant_id text NOT NULL,
     kind text NOT NULL CHECK (kind IN ('approved', 'production')),
@@ -9,6 +10,9 @@ CREATE TABLE metaldogs_artwork_access_log (
     channel text NOT NULL CHECK (channel IN ('admin', 'cli')),
     requested_at timestamptz NOT NULL
 );
+
+CREATE INDEX metaldogs_artwork_access_log_order_id_idx
+    ON metaldogs_artwork_access_log (order_id, requested_at);
 
 CREATE OR REPLACE FUNCTION metaldogs_artwork_access_log_append_only()
 RETURNS trigger

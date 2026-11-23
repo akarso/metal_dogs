@@ -69,9 +69,9 @@ func appendArtworkAccess(ctx context.Context, tx *sql.Tx, e ports.ArtworkAccessE
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO metaldogs_artwork_access_log (
-			order_id, variant_id, kind, actor, channel, requested_at
-		) VALUES ($1, $2, $3, $4, $5, $6)
-	`, orderID.String(), variantID, e.Kind, actor, e.Channel, e.RequestedAt.UTC())
+			id, order_id, variant_id, kind, actor, channel, requested_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, uuid.NewString(), orderID.String(), variantID, e.Kind, actor, e.Channel, e.RequestedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("metaldogs artwork access log insert: %w", err)
 	}
