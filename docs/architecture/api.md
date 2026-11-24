@@ -4,7 +4,7 @@ Public surface under `/api/customizer/*` (plugin flag `plugins.metaldogs.enabled
 
 ## Enablement & health
 
-Exact `/api/customizer` is not a route. The platform answers with a plain 404, which may be cached. Every registered `/api/customizer/*` route except the order-thumbnail GET is `Cache-Control: no-store` on guest GET and HEAD (`pluginsdk.NoCache`). `GET /api/customizer/order-thumbnails/{token}` is registered without `NoCache`. Its handler sets `Cache-Control: private, max-age=86400`.
+Exact `/api/customizer` is not a route. The platform answers with a plain 404, which may be cached. Every registered `/api/customizer/*` route except the order-thumbnail GET is `Cache-Control: no-store` on guest GET and HEAD (`pluginsdk.NoCache`). `GET /api/customizer/order-thumbnails/{token}` is registered without `NoCache`. A `200` sets `Cache-Control: private, max-age=86400`. A `404` sets `Cache-Control: no-store`.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
@@ -428,7 +428,7 @@ Registered only when the plugin is enabled, `plugins.metaldogs.order_snapshot.en
 
 `200` headers: `Content-Type` is one of `image/jpeg`, `image/png`, `image/webp` (the stored MIME, lower-cased); `Content-Disposition: inline`; `Cache-Control: private, max-age=86400`; `X-Content-Type-Options: nosniff`. Any other stored MIME is the same `404` as a missing object. The route is not on the `NoCache` denylist, so platform middleware does not replace that `Cache-Control`.
 
-`404` body is only `{"error":"not_found"}`, with `Content-Type: application/json` and the same `Cache-Control` and `X-Content-Type-Options`. That body is used for a bad or truncated token, a token whose order id or variant id was swapped, an unknown snapshot, a snapshot with no thumbnail, a missing object, and a MIME outside the allowlist. Headers and body contain no storage key and no URL.
+`404` body is only `{"error":"not_found"}`, with `Content-Type: application/json`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`. That body is used for a bad or truncated token, a token whose order id or variant id was swapped, an unknown snapshot, a snapshot with no thumbnail, a missing object, and a MIME outside the allowlist. Headers and body contain no storage key and no URL.
 
 `(*Plugin).OrderThumbnailURL(ctx, orderID, variantID)` returns `<public_base_url>/api/customizer/order-thumbnails/<token>` when that snapshot has a thumbnail. It returns an empty string when the flag is off, the key is absent, the line is missing, or the thumbnail id is empty. `plugins.metaldogs.public_base_url` is an absolute `http` or `https` origin with no query or fragment. Empty, when a thumbnail exists, is an error. The plugin cannot read `server.public_base_url` (`Host.ConfigValue` is plugin-scoped). Nothing in email or a storefront page calls this function.
 

@@ -93,6 +93,7 @@ func (s *SnapshotOrder) makeThumbnail(ctx context.Context, snap domain.OrderDesi
 		return domain.Asset{}, err
 	}
 	sum := sha256.Sum256(pngBytes)
+	// owner_ref stays empty: 009 allows one live row per (owner_ref, type), and two lines can share a design.
 	return domain.Asset{
 		ID:          assetID,
 		Type:        domain.AssetTypeThumbnail,
@@ -102,7 +103,6 @@ func (s *SnapshotOrder) makeThumbnail(ctx context.Context, snap domain.OrderDesi
 		Width:       w,
 		Height:      h,
 		Checksum:    ChecksumSHA256Prefix + hex.EncodeToString(sum[:]),
-		OwnerRef:    design.ID,
 		CreatedAt:   now,
 		DeleteAfter: thumbnailDeleteAfter(design, now),
 	}, nil

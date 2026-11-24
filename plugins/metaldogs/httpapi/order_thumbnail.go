@@ -36,7 +36,7 @@ func OrderThumbnail(open func() (*application.OrderThumbnail, error)) http.Handl
 func writeOrderThumbnailMiss(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
-	h.Set("Cache-Control", "private, max-age=86400")
+	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = w.Write(orderThumbnailMissBody)

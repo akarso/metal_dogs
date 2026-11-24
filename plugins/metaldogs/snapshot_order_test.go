@@ -825,7 +825,7 @@ func TestSnapshotOrder_Thumbnail(t *testing.T) {
 			t.Fatalf("ids got=%s/%s want mock %s thumb %s err=%v", got.MockupAssetID, got.ThumbnailAssetID, mockID, wantID, err)
 		}
 		thumb, ok, err := assets.GetByID(ctx, wantID)
-		if err != nil || !ok || thumb.Type != domain.AssetTypeThumbnail || thumb.Width > thumbnail.MaxEdge || thumb.Height > thumbnail.MaxEdge {
+		if err != nil || !ok || thumb.Type != domain.AssetTypeThumbnail || thumb.OwnerRef != "" || thumb.Width > thumbnail.MaxEdge || thumb.Height > thumbnail.MaxEdge {
 			t.Fatalf("asset ok=%v err=%v %+v", ok, err, thumb)
 		}
 		blob, ok := store.blob(thumb.StorageKey)
@@ -972,6 +972,88 @@ func TestSnapshotOrder_Thumbnail(t *testing.T) {
 		got, ok, err := snaps.Get(ctx, orderID, variantID)
 		if err != nil || !ok || got.MockupAssetID != mockID || got.ThumbnailAssetID == "" {
 			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+	})
+
+	t.Run("two sizes", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-thumb-sizes", "prompt-thumb-sizes", false)
+		pngBytes := snapshotTextPNG(t, 40, 40, "")
+		insertSnapshotMockup(t, db, seed.Design.ID, seed.ArtworkID, seed.ArtworkChecksum, pngBytes, store, clock.Now())
+		orderID := uuid.NewString()
+		variantM := uuid.NewString()
+		variantL := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{
+			{VariantID: variantM, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID},
+			{VariantID: variantL, SKU: "TEE-L", Quantity: 1, DesignID: seed.Design.ID},
+		})
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, &snapLog{}); err != nil {
+			t.Fatal(err)
+		}
+		listed, err := snaps.ListByOrder(ctx, orderID)
+		if err != nil || len(listed) != 2 {
+			t.Fatalf("rows %+v err=%v", listed, err)
+		}
+		wantM, err := application.ThumbnailAssetID(orderID, variantM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantL, err := application.ThumbnailAssetID(orderID, variantL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, row := range listed {
+			got[row.VariantID] = row.ThumbnailAssetID
+			if row.MockupAssetID == "" || row.ThumbnailAssetID == "" || row.DesignID != seed.Design.ID {
+				t.Fatalf("row %+v", row)
+			}
+		}
+		if got[variantM] != wantM || got[variantL] != wantL || got[variantM] == got[variantL] {
+			t.Fatalf("thumbs %+v", got)
+		}
+		for _, id := range []string{wantM, wantL} {
+			thumb, ok, err := assets.GetByID(ctx, id)
+			if err != nil || !ok || thumb.OwnerRef != "" || thumb.Type != domain.AssetTypeThumbnail {
+				t.Fatalf("thumb %s ok=%v err=%v %+v", id, ok, err, thumb)
+			}
+		}
+		status, _ := designStatus(t, postgres.NewDesignRepo(db), seed.Design.ID)
+		if status != domain.DesignOrdered {
+			t.Fatalf("status=%s", status)
+		}
+	})
+
+	t.Run("thumbnail insert conflict", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-thumb-conflict", "prompt-thumb-conflict", false)
+		pngBytes := snapshotTextPNG(t, 40, 40, "")
+		insertSnapshotMockup(t, db, seed.Design.ID, seed.ArtworkID, seed.ArtworkChecksum, pngBytes, store, clock.Now())
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		thumbID, err := application.ThumbnailAssetID(orderID, variantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := assets.Insert(ctx, domain.Asset{
+			ID: thumbID, Type: domain.AssetTypeThumbnail,
+			StorageKey: "private/blobs/metaldogs/thumbnail/2026/11/" + thumbID + ".png",
+			MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+			Checksum: "sha256:preexisting-thumb", CreatedAt: clock.Now(), DeleteAfter: clock.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, &snapLog{}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || got.MockupAssetID != "" || got.ThumbnailAssetID != "" || got.DesignID != seed.Design.ID {
+			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+		status, _ := designStatus(t, postgres.NewDesignRepo(db), seed.Design.ID)
+		if status != domain.DesignOrdered {
+			t.Fatalf("status=%s", status)
 		}
 	})
 }

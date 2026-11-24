@@ -196,6 +196,9 @@ func TestOrderThumbnailHTTP(t *testing.T) {
 		if wantBody == nil {
 			wantBody = append([]byte(nil), rec.Body.Bytes()...)
 			wantHeader = rec.Header().Get("Content-Type") + "|" + rec.Header().Get("Cache-Control") + "|" + rec.Header().Get("X-Content-Type-Options") + "|" + rec.Header().Get("Content-Disposition")
+			if wantHeader != "application/json|no-store|nosniff|" {
+				t.Fatalf("404 header %q", wantHeader)
+			}
 		}
 		gotHeader := rec.Header().Get("Content-Type") + "|" + rec.Header().Get("Cache-Control") + "|" + rec.Header().Get("X-Content-Type-Options") + "|" + rec.Header().Get("Content-Disposition")
 		if !bytes.Equal(rec.Body.Bytes(), wantBody) || gotHeader != wantHeader || rec.Header().Get("Content-Disposition") != "" {

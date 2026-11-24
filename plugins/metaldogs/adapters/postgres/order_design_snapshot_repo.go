@@ -131,7 +131,7 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 	return written, nil
 }
 
-// A deleted mockup must not roll back the snapshot; that line is stored with both ids NULL.
+// A missing mockup or a failed thumbnail insert must not roll back the snapshot; that line keeps both ids NULL.
 func attachSnapshotThumbnail(ctx context.Context, tx *sql.Tx, s domain.OrderDesignSnapshot, thumb domain.Asset) (domain.OrderDesignSnapshot, error) {
 	if thumb.ID == "" {
 		return s, nil
@@ -159,9 +159,7 @@ func attachSnapshotThumbnail(ctx context.Context, tx *sql.Tx, s domain.OrderDesi
 		return s, err
 	}
 	if err := insertAsset(ctx, tx, thumb); err != nil {
-		_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT metaldogs_thumb")
-		release()
-		return s, err
+		return drop(), nil
 	}
 	release()
 	return s, nil
