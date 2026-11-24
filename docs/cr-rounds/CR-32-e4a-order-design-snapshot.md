@@ -110,4 +110,4 @@ Seam: run `snapshot_order_design` for an `order_id` on isolated Postgres with th
 - G5a calls `FillSnapshotProduction` when a configured spec sets the version `ready` ([CR-36](CR-36-g5a-production-artwork.md)). A fill error does not fail that job. Without the spec the prepare job still does not fill.
 - O2: schedule `CleanupDueAssets`, `CleanupUnattachedUploads`, and `ExpireDesigns`. Those are the only retention deletion paths. Do not add a separate `UPDATE` of `deleted_at`. Decide the after-`shipped` grace.
 - O5: exercise `docs/runbooks/order-without-design-snapshot.md` and replace "Last exercised: never".
-- E6: confirmation thumbnail. Out of E4a. E5 artwork access closed in [CR-35](CR-35-e5-artwork-access.md).
+- E6a order thumbnail closed in [CR-37](CR-37-e6a-order-thumbnail.md). E6b display stays open. E5 artwork access closed in [CR-35](CR-35-e5-artwork-access.md).

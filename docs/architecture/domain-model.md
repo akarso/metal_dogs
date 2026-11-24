@@ -127,6 +127,8 @@ erDiagram
         string prompt_version
         uuid artwork_asset_id
         string artwork_checksum
+        uuid mockup_asset_id "nullable; set with thumbnail_asset_id"
+        uuid thumbnail_asset_id "nullable; E6a PNG, longest edge ≤ 320"
         uuid production_asset_id "nullable"
         string production_checksum "nullable"
         timestamptz created_at
@@ -149,10 +151,10 @@ erDiagram
 
 Notes:
 
-- `DESIGN_VERSION` and `ORDER_DESIGN_SNAPSHOT` are **append-only**. Nothing updates them after creation except `production_*` on `DESIGN_VERSION` and `production_asset_id` / `production_checksum` on `ORDER_DESIGN_SNAPSHOT` (once, from NULL, when that version is `ready`). Version production columns move `pending → preparing → ready | failed`. `ready` sets the asset id and checksum once, from `pending` or `preparing`, and clears `production_failure_reason`. `failed` sets that reason (migration `017`). Other version columns stay frozen (migration `014` trigger).
+- `DESIGN_VERSION` and `ORDER_DESIGN_SNAPSHOT` are **append-only**. Nothing updates them after creation except `production_*` on `DESIGN_VERSION` and `production_asset_id` / `production_checksum` on `ORDER_DESIGN_SNAPSHOT` (once, from NULL, when that version is `ready`). Version production columns move `pending → preparing → ready | failed`. `ready` sets the asset id and checksum once, from `pending` or `preparing`, and clears `production_failure_reason`. `failed` sets that reason (migration `017`). Other version columns stay frozen (migration `014` trigger). `mockup_asset_id` and `thumbnail_asset_id` (migration `018`, E6a, [CR-37](../cr-rounds/CR-37-e6a-order-thumbnail.md)) are set only on insert, both or neither. The trigger refuses a later change.
 - Snapshot duplicates the version's data (texts, template version, checksums, SKU) deliberately so an order remains fully described even if a design is deleted under retention rules. There is no surrogate id. ADR-0005 decision 4 called the line key `order_line_id`; the stored key is `(order_id, variant_id)` (`metaldogs_order_design_snapshots`, migration `015`). E4a writes this table only when `plugins.metaldogs.order_snapshot.enabled` is true and an `OrderSource` is bound. The setting defaults to false and E4a binds no real source, so a live order has no row.
 - `metaldogs_artwork_access_log` (migration `016`, E5, [CR-35](../cr-rounds/CR-35-e5-artwork-access.md)) is append-only. One row per signed URL issued for a snapshot line: `order_id`, `variant_id`, `kind` (`approved` or `production`), `actor`, `channel` (`admin` or `cli`), `requested_at`. No URL and no storage key. The route and CLI that write it register only when the same flag is true.
-- `AssetsReferencedBySnapshots` is the deletion check: an asset id stored as `artwork_asset_id` or `production_asset_id` is left active. The after-`shipped` grace is O2 and is not applied yet. Nothing schedules the deletion functions.
+- `AssetsReferencedBySnapshots` is the deletion check: an asset id stored as `artwork_asset_id`, `production_asset_id`, `mockup_asset_id`, or `thumbnail_asset_id` is left active. The after-`shipped` grace is O2 and is not applied yet. Nothing schedules the deletion functions.
 - `owner_token_hash` stores only the hash of the capability token ([ADR-0007](../adr/0007-guest-design-ownership-tokens.md)).
 
 ## Template (G2)
@@ -278,4 +280,5 @@ stateDiagram-v2
 | Design row | never ordered | 30 days from create / last mutating activity (`POST`/`PATCH`, incl. **approve**), then `expired` and purged. `GET` does not slide `expires_at`. |
 | Source photo | design ordered | until fulfilment `shipped` + 14 days |
 | Approved and production artwork | design ordered | per legal/warranty policy (decision in O2). Until O2, any snapshot reference keeps the asset (`AssetsReferencedBySnapshots`) |
+| Approved mockup and order thumbnail | snapshot row names `mockup_asset_id` or `thumbnail_asset_id` | same check (`AssetsReferencedBySnapshots`, E6a). A snapshot with both columns null protects neither |
 | Snapshot row | always | with the order |
