@@ -1,10 +1,12 @@
 package application
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -74,6 +76,54 @@ func TestThumbnailAssetID_IsV5OfOrderAndVariant(t *testing.T) {
 	if err != nil || other == id {
 		t.Fatalf("variant changed id %s", other)
 	}
+}
+
+func TestAttachThumbnail_GetErrorNamesLine(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("snapshots down")
+	s := &SnapshotOrder{Snapshots: getErrSnapshots{err: cause}}
+	snap := domain.OrderDesignSnapshot{
+		OrderID:   "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		VariantID: "v-1",
+		DesignID:  "d-1",
+	}
+	_, _, _, err := s.attachThumbnail(t.Context(), snap, domain.Design{})
+	se, ok := err.(*SnapshotOrderError)
+	if !ok || se == nil {
+		t.Fatalf("%T %v", err, err)
+	}
+	if se.OrderID != snap.OrderID || se.VariantID != snap.VariantID || se.DesignID != snap.DesignID {
+		t.Fatalf("%+v", se)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("cause dropped")
+	}
+}
+
+type getErrSnapshots struct{ err error }
+
+func (g getErrSnapshots) Insert(context.Context, domain.OrderDesignSnapshot) (bool, error) {
+	return false, g.err
+}
+
+func (g getErrSnapshots) CommitOrder(context.Context, []domain.OrderDesignSnapshot, []domain.Asset, time.Time) ([]bool, error) {
+	return nil, g.err
+}
+
+func (g getErrSnapshots) Get(context.Context, string, string) (domain.OrderDesignSnapshot, bool, error) {
+	return domain.OrderDesignSnapshot{}, false, g.err
+}
+
+func (g getErrSnapshots) ListByOrder(context.Context, string) ([]domain.OrderDesignSnapshot, error) {
+	return nil, g.err
+}
+
+func (g getErrSnapshots) ListUnfilledProduction(context.Context, string) ([]domain.OrderDesignSnapshot, error) {
+	return nil, g.err
+}
+
+func (g getErrSnapshots) FillProduction(context.Context, string, string, string, string) error {
+	return g.err
 }
 
 func TestSnapshotOrder_RequiresClock(t *testing.T) {

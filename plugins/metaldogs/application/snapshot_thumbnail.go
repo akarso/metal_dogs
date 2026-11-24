@@ -36,7 +36,12 @@ func ThumbnailAssetID(orderID, variantID string) (string, error) {
 func (s *SnapshotOrder) attachThumbnail(ctx context.Context, snap domain.OrderDesignSnapshot, design domain.Design) (domain.OrderDesignSnapshot, domain.Asset, bool, error) {
 	_, exists, err := s.Snapshots.Get(ctx, snap.OrderID, snap.VariantID)
 	if err != nil {
-		return domain.OrderDesignSnapshot{}, domain.Asset{}, false, err
+		return domain.OrderDesignSnapshot{}, domain.Asset{}, false, &SnapshotOrderError{
+			OrderID:   snap.OrderID,
+			VariantID: snap.VariantID,
+			DesignID:  snap.DesignID,
+			Err:       err,
+		}
 	}
 	if exists {
 		return snap, domain.Asset{}, false, nil
