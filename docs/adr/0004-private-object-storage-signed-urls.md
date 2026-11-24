@@ -22,7 +22,7 @@ Uploaded photos are private personal data. Shopanda provides `media.SignedURLSto
 
 `GET /api/customizer/order-thumbnails/{token}` does not use `SignedGetURL`. The handler reads the thumbnail through `AssetStore` and writes the bytes. The token is `base64url(order_id|variant_id).base64url(HMAC-SHA256(key, "order-thumbnail:" + order_id + "|" + variant_id))`. It has no expiry. HMAC compare is constant time. The route is registered only when `order_snapshot.enabled` is true and `thumbnail_signing_key` is at least 32 characters.
 
-This is the one exception to the 15-minute rule. It is safe because the image is a PNG whose longest edge is at most 320 px, the token is unguessable without the key, and neither the URL nor the response contains a storage key or a signed storage URL. A bad token, an unknown line, a snapshot with no thumbnail, and a missing object share one `404` body. The token is not logged.
+This is the one exception to the 15-minute rule. It is safe because the image is a PNG whose longest edge is at most 320 px, the token is unguessable without the key, and neither the URL nor the response contains a storage key or a signed storage URL. A bad token, an unknown line, a snapshot with no thumbnail, and a missing object share one `404` body. The handler does not log the token. The platform HTTP access log (and any proxy log) records the full request path, so the token appears there on every hit: treat those logs as credential-bearing for this route. Platform gap, not fixable in the plugin: the access log should use the route pattern or redact the path per route.
 
 ## Honest limits (not yet fail-closed)
 
