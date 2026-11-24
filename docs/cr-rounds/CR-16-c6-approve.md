@@ -45,6 +45,6 @@
 
 ## Follow-ups
 
-- G5 + P0: real prepare_production_artwork handler
+- G5a runs `prepare_production_artwork` when `production_spec` is set ([CR-36](CR-36-g5a-production-artwork.md)). P0 still owns the real printer values. Without the spec the handler still errors `pending_spec`.
 - E4: OrderDesignSnapshot (ADR-0005 remainder)
 - S4 storefront approve UI; C7 regen cooldown UI

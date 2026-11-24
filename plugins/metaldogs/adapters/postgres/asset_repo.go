@@ -38,6 +38,10 @@ const assetColumns = `
 
 // Insert persists a new asset row.
 func (s *AssetRepo) Insert(ctx context.Context, a domain.Asset) error {
+	return insertAsset(ctx, s.db, a)
+}
+
+func insertAsset(ctx context.Context, db versionExecer, a domain.Asset) error {
 	if a.ID == "" || a.Type == "" || a.StorageKey == "" || a.MimeType == "" || a.Checksum == "" {
 		return fmt.Errorf("metaldogs assets: id, type, storage_key, mime_type, checksum required")
 	}
@@ -48,7 +52,7 @@ func (s *AssetRepo) Insert(ctx context.Context, a domain.Asset) error {
 	if a.OwnerRef != "" {
 		owner = a.OwnerRef
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO metaldogs_assets (
 			id, type, storage_key, mime_type, size_bytes, width, height, checksum, owner_ref,
 			created_at, delete_after, deleted_at

@@ -2,7 +2,7 @@
 
 - **Status:** Catalog modelling **Accepted** (E1, CR-18, 2026-11-12). Fulfilment provider and production file specification remain **Proposed** until `P0`.
 - **Date:** 2026-10-15 (catalog modelling accepted 2026-11-12)
-- **Related slices:** `P0`, `P1`, `P2`, `G5`, `E1`, `E2`, `X2`
+- **Related slices:** `P0`, `P1`, `P2`, `G5`, `G5a`, `E1`, `E2`, `X2`
 - **Related ADRs:** [ADR-0005](0005-immutable-order-design-snapshot.md)
 
 ## Context
@@ -37,7 +37,9 @@ Catalog modelling above is Accepted. `plugins/metaldogs/catalog/` plus `metaldog
 | Data-processing terms (customer address, artwork retention) | _pending_ |
 | Physical sample result (garment, print quality vs preview) | _pending_ |
 
-The accepted specification is also written to `docs/architecture/production-spec.md` and encoded as `PrintSpec` in the `generation` module, which `G5` validates against.
+### G5a (CR-36) — config until P0
+
+The table above stays Proposed. Until P0 fills it, `prepare_production_artwork` reads `plugins.metaldogs.production_spec` (`width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` only `srgb`, `upscale_policy` `reject|upscale`). No defaults. The section absent leaves the job on `pending_spec` and the version `pending`. A present section with any field missing or invalid ends that plugin's Init: worker, scheduler, and the jobs CLI refuse to start; `serve` starts with metaldogs inactive (no routes and no jobs). Those keys are not the accepted printer specification and are not hard-coded sizes. `docs/architecture/production-spec.md` is still the P0 deliverable; it is not in the tree. One spec per product; one production file per `DesignVersion`. Per-size files stay out of scope.
 
 ## Alternatives considered
 
@@ -56,4 +58,4 @@ The accepted specification is also written to `docs/architecture/production-spec
 ## Compliance
 
 - Feature test: cart line for the custom tee without a valid `metaldogs.design_id` is rejected.
-- `G5` unit tests validate production artwork against `PrintSpec` from this ADR.
+- `G5a` tests validate production artwork against an explicit `production.Spec` from configuration ([CR-36](../cr-rounds/CR-36-g5a-production-artwork.md)). The accepted P0 `PrintSpec` is not in the tree yet.

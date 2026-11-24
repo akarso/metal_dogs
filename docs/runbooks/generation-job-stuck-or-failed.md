@@ -39,7 +39,30 @@ Customers cannot reach preview or approval; each failed attempt may have cost mo
 3. **Stuck platform `processing`** (same id as product `generation_job_id`, `updated_at` older than the reclaim age) → `./app jobs:requeue <job_id>` (default `--min-age=5m`). That keeps `attempts` and runs `OnRequeued` in the same DB transaction as the re-pend, which bumps the product `claim_token` before the row is visible as `pending`. The fence is `Host.OnRequeued` registered in plugin `Init`. A hook error leaves the platform row `processing`. `./app jobs:retry` does not reclaim `processing`: it accepts only `failed`, sets `attempts` to 0, and does not run `OnRequeued` (claim token stays). Same-Idempotency-Key customer retry uses enqueue Conflict → `Requeue` for stale `processing`, and `Requeue` with `WithRequeueTerminal` for `failed`/`done`/`cancelled` (attempts kept, `last_error` unchanged, claim bumped in that transaction). A hook error leaves the platform row in its prior status. Live young `processing` is left alone. `queue.driver` other than `postgres` fails plugin Init (`pluginsdk.RequireQueueDriver`; empty driver counts as postgres).
 4. **Stuck non-terminal product job** (design `generating`, job `queued`/`running`/`validating`, platform row `failed`/`done`/`cancelled`/missing) → prefer same-key customer retry. Stale platform `processing` is `./app jobs:requeue <id>`. A terminal platform row (`failed`, `done`, or `cancelled`, attempts kept) is `./app jobs:requeue <id> --terminal [--force]`. Bare `--terminal` is the rare non-exhausted `failed` path. `--terminal --force` covers exhausted `failed` and `done`/`cancelled`. `./app jobs:retry <id>` is `failed` only: it sets `attempts` to 0 and does not run `OnRequeued` (claim token stays). If the product row stays wedged, prefer `TBD` `metaldogs:design-reconcile <design_id>`. Until that command exists: operator SQL may set the job to `failed` with `terminal_reason=orphaned` and the design to `generation_failed` in one transaction, then ask the customer to retry.
 5. Provider incident → follow the provider outage runbook (cost cap / disable generation).
-6. Production artwork `failed` → read the spec validation code; if the artwork cannot meet the spec, contact the customer via the order; fulfil manually only with an operator-approved file ([`manual-pod-fulfillment.md`](manual-pod-fulfillment.md)).
+6. Production artwork failed or still `pending` → use the reason codes below. Fulfil manually only with an operator-approved file ([`manual-pod-fulfillment.md`](manual-pod-fulfillment.md)).
+
+## Production artwork failed
+
+Job type: `integration.sync.metaldogs.prepare_production_artwork` (platform job id = design version id).
+
+```text
+./app jobs:list --type=integration.sync.metaldogs.prepare_production_artwork --status=failed --limit=50
+./app jobs:show <design_version_id>
+```
+
+The stable reason is `metaldogs_design_versions.production_failure_reason` when `production_status = failed`. Logs use `design_version_id`, `design_id`, and `reason`. They do not contain storage keys or image bytes. Do not edit `metaldogs_design_versions` by hand.
+
+`plugins.metaldogs.production_spec` has no defaults. Omit the section and the job stays on `pending_spec`. A present section with a missing or invalid field ends that plugin's Init: worker, scheduler, and the jobs CLI refuse to start; `serve` starts with metaldogs inactive (no routes and no jobs). Example keys are in `configs/config.example.product.yaml` and are not a printer size. Real numbers are P0 ([ADR-0009](../adr/0009-pod-provider-and-catalog-modelling.md)).
+
+| Reason | What it means | What to do |
+| --- | --- | --- |
+| `pending_spec` | The spec section is absent. The version stays `production_status=pending`. The job error contains `pending_spec`. This delivery is the last (`max_retries` set to `attempts`, usually 1). | Configure a complete `production_spec` (every field). The version is still `pending`. `./app jobs:retry <id>` sets `attempts` to 0 and does not raise `max_retries`, so the recovered delivery is one-shot: the next transient storage or database error fails the job with no further retry. After `jobs:retry`, set that row's `max_retries` to 3. Do not invent pixel sizes. |
+| `too_small` | The artwork is smaller than the spec and `upscale_policy` is `reject`. The version is `failed`. | Reclaiming the job repeats `too_small` and does not refit. Do not crop. A new approval is a new version: either a larger artwork, or `upscale_policy: upscale` chosen on purpose before that approval. |
+| `aspect_mismatch` | Artwork aspect differs from the spec by more than 1%. The version is `failed`. | Do not crop or pad. Reclaiming the job does not refit. A new approval is required, with artwork or a spec whose aspects match. |
+| `transparency_required` | The spec requires an alpha channel and the PNG has none. The version is `failed`. | Do not send the file to a transparency print. Reclaiming the job does not refit. New artwork with alpha and a new approval, or a spec that does not require transparency when the printer does not need it, then a new approval. |
+| `artwork_unreadable` | The stored artwork is missing or not a decodable PNG. The version is `failed`. | Reclaiming the job does not reread a new file onto this version. Regenerate and approve again. |
+
+A version already `ready` makes a later run a no-op (no new write). Storage or database errors retry (`MaxRetries` 3) and leave the version `pending` or `preparing`. After `ready`, snapshot fill errors are logged (`metaldogs.prepare_production_artwork.fill_snapshot`) and the job still succeeds; `reconcile_snapshots` fills NULL production columns later when `order_snapshot.enabled` is on and an order source is bound.
 
 Irreversible: none of the above deletes data. Never edit `metaldogs_design_versions` or snapshots by hand.
 

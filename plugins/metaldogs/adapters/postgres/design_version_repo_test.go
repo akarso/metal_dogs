@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -173,4 +174,195 @@ func TestDesignVersionRepo_ApproveBound_UniqueAndStatusRace(t *testing.T) {
 	if err := versions.ApproveBound(ctx, bad, vBad); err == nil {
 		t.Fatal("mismatched design ids must fail")
 	}
+}
+
+func TestDesignVersionRepo_ProductionTransitionAndAppendOnly(t *testing.T) {
+	db := testutil.OpenIsolated(t, "design_version_production")
+	ctx := context.Background()
+	versions := postgres.NewDesignVersionRepo(db)
+	assets := postgres.NewAssetRepo(db)
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	failed := seedApprovedVersion(t, db, "a")
+	if _, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions SET artwork_checksum = 'sha256:tampered' WHERE id = $1
+	`, failed.versionID); err == nil {
+		t.Fatal("artwork_checksum must stay immutable")
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions SET production_failure_reason = 'manual_reason' WHERE id = $1
+	`, failed.versionID); err != nil {
+		t.Fatalf("production_failure_reason update: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions
+		SET provider = 'other', production_failure_reason = 'too_small'
+		WHERE id = $1
+	`, failed.versionID); err == nil {
+		t.Fatal("frozen column must stay immutable when written with production_failure_reason")
+	}
+	var reason, provider string
+	if err := db.QueryRowContext(ctx, `
+		SELECT production_failure_reason, provider FROM metaldogs_design_versions WHERE id = $1
+	`, failed.versionID).Scan(&reason, &provider); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "manual_reason" || provider != "fake" {
+		t.Fatalf("reason=%s provider=%s", reason, provider)
+	}
+	if err := versions.MarkProductionPreparing(ctx, failed.versionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := versions.MarkProductionFailed(ctx, failed.versionID, "too_small"); err != nil {
+		t.Fatal(err)
+	}
+	if err := versions.MarkProductionFailed(ctx, failed.versionID, "aspect_mismatch"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := versions.GetByID(ctx, failed.versionID)
+	if err != nil || !ok || got.ProductionStatus != domain.ProductionFailed || got.ProductionFailureReason != "too_small" {
+		t.Fatalf("%+v ok=%v err=%v", got, ok, err)
+	}
+	if got.ArtworkChecksum != failed.artworkChecksum {
+		t.Fatalf("artwork checksum changed: %s", got.ArtworkChecksum)
+	}
+	if err := versions.MarkProductionPreparing(ctx, failed.versionID); err != ports.ErrProductionNotOpen {
+		t.Fatalf("preparing from failed: %v", err)
+	}
+	readyAsset := productionAsset(failed.designID, "11111111-1111-4111-8111-111111111111", now)
+	if err := versions.CommitProductionReady(ctx, failed.versionID, readyAsset); err != ports.ErrProductionNotOpen {
+		t.Fatalf("ready from failed: %v", err)
+	}
+	if n := countProductionAssets(t, db, failed.designID); n != 0 {
+		t.Fatalf("assets=%d", n)
+	}
+
+	ready := seedApprovedVersion(t, db, "b")
+	if err := versions.MarkProductionPreparing(ctx, ready.versionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := versions.MarkProductionPreparing(ctx, ready.versionID); err != nil {
+		t.Fatal(err)
+	}
+	asset := productionAsset(ready.designID, "22222222-2222-4222-8222-222222222222", now)
+	if err := versions.CommitProductionReady(ctx, ready.versionID, asset); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = versions.GetByID(ctx, ready.versionID)
+	if err != nil || !ok || got.ProductionStatus != domain.ProductionReady || got.ProductionAssetID != asset.ID ||
+		got.ProductionChecksum != asset.Checksum || got.ProductionFailureReason != "" || got.ArtworkChecksum != ready.artworkChecksum {
+		t.Fatalf("%+v ok=%v err=%v", got, ok, err)
+	}
+	stored, ok, err := assets.GetByID(ctx, asset.ID)
+	if err != nil || !ok || stored.Checksum != asset.Checksum || stored.Type != domain.AssetTypeProduction || stored.OwnerRef != ready.designID {
+		t.Fatalf("%+v ok=%v err=%v", stored, ok, err)
+	}
+	if err := versions.CommitProductionReady(ctx, ready.versionID, asset); err != ports.ErrProductionAlreadyReady {
+		t.Fatalf("second ready: %v", err)
+	}
+	if n := countProductionAssets(t, db, ready.designID); n != 1 {
+		t.Fatalf("assets=%d", n)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_design_versions SET texts = '{"dog_name":"x"}'::jsonb WHERE id = $1
+	`, ready.versionID); err == nil {
+		t.Fatal("texts must stay immutable after ready")
+	}
+
+	pending := seedApprovedVersion(t, db, "c")
+	direct := productionAsset(pending.designID, "33333333-3333-4333-8333-333333333333", now)
+	if err := versions.CommitProductionReady(ctx, pending.versionID, direct); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = versions.GetByID(ctx, pending.versionID)
+	if err != nil || !ok || got.ProductionStatus != domain.ProductionReady || got.ProductionAssetID != direct.ID {
+		t.Fatalf("%+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+type seededVersion struct {
+	designID        string
+	versionID       string
+	artworkChecksum string
+}
+
+func seedApprovedVersion(t *testing.T, db *sql.DB, tag string) seededVersion {
+	t.Helper()
+	ctx := context.Background()
+	assets := postgres.NewAssetRepo(db)
+	designs := postgres.NewDesignRepo(db)
+	versions := postgres.NewDesignVersionRepo(db)
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	// tag is one hex digit; the last group stays 12 digits.
+	sourceID := "a0000000-0000-4000-8000-00000000000" + tag
+	designID := "b0000000-0000-4000-8000-00000000000" + tag
+	artID := "c0000000-0000-4000-8000-00000000000" + tag
+	verID := "d0000000-0000-4000-8000-00000000000" + tag
+	if err := assets.Insert(ctx, domain.Asset{
+		ID: sourceID, Type: domain.AssetTypeSource,
+		StorageKey: "private/blobs/metaldogs/source/2026/11/" + sourceID + ".jpg",
+		MimeType:   "image/jpeg", SizeBytes: 1, Width: 300, Height: 300,
+		Checksum: application.ChecksumSHA256Prefix + "ab", CreatedAt: now, DeleteAfter: now.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("token-" + tag))
+	d := domain.Design{
+		ID: designID, TemplateID: "ffffffff-ffff-4fff-8fff-ffffffffffff", TemplateVersion: 1,
+		Status: domain.DesignDraft, Texts: map[string]string{"dog_name": "Burek"},
+		SourceAssetID: sourceID, OwnerTokenHash: sum[:],
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(domain.DesignRetentionUnordered),
+	}
+	if err := designs.CreateBound(ctx, d, now.Add(domain.SourceAttachedRetention)); err != nil {
+		t.Fatal(err)
+	}
+	checksum := application.ChecksumSHA256Prefix + "art" + tag
+	if err := assets.Insert(ctx, domain.Asset{
+		ID: artID, Type: domain.AssetTypeArtwork, OwnerRef: designID,
+		StorageKey: "private/blobs/metaldogs/artwork/2026/11/" + artID + ".png",
+		MimeType:   "image/png", SizeBytes: 1, Width: 64, Height: 64,
+		Checksum: checksum, CreatedAt: now, DeleteAfter: now.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE metaldogs_designs SET status = $1, updated_at = $2 WHERE id = $3
+	`, domain.DesignPreviewReady, now, designID); err != nil {
+		t.Fatal(err)
+	}
+	d.Status = domain.DesignPreviewReady
+	if err := d.Approve(verID, now); err != nil {
+		t.Fatal(err)
+	}
+	v, err := domain.NewDesignVersion(
+		verID, designID, d.TemplateID, d.TemplateVersion, d.Texts,
+		artID, checksum, "fake", "fake", "pv1", []byte(`{}`), now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := versions.ApproveBound(ctx, d, v); err != nil {
+		t.Fatal(err)
+	}
+	return seededVersion{designID: designID, versionID: verID, artworkChecksum: checksum}
+}
+
+func productionAsset(designID, id string, now time.Time) domain.Asset {
+	return domain.Asset{
+		ID: id, Type: domain.AssetTypeProduction, OwnerRef: designID,
+		StorageKey: "private/blobs/metaldogs/production/2026/11/" + id + ".png",
+		MimeType:   "image/png", SizeBytes: 4, Width: 8, Height: 8,
+		Checksum: application.ChecksumSHA256Prefix + id, CreatedAt: now, DeleteAfter: now.Add(time.Hour),
+	}
+}
+
+func countProductionAssets(t *testing.T, db *sql.DB, designID string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), `
+		SELECT count(*) FROM metaldogs_assets WHERE owner_ref = $1 AND type = 'production' AND deleted_at IS NULL
+	`, designID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

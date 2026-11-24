@@ -15,6 +15,7 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/generation"
 	"github.com/akarso/shopanda/plugins/metaldogs/httpapi"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
+	"github.com/akarso/shopanda/plugins/metaldogs/production"
 )
 
 // PluginName is the stable plugin identity and Migrator namespace
@@ -46,6 +47,8 @@ type Plugin struct {
 	orderLookup          ports.OrderLookup
 	snapshotClock        ports.Clock
 	orderSnapshotEnabled bool
+	productionSpec       *production.Spec
+	productionFill       func(ctx context.Context, versionID string) error
 }
 
 // cartSurface is the scoped pluginsdk.Host slice this plugin uses for cart and catalog.
@@ -106,6 +109,11 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 	}
 	if !settings.Enabled {
 		return fmt.Errorf("metaldogs plugin: disabled (plugins.metaldogs.enabled=false)")
+	}
+	p.productionSpec = nil
+	if settings.ProductionSpec != nil {
+		copied := *settings.ProductionSpec
+		p.productionSpec = &copied
 	}
 	h.Require(pluginsdk.CapCart)
 	h.Require(pluginsdk.CapCatalog)
@@ -215,7 +223,7 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		return fmt.Errorf("metaldogs plugin: obs.ping: %w", err)
 	}
 	p.noteSyncJob(obsPingJob)
-	if err := registerPrepareProduction(syncAPI, log); err != nil {
+	if err := registerPrepareProduction(syncAPI, p, log); err != nil {
 		return fmt.Errorf("metaldogs plugin: prepare_production_artwork: %w", err)
 	}
 	p.noteSyncJob(prepareProductionJobName)

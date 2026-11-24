@@ -129,7 +129,7 @@ sequenceDiagram
     UI->>API: POST /designs/{id}/approve (token, idempotent)
     API->>API: freeze DesignVersion (checksum, versions)
     API->>Q: enqueue integration.sync.metaldogs.prepare_production_artwork
-    Note over Q: C6 stub fails pending_spec (not done); approve Requeues / retries enqueue until G5
+    Note over Q: No production_spec: pending_spec, version stays pending. Spec set: G5a writes the file (CR-36)
     API-->>UI: approved, version_id
     Cust->>UI: choose size
     UI->>API: POST /api/customizer/designs/{id}/add-to-cart {variant_id} (Bearer owner token)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
+	"github.com/akarso/shopanda/plugins/metaldogs/production"
 )
 
 const metalDogsSlug = "metaldogs"
@@ -19,6 +20,8 @@ type Settings struct {
 	MaxAttemptsPerDesign int
 	CooldownSeconds      int
 	OrderSnapshotEnabled bool
+	// ProductionSpec is nil when plugins.metaldogs.production_spec is absent.
+	ProductionSpec *production.Spec
 }
 
 // Enabled reports whether plugins.metaldogs.enabled is on.
@@ -82,6 +85,10 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	prod, err := parseProductionSpec(get)
+	if err != nil {
+		return Settings{}, err
+	}
 	return Settings{
 		Enabled:              enabled,
 		Provider:             provider,
@@ -89,7 +96,104 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 		MaxAttemptsPerDesign: maxAttempts,
 		CooldownSeconds:      cooldown,
 		OrderSnapshotEnabled: orderSnapshot,
+		ProductionSpec:       prod,
 	}, nil
+}
+
+var productionSpecFields = []string{
+	"width_px",
+	"height_px",
+	"dpi",
+	"require_transparency",
+	"color_profile",
+	"upscale_policy",
+}
+
+func parseProductionSpec(get func(string) string) (*production.Spec, error) {
+	scalar := strings.TrimSpace(get(metalDogsKey("production_spec")))
+	raw := make(map[string]string, len(productionSpecFields))
+	any := scalar != ""
+	for _, field := range productionSpecFields {
+		dotted := "production_spec." + field
+		v := strings.TrimSpace(preferUnderscore(get, dotted, "production_spec_"+field))
+		raw[field] = v
+		if v != "" {
+			any = true
+		}
+	}
+	if !any {
+		return nil, nil
+	}
+	if scalar != "" {
+		return nil, fmt.Errorf("metaldogs plugin: plugins.metaldogs.production_spec must be a map (width_px, height_px, …), got %q", scalar)
+	}
+	width, err := parseRequiredPositiveInt(raw["width_px"], "production_spec.width_px")
+	if err != nil {
+		return nil, err
+	}
+	height, err := parseRequiredPositiveInt(raw["height_px"], "production_spec.height_px")
+	if err != nil {
+		return nil, err
+	}
+	dpi, err := parseRequiredPositiveInt(raw["dpi"], "production_spec.dpi")
+	if err != nil {
+		return nil, err
+	}
+	transparent, err := parseRequiredBool(raw["require_transparency"], "production_spec.require_transparency")
+	if err != nil {
+		return nil, err
+	}
+	profile := strings.ToLower(raw["color_profile"])
+	if profile == "" {
+		return nil, fmt.Errorf("metaldogs plugin: plugins.metaldogs.production_spec.color_profile is required")
+	}
+	if profile != production.ProfileSRGB {
+		return nil, fmt.Errorf("metaldogs plugin: plugins.metaldogs.production_spec.color_profile %q is not supported (srgb only)", raw["color_profile"])
+	}
+	policy := strings.ToLower(raw["upscale_policy"])
+	switch policy {
+	case "":
+		return nil, fmt.Errorf("metaldogs plugin: plugins.metaldogs.production_spec.upscale_policy is required")
+	case production.PolicyReject, production.PolicyUpscale:
+	default:
+		return nil, fmt.Errorf("metaldogs plugin: plugins.metaldogs.production_spec.upscale_policy %q is not supported (reject|upscale)", raw["upscale_policy"])
+	}
+	return &production.Spec{
+		WidthPx:             width,
+		HeightPx:            height,
+		DPI:                 dpi,
+		RequireTransparency: transparent,
+		ColorProfile:        profile,
+		UpscalePolicy:       policy,
+	}, nil
+}
+
+func parseRequiredPositiveInt(raw, name string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("metaldogs plugin: plugins.metaldogs.%s is required", name)
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("metaldogs plugin: plugins.metaldogs.%s %q is not an int", name, raw)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("metaldogs plugin: plugins.metaldogs.%s must be > 0", name)
+	}
+	return n, nil
+}
+
+func parseRequiredBool(raw, name string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return false, fmt.Errorf("metaldogs plugin: plugins.metaldogs.%s is required", name)
+	case "1", "true", "yes":
+		return true, nil
+	case "0", "false", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("metaldogs plugin: plugins.metaldogs.%s %q is not a bool", name, raw)
+	}
 }
 
 func metalDogsKey(key string) string {

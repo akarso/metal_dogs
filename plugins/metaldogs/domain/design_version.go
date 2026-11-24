@@ -25,21 +25,22 @@ var ProductionStatuses = []string{
 // DesignVersion is an immutable freeze of an approved design (ADR-0005).
 // Construct via NewDesignVersion; do not mutate fields after creation.
 type DesignVersion struct {
-	ID                 string
-	DesignID           string
-	TemplateID         string
-	TemplateVersion    int
-	Texts              map[string]string
-	ArtworkAssetID     string
-	ArtworkChecksum    string
-	ProductionAssetID  string
-	ProductionChecksum string
-	ProductionStatus   string
-	Provider           string
-	Model              string
-	PromptVersion      string
-	ParametersJSON     []byte
-	ApprovedAt         time.Time
+	ID                      string
+	DesignID                string
+	TemplateID              string
+	TemplateVersion         int
+	Texts                   map[string]string
+	ArtworkAssetID          string
+	ArtworkChecksum         string
+	ProductionAssetID       string
+	ProductionChecksum      string
+	ProductionStatus        string
+	ProductionFailureReason string
+	Provider                string
+	Model                   string
+	PromptVersion           string
+	ParametersJSON          []byte
+	ApprovedAt              time.Time
 }
 
 // NewDesignVersion builds a pending production DesignVersion at approval time.
