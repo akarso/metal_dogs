@@ -27,11 +27,11 @@ const prepareProductionJobName = "prepare_production_artwork"
 // stale processing must leave attempts alone (zombie Fail fence).
 const prepareProductionMaxRetries = 3
 
-// prepareTerminalizeSQL ends retry for this processing row only.
+// prepareTerminalizeSQL ends retry for this processing row of this job type only.
 const prepareTerminalizeSQL = `
 		UPDATE jobs
 		SET max_retries = attempts
-		WHERE id = $1 AND status = 'processing' AND attempts >= 1 AND attempts < max_retries
+		WHERE id = $1 AND type = $2 AND status = 'processing' AND attempts >= 1 AND attempts < max_retries
 	`
 
 // Stale processing re-pends without touching attempts (matches platform Requeue).
@@ -159,10 +159,14 @@ func terminalizePrepareJob(ctx context.Context, job extapi.SyncJobContext) {
 	if job.DB == nil || strings.TrimSpace(job.JobID) == "" {
 		return
 	}
+	jobType, err := extapi.SyncJobType(PluginName, prepareProductionJobName)
+	if err != nil {
+		return
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, _ = job.DB.ExecContext(ctx, prepareTerminalizeSQL, job.JobID)
+	_, _ = job.DB.ExecContext(ctx, prepareTerminalizeSQL, job.JobID, jobType)
 }
 
 // enqueuePrepareProduction enqueues prepare_production_artwork with platform job id =

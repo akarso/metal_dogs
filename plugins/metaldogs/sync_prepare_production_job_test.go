@@ -258,6 +258,57 @@ func TestPrepareProductionJob(t *testing.T) {
 		assertVersion(t, db, seed.versionID, domain.ProductionFailed, production.CodeArtworkUnreadable)
 	})
 
+	t.Run("invalid spec is permanent and leaves pending", func(t *testing.T) {
+		seed := seedPrepareDesign(t, db)
+		store := newMemBlobs()
+		store.put(seed.artworkKey, solidPNG(t, 32, 32))
+		p.SetAssetStore(store)
+		p.SetProductionSpec(&production.Spec{WidthPx: 32, HeightPx: 32, DPI: 72, ColorProfile: "cmyk", UpscalePolicy: production.PolicyReject})
+		insertProcessingPrepareJob(t, db, seed.versionID)
+		err := runPrepare(ctx, handler, db, seed, logger.NewWithWriter(io.Discard, "error"))
+		if err == nil || !strings.Contains(err.Error(), application.PrepareCodeMisconfigured) || strings.Contains(err.Error(), "database") {
+			t.Fatalf("err=%v", err)
+		}
+		assertVersion(t, db, seed.versionID, domain.ProductionPending, "")
+		assertTerminalized(t, ctx, db, seed.versionID)
+	})
+
+	t.Run("missing store is permanent and leaves pending", func(t *testing.T) {
+		seed := seedPrepareDesign(t, db)
+		p.SetAssetStore(nil)
+		p.SetProductionSpec(specPtr(testPrintSpec(32, 32, production.PolicyReject, false)))
+		insertProcessingPrepareJob(t, db, seed.versionID)
+		err := runPrepare(ctx, handler, db, seed, logger.NewWithWriter(io.Discard, "error"))
+		if err == nil || !strings.Contains(err.Error(), application.PrepareCodeMisconfigured) || strings.Contains(err.Error(), "database") {
+			t.Fatalf("err=%v", err)
+		}
+		assertVersion(t, db, seed.versionID, domain.ProductionPending, "")
+		assertTerminalized(t, ctx, db, seed.versionID)
+	})
+
+	t.Run("terminalize ignores another job type", func(t *testing.T) {
+		seed := seedPrepareDesign(t, db)
+		p.SetProductionSpec(nil)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO jobs (id, type, payload, status, attempts, max_retries)
+			VALUES ($1, 'integration.sync.other.prepare_production_artwork', '{}'::jsonb, 'processing', 1, 3)
+		`, seed.versionID); err != nil {
+			t.Fatal(err)
+		}
+		err := runPrepare(ctx, handler, db, seed, logger.NewWithWriter(io.Discard, "error"))
+		if err == nil || !strings.Contains(err.Error(), "pending_spec") {
+			t.Fatalf("err=%v", err)
+		}
+		var maxRetries int
+		if err := db.QueryRowContext(ctx, `SELECT max_retries FROM jobs WHERE id = $1`, seed.versionID).Scan(&maxRetries); err != nil {
+			t.Fatal(err)
+		}
+		if maxRetries != 3 {
+			t.Fatalf("max_retries=%d", maxRetries)
+		}
+		assertVersion(t, db, seed.versionID, domain.ProductionPending, "")
+	})
+
 	t.Run("spec absent leaves pending", func(t *testing.T) {
 		seed := seedPrepareDesign(t, db)
 		store := newMemBlobs()
@@ -465,6 +516,17 @@ func insertProcessingPrepareJob(t *testing.T, db *sql.DB, id string) {
 		VALUES ($1, 'integration.sync.metaldogs.prepare_production_artwork', '{}'::jsonb, 'processing', 1, 3)
 	`, id); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertTerminalized(t *testing.T, ctx context.Context, db *sql.DB, id string) {
+	t.Helper()
+	var maxRetries, attempts int
+	if err := db.QueryRowContext(ctx, `SELECT max_retries, attempts FROM jobs WHERE id = $1`, id).Scan(&maxRetries, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if maxRetries != attempts || attempts != 1 {
+		t.Fatalf("max_retries=%d attempts=%d", maxRetries, attempts)
 	}
 }
 

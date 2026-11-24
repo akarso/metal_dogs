@@ -55,6 +55,18 @@ type Error struct {
 	Code string
 }
 
+// SpecError is a rejected print spec. It is not an artwork failure.
+type SpecError struct {
+	Reason string
+}
+
+func (e *SpecError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "production: invalid spec"
+	}
+	return "production: invalid spec: " + e.Reason
+}
+
 func (e *Error) Error() string {
 	if e == nil {
 		return ""
@@ -65,7 +77,7 @@ func (e *Error) Error() string {
 // Prepare fits artwork PNG to spec and returns the print PNG plus a sha256 checksum.
 // Failures are *Error with a stable Code. The output is the exact spec size (no crop, no padding) and carries pHYs and sRGB.
 func Prepare(artwork []byte, spec Spec) (Output, error) {
-	if err := validateSpec(spec); err != nil {
+	if err := ValidateSpec(spec); err != nil {
 		return Output{}, err
 	}
 	img, err := png.Decode(bytes.NewReader(artwork))
@@ -110,17 +122,18 @@ func Prepare(artwork []byte, spec Spec) (Output, error) {
 	}, nil
 }
 
-func validateSpec(spec Spec) error {
+// ValidateSpec rejects a spec the fitter cannot apply. Settings uses the same rules at Init.
+func ValidateSpec(spec Spec) error {
 	if spec.WidthPx <= 0 || spec.HeightPx <= 0 || spec.DPI <= 0 {
-		return fmt.Errorf("production: spec width_px, height_px, and dpi must be > 0")
+		return &SpecError{Reason: "width_px, height_px, and dpi must be > 0"}
 	}
 	if spec.ColorProfile != ProfileSRGB {
-		return fmt.Errorf("production: spec color_profile %q is not supported", spec.ColorProfile)
+		return &SpecError{Reason: "color_profile is not supported"}
 	}
 	switch spec.UpscalePolicy {
 	case PolicyReject, PolicyUpscale:
 	default:
-		return fmt.Errorf("production: spec upscale_policy %q is not supported", spec.UpscalePolicy)
+		return &SpecError{Reason: "upscale_policy is not supported"}
 	}
 	return nil
 }

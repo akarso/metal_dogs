@@ -7,7 +7,7 @@
 #       max_retries: 3
 #       max_attempts_per_design: 3
 #       cooldown_seconds: 30
-#     production_spec:           # omit the section unless a print spec is configured. No defaults. Absent keeps prepare_production_artwork at pending_spec. Every field is required when the section is present; a missing or invalid field fails startup. width_px, height_px, and dpi below are keys only (example-only, not a printer size).
+#     production_spec:           # omit the section unless a print spec is configured. No defaults. Absent keeps prepare_production_artwork at pending_spec. Every field is required when the section is present; a missing or invalid field ends plugin Init (worker, scheduler, and the jobs CLI refuse to start; serve starts with metaldogs inactive). width_px, height_px, and dpi below are keys only (example-only, not a printer size).
 #       width_px:                # example-only
 #       height_px:               # example-only
 #       dpi:                     # example-only

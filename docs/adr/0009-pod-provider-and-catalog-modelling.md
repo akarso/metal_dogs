@@ -39,7 +39,7 @@ Catalog modelling above is Accepted. `plugins/metaldogs/catalog/` plus `metaldog
 
 ### G5a (CR-36) — config until P0
 
-The table above stays Proposed. Until P0 fills it, `prepare_production_artwork` reads `plugins.metaldogs.production_spec` (`width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` only `srgb`, `upscale_policy` `reject|upscale`). No defaults. The section absent leaves the job on `pending_spec` and the version `pending`. A present section with any field missing or invalid fails startup. Those keys are not the accepted printer specification and are not hard-coded sizes. `docs/architecture/production-spec.md` is still the P0 deliverable; it is not in the tree. One spec per product; one production file per `DesignVersion`. Per-size files stay out of scope.
+The table above stays Proposed. Until P0 fills it, `prepare_production_artwork` reads `plugins.metaldogs.production_spec` (`width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` only `srgb`, `upscale_policy` `reject|upscale`). No defaults. The section absent leaves the job on `pending_spec` and the version `pending`. A present section with any field missing or invalid ends that plugin's Init: worker, scheduler, and the jobs CLI refuse to start; `serve` starts with metaldogs inactive (no routes and no jobs). Those keys are not the accepted printer specification and are not hard-coded sizes. `docs/architecture/production-spec.md` is still the P0 deliverable; it is not in the tree. One spec per product; one production file per `DesignVersion`. Per-size files stay out of scope.
 
 ## Alternatives considered
 

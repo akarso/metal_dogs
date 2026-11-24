@@ -18,8 +18,12 @@ import (
 // productionAssetNamespace is the UUID v5 namespace for a version's production asset id.
 var productionAssetNamespace = uuid.MustParse("05a00000-0000-4000-8000-0000000005a0")
 
-// PreparePermanentError is a validation failure already stored on the version.
-// The queue must not treat it as a transient retry.
+// PrepareCodeMisconfigured is a missing dependency or a rejected print spec.
+// The version is left unchanged and the delivery does not retry.
+const PrepareCodeMisconfigured = "misconfigured"
+
+// PreparePermanentError is a validation failure already stored on the version,
+// or PrepareCodeMisconfigured (version unchanged). The queue must not retry it.
 type PreparePermanentError struct {
 	Code string
 }
@@ -68,8 +72,14 @@ type PrepareProduction struct {
 // Execute prepares versionID. wroteReady is true only when this call stored the file.
 // An already ready version returns false, nil and does not write.
 func (s *PrepareProduction) Execute(ctx context.Context, versionID, designID string) (bool, error) {
-	if s == nil || s.Versions == nil || s.Assets == nil || s.Designs == nil || s.Store == nil || s.Spec == nil {
-		return false, &PrepareRetryError{Op: "database"}
+	if s == nil || s.Spec == nil {
+		return false, &PreparePermanentError{Code: PrepareCodeMisconfigured}
+	}
+	if err := production.ValidateSpec(*s.Spec); err != nil {
+		return false, &PreparePermanentError{Code: PrepareCodeMisconfigured}
+	}
+	if s.Versions == nil || s.Assets == nil || s.Designs == nil || s.Store == nil {
+		return false, &PreparePermanentError{Code: PrepareCodeMisconfigured}
 	}
 	versionID = strings.TrimSpace(versionID)
 	designID = strings.TrimSpace(designID)
@@ -124,6 +134,10 @@ func (s *PrepareProduction) Execute(ctx context.Context, versionID, designID str
 		var pe *production.Error
 		if errors.As(err, &pe) {
 			return s.fail(ctx, versionID, pe.Code)
+		}
+		var se *production.SpecError
+		if errors.As(err, &se) {
+			return false, &PreparePermanentError{Code: PrepareCodeMisconfigured}
 		}
 		return false, &PrepareRetryError{Op: "database"}
 	}

@@ -1,12 +1,14 @@
 package application_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
+	"github.com/akarso/shopanda/plugins/metaldogs/production"
 )
 
 func TestProductionAssetID_IsV5(t *testing.T) {
@@ -30,5 +32,29 @@ func TestProductionAssetID_IsV5(t *testing.T) {
 	}
 	if _, err := application.ProductionAssetID("not-a-uuid"); err == nil {
 		t.Fatal("non-uuid version id must fail")
+	}
+}
+
+func TestPrepareProduction_MisconfiguredIsPermanent(t *testing.T) {
+	t.Parallel()
+	const versionID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	cases := []*application.PrepareProduction{
+		{},
+		{Spec: &production.Spec{}},
+		{Spec: &production.Spec{
+			WidthPx: 8, HeightPx: 8, DPI: 72,
+			ColorProfile: production.ProfileSRGB, UpscalePolicy: production.PolicyReject,
+		}},
+	}
+	for _, svc := range cases {
+		_, err := svc.Execute(t.Context(), versionID, versionID)
+		var permanent *application.PreparePermanentError
+		var retry *application.PrepareRetryError
+		if !errors.As(err, &permanent) || permanent.Code != application.PrepareCodeMisconfigured || errors.As(err, &retry) {
+			t.Fatalf("err=%v", err)
+		}
+		if strings.Contains(err.Error(), "database") {
+			t.Fatalf("err=%v", err)
+		}
 	}
 }

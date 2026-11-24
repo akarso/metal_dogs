@@ -9,7 +9,7 @@
 
 The prepare job produces a print file when `plugins.metaldogs.production_spec` is complete. No new flag. No hard-coded printer sizes.
 
-- Settings: `width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` (`srgb` only), `upscale_policy` (`reject|upscale`). No defaults. Section absent → spec absent. Any missing or invalid field fails startup.
+- Settings: `width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` (`srgb` only), `upscale_policy` (`reject|upscale`). No defaults. Section absent → spec absent. Any missing or invalid field ends that plugin's Init: worker, scheduler, and the jobs CLI refuse to start; `serve` starts with metaldogs inactive (no routes and no jobs).
 - `production.Prepare` fits an approved PNG: aspect within 1% or `aspect_mismatch` (no crop, no pad); larger is Lanczos downscale to the spec size; smaller is `too_small` or Lanczos upscale; transparency required but no alpha is `transparency_required`; undecodable input is `artwork_unreadable`. Output PNG carries pHYs and an sRGB marker. Checksum is `sha256:<hex>` of those bytes.
 - Migration `017` adds nullable `production_failure_reason`. The append-only trigger still allows only `production_*` changes.
 - Job `prepare_production_artwork` enqueues with `MaxRetries=3`. Spec absent: error `pending_spec`, version stays `pending`, that delivery is the last. Version already `ready`: done, no write. Otherwise: read artwork, Put under `ObjectKey("production", …)` with asset id = UUID v5 of the version id, then one transaction inserts the asset and sets `ready` from `pending|preparing` only. Permanent failure: version `failed` plus reason, job failed visibly. Storage or database error: retry, version stays `pending` or `preparing`.

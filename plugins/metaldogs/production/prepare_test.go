@@ -185,6 +185,30 @@ func TestPrepare_ChecksumStable(t *testing.T) {
 	}
 }
 
+func TestPrepare_InvalidSpec(t *testing.T) {
+	t.Parallel()
+	png := mustPNG(t, 8, 8, false)
+	cases := []Spec{
+		{},
+		{WidthPx: 8, HeightPx: 8, DPI: 72, ColorProfile: "cmyk", UpscalePolicy: PolicyReject},
+		{WidthPx: 8, HeightPx: 8, DPI: 72, ColorProfile: ProfileSRGB, UpscalePolicy: "pad"},
+	}
+	for _, spec := range cases {
+		_, err := Prepare(png, spec)
+		var se *SpecError
+		var pe *Error
+		if !errors.As(err, &se) || errors.As(err, &pe) {
+			t.Fatalf("spec %+v err=%v", spec, err)
+		}
+		if err := ValidateSpec(spec); !errors.As(err, &se) {
+			t.Fatalf("ValidateSpec %+v err=%v", spec, err)
+		}
+	}
+	if err := ValidateSpec(specSize(8, 8)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPrepare_MetadataDPI(t *testing.T) {
 	t.Parallel()
 	spec := specSize(12, 12)
