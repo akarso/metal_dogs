@@ -59,9 +59,38 @@ func (s *SnapshotOrder) attachThumbnail(ctx context.Context, snap domain.OrderDe
 	}
 	next, err := snap.WithThumbnail(mockupID, asset.ID)
 	if err != nil {
+		s.deleteUnreferencedThumbnail(ctx, asset)
 		return snap, domain.Asset{}, true, nil
 	}
 	return next, asset, false, nil
+}
+
+func (s *SnapshotOrder) deleteUnreferencedThumbnails(ctx context.Context, thumbs []domain.Asset) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithoutCancel(ctx)
+	for _, thumb := range thumbs {
+		s.deleteUnreferencedThumbnail(ctx, thumb)
+	}
+}
+
+func (s *SnapshotOrder) deleteUnreferencedThumbnail(ctx context.Context, thumb domain.Asset) {
+	if s == nil || s.Store == nil || thumb.StorageKey == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithoutCancel(ctx)
+	if s.Assets != nil && thumb.ID != "" {
+		existing, found, err := s.Assets.GetByID(ctx, thumb.ID)
+		// A lookup error leaves the object: deleting it could remove a live thumbnail.
+		if err != nil || (found && existing.StorageKey == thumb.StorageKey) {
+			return
+		}
+	}
+	_ = s.Store.Delete(ctx, thumb.StorageKey)
 }
 
 func (s *SnapshotOrder) makeThumbnail(ctx context.Context, snap domain.OrderDesignSnapshot, design domain.Design, mockupID string) (domain.Asset, error) {

@@ -212,6 +212,15 @@ func TestOrderThumbnailHTTP(t *testing.T) {
 	if len(wantBody) == 0 || !bytes.Equal(wantBody, []byte(`{"error":"not_found"}`)) {
 		t.Fatalf("404 body %q", wantBody)
 	}
+	logText := logBuf.String()
+	if strings.Count(logText, "metaldogs.order_thumbnail") != 1 ||
+		!strings.Contains(logText, orderA) || !strings.Contains(logText, variantC) ||
+		!strings.Contains(logText, `"cause":"object"`) {
+		t.Fatalf("thumbnail fault log: %s", logText)
+	}
+	if strings.Contains(logText, keyMiss) || strings.Contains(logText, thumbSignKey) {
+		t.Fatalf("fault log leaked: %s", logText)
+	}
 
 	empty, err := p.OrderThumbnailURL(context.Background(), orderA, variantD)
 	if err != nil || empty != "" {

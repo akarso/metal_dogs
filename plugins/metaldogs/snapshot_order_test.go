@@ -639,7 +639,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		at := clock.Now()
 		lineA := snapshotFromSeed(t, orderID, v1, "TEE-A", first, at)
 		lineB := snapshotFromSeed(t, orderID, v2, "TEE-B", second, at)
-		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{lineA, lineB}, nil, at)
+		_, _, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{lineA, lineB}, nil, at)
 		var de *ports.SnapshotDesignError
 		if !errors.As(err, &de) || de.DesignID != second.Design.ID {
 			t.Fatalf("%v", err)
@@ -664,7 +664,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		}
 		orderID := uuid.NewString()
 		line := snapshotFromSeed(t, orderID, uuid.NewString(), "TEE-DEAD", seed, at)
-		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, nil, at)
+		_, _, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, nil, at)
 		var de *ports.SnapshotDesignError
 		if !errors.As(err, &de) || de.DesignID != seed.Design.ID || !strings.Contains(err.Error(), "missing or deleted") {
 			t.Fatalf("%v", err)
@@ -691,7 +691,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		line := snapshotFromSeed(t, orderID, uuid.NewString(), "TEE-DEAD-PROD", seed, at)
 		line.ProductionAssetID = seed.ProductionID
 		line.ProductionChecksum = "sha256:production"
-		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, nil, at)
+		_, _, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, nil, at)
 		var de *ports.SnapshotDesignError
 		if !errors.As(err, &de) || de.DesignID != seed.Design.ID || !strings.Contains(err.Error(), seed.ProductionID) {
 			t.Fatalf("%v", err)
@@ -1033,9 +1033,10 @@ func TestSnapshotOrder_Thumbnail(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		preKey := "private/blobs/metaldogs/thumbnail/2026/10/" + thumbID + ".png"
 		if err := assets.Insert(ctx, domain.Asset{
 			ID: thumbID, Type: domain.AssetTypeThumbnail,
-			StorageKey: "private/blobs/metaldogs/thumbnail/2026/11/" + thumbID + ".png",
+			StorageKey: preKey,
 			MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
 			Checksum: "sha256:preexisting-thumb", CreatedAt: clock.Now(), DeleteAfter: clock.Now().Add(time.Hour),
 		}); err != nil {
@@ -1044,15 +1045,115 @@ func TestSnapshotOrder_Thumbnail(t *testing.T) {
 		src.Add(orderID, clock.Now(), []ports.OrderLine{{
 			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
 		}})
-		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, &snapLog{}); err != nil {
+		log := &snapLog{}
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, log); err != nil {
 			t.Fatal(err)
 		}
 		got, ok, err := snaps.Get(ctx, orderID, variantID)
 		if err != nil || !ok || got.MockupAssetID != "" || got.ThumbnailAssetID != "" || got.DesignID != seed.Design.ID {
 			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
 		}
+		assertThumbnailWarning(t, log, orderID, variantID, seed.Design.ID)
+		newKey, err := ports.ObjectKey(domain.AssetTypeThumbnail, thumbID, "png", clock.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if newKey == preKey {
+			t.Fatalf("fixture key %s", newKey)
+		}
+		if _, still := store.blob(newKey); still {
+			t.Fatal("dropped thumbnail object still stored")
+		}
+		row, ok, err := assets.GetByID(ctx, thumbID)
+		if err != nil || !ok || row.StorageKey != preKey || row.Checksum != "sha256:preexisting-thumb" {
+			t.Fatalf("preexisting ok=%v err=%v %+v", ok, err, row)
+		}
 		status, _ := designStatus(t, postgres.NewDesignRepo(db), seed.Design.ID)
 		if status != domain.DesignOrdered {
+			t.Fatalf("status=%s", status)
+		}
+	})
+
+	t.Run("thumbnail insert conflict keeps live object", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-thumb-conflict-live", "prompt-thumb-conflict-live", false)
+		pngBytes := snapshotTextPNG(t, 40, 40, "")
+		insertSnapshotMockup(t, db, seed.Design.ID, seed.ArtworkID, seed.ArtworkChecksum, pngBytes, store, clock.Now())
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		thumbID, err := application.ThumbnailAssetID(orderID, variantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := ports.ObjectKey(domain.AssetTypeThumbnail, thumbID, "png", clock.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := assets.Insert(ctx, domain.Asset{
+			ID: thumbID, Type: domain.AssetTypeThumbnail,
+			StorageKey: key,
+			MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+			Checksum: "sha256:preexisting-thumb", CreatedAt: clock.Now(), DeleteAfter: clock.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		store.put(key, []byte("live-thumb"))
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		log := &snapLog{}
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, log); err != nil {
+			t.Fatal(err)
+		}
+		assertThumbnailWarning(t, log, orderID, variantID, seed.Design.ID)
+		if _, ok := store.blob(key); !ok {
+			t.Fatal("live thumbnail object deleted")
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || got.ThumbnailAssetID != "" {
+			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+	})
+
+	t.Run("commit failure deletes thumbnail object", func(t *testing.T) {
+		first := seedApprovedDesign(t, db, cat, "tee-thumb-rollback", "prompt-thumb-rollback", false)
+		second := seedApprovedDesign(t, db, cat, "tee-thumb-rollback-b", "prompt-thumb-rollback-b", false)
+		pngBytes := snapshotTextPNG(t, 40, 40, "")
+		insertSnapshotMockup(t, db, first.Design.ID, first.ArtworkID, first.ArtworkChecksum, pngBytes, store, clock.Now())
+		insertSnapshotMockup(t, db, second.Design.ID, second.ArtworkID, second.ArtworkChecksum, pngBytes, store, clock.Now())
+		if _, err := db.ExecContext(ctx, `UPDATE metaldogs_assets SET deleted_at = $2 WHERE id = $1`, second.ArtworkID, clock.Now()); err != nil {
+			t.Fatal(err)
+		}
+		orderID := uuid.NewString()
+		variantA := uuid.NewString()
+		variantB := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{
+			{VariantID: variantA, SKU: "TEE-A", Quantity: 1, DesignID: first.Design.ID},
+			{VariantID: variantB, SKU: "TEE-B", Quantity: 1, DesignID: second.Design.ID},
+		})
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, &snapLog{}); err == nil {
+			t.Fatal("expected commit error")
+		}
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM metaldogs_order_design_snapshots WHERE order_id = $1`, orderID).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("snapshots=%d err=%v", n, err)
+		}
+		for _, variantID := range []string{variantA, variantB} {
+			thumbID, err := application.ThumbnailAssetID(orderID, variantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := ports.ObjectKey(domain.AssetTypeThumbnail, thumbID, "png", clock.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, still := store.blob(key); still {
+				t.Fatalf("orphan thumbnail %s", variantID)
+			}
+			if _, ok, err := assets.GetByID(ctx, thumbID); err != nil || ok {
+				t.Fatalf("thumbnail row ok=%v err=%v", ok, err)
+			}
+		}
+		if status, _ := designStatus(t, postgres.NewDesignRepo(db), first.Design.ID); status != domain.DesignApproved {
 			t.Fatalf("status=%s", status)
 		}
 	})

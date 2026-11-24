@@ -77,6 +77,7 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 		}
 		snap, thumb, skip, err := s.build(ctx, orderID, line, designID, now)
 		if err != nil {
+			s.deleteUnreferencedThumbnails(ctx, thumbs)
 			return nil, err
 		}
 		snaps = append(snaps, snap)
@@ -86,16 +87,21 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 	if len(snaps) == 0 {
 		return nil, nil
 	}
-	written, err := s.Snapshots.CommitOrder(ctx, snaps, thumbs, now)
+	written, dropped, err := s.Snapshots.CommitOrder(ctx, snaps, thumbs, now)
 	if err != nil {
+		s.deleteUnreferencedThumbnails(ctx, thumbs)
 		return nil, commitOrderError(orderID, snaps, err)
 	}
 	out := make([]SnapshotLineOutcome, len(snaps))
 	for i, snap := range snaps {
 		ok := i < len(written) && written[i]
+		lineDropped := i < len(dropped) && dropped[i]
+		if lineDropped && i < len(thumbs) {
+			s.deleteUnreferencedThumbnail(ctx, thumbs[i])
+		}
 		out[i] = SnapshotLineOutcome{
 			VariantID: snap.VariantID, DesignID: snap.DesignID, Written: ok,
-			ThumbnailSkipped: i < len(skipped) && skipped[i],
+			ThumbnailSkipped: (i < len(skipped) && skipped[i]) || lineDropped,
 		}
 	}
 	return out, nil

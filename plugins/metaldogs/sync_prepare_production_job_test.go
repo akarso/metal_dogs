@@ -668,6 +668,11 @@ func (m *memBlobs) Head(context.Context, string) error { return nil }
 func (m *memBlobs) SignedGetURL(context.Context, string, time.Duration) (string, error) {
 	return "", errors.New("no url")
 }
-func (m *memBlobs) Delete(context.Context, string) error { return nil }
+func (m *memBlobs) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.blobs, key)
+	return nil
+}
 
 var _ ports.AssetStore = (*memBlobs)(nil)

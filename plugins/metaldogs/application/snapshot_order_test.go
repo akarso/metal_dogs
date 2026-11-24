@@ -106,8 +106,8 @@ func (g getErrSnapshots) Insert(context.Context, domain.OrderDesignSnapshot) (bo
 	return false, g.err
 }
 
-func (g getErrSnapshots) CommitOrder(context.Context, []domain.OrderDesignSnapshot, []domain.Asset, time.Time) ([]bool, error) {
-	return nil, g.err
+func (g getErrSnapshots) CommitOrder(context.Context, []domain.OrderDesignSnapshot, []domain.Asset, time.Time) ([]bool, []bool, error) {
+	return nil, nil, g.err
 }
 
 func (g getErrSnapshots) Get(context.Context, string, string) (domain.OrderDesignSnapshot, bool, error) {

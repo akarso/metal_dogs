@@ -11,6 +11,8 @@ The `integration.sync.metaldogs.retention_sweep` scheduler task is still O2. It 
 
 O2's sweep calls only `postgres.CleanupDueAssets`, `postgres.CleanupUnattachedUploads`, and `postgres.ExpireDesigns`. Those functions already skip snapshot-referenced assets. O2 does not add its own `UPDATE` of `deleted_at` on the same rows. With `plugins.metaldogs.order_snapshot.enabled` false, no snapshot rows are written, so this skip stays idle.
 
+A thumbnail is stored before the snapshot transaction commits. If that line drops the thumbnail or the commit rolls back, the job deletes the object unless a live `metaldogs_assets` row still has that storage key. If that lookup or the delete fails, the object can remain with no snapshot reference. The sweep does not see it. The warning is `metaldogs.snapshot_order_design.thumbnail` (`order_id`, `variant_id` only).
+
 ## Routine checks
 
 - Sweep runs on schedule (`./app schedule:list`), finishes within its window, and the deletion count is within the normal band. A sudden spike means a policy or clock bug: stop and check before the next run.

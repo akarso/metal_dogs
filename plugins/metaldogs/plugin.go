@@ -269,7 +269,7 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		p.noteSyncJob(ReconcileSnapshotsJobName)
 		if settings.ThumbnailSigningKey != "" {
 			// NoCache would denylist this prefix as no-store; the handler sets private max-age.
-			if err := h.RegisterPublicRoute(OrderThumbnailRoute, httpapi.OrderThumbnail(p.openOrderThumbnail)); err != nil {
+			if err := h.RegisterPublicRoute(OrderThumbnailRoute, httpapi.OrderThumbnail(p.openOrderThumbnail, h.Logger())); err != nil {
 				return fmt.Errorf("metaldogs plugin: order thumbnail route: %w", err)
 			}
 		}
