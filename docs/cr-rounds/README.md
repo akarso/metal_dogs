@@ -90,3 +90,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-36 | G5a production artwork pipeline (G5 open until P0) | M3 → G5 partial | [`CR-36-g5a-production-artwork.md`](CR-36-g5a-production-artwork.md) |
 | CR-37 | E6a order thumbnail link (E6b open) | M3 → E6a | [`CR-37-e6a-order-thumbnail.md`](CR-37-e6a-order-thumbnail.md) |
 | CR-38 | UPG12 pin `084d1206` (ticket 00; PR-1603). Shopper-visible `Design ID` accepted. E6b not done | M3 pin | [`CR-38-upg12-pin-084d1206.md`](CR-38-upg12-pin-084d1206.md) |
+| CR-39 | UPG13 pin `7ab17606` (ticket 00; PR-1604, PR-1605, PR-1606). E6b and DID1 not done | M3 pin | [`CR-39-upg13-pin-7ab17606.md`](CR-39-upg13-pin-7ab17606.md) |

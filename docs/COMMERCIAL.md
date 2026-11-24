@@ -137,6 +137,6 @@ Not defined in this document. A future hosted offering may bundle license + oper
 ## Related docs
 
 - [B2B plugin README](../plugins/b2b/README.md)
-- [Plugin authoring (three tiers)](https://github.com/akarso/shopanda/blob/084d120660c50acabb045c1b19a78f25677d6843/docs/guides/DEVELOPER.md#three-tier-extension-model)
-- [EU compliance (OSS track)](https://github.com/akarso/shopanda/blob/084d120660c50acabb045c1b19a78f25677d6843/docs/guides/COMPLIANCE_EU.md)
+- [Plugin authoring (three tiers)](https://github.com/akarso/shopanda/blob/7ab1760627ba666bac20d1c217ae3f185f5cb20d/docs/guides/DEVELOPER.md#three-tier-extension-model)
+- [EU compliance (OSS track)](https://github.com/akarso/shopanda/blob/7ab1760627ba666bac20d1c217ae3f185f5cb20d/docs/guides/COMPLIANCE_EU.md)
 - B2B PR tags: `docs/phase-5-maturity/ROADMAP.md` on the `dev` branch (not on `main`)

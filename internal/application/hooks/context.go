@@ -43,6 +43,25 @@ func (c *Context) Set(key string, value interface{}) {
 	c.Payload[key] = value
 }
 
+// Clone returns a shallow copy of the context: a new Payload map with the same
+// key→value pointers. Pointer values (e.g. validation_errors) stay shared so
+// adapted handlers can still append to a common collector; map identity does not.
+func (c *Context) Clone() *Context {
+	if c == nil {
+		return nil
+	}
+	out := &Context{Name: c.Name}
+	if c.Payload == nil {
+		out.Payload = make(map[string]interface{})
+		return out
+	}
+	out.Payload = make(map[string]interface{}, len(c.Payload))
+	for k, v := range c.Payload {
+		out.Payload[k] = v
+	}
+	return out
+}
+
 const (
 	// HookCartAddItemBefore runs before a cart line is added (mutation not yet applied).
 	HookCartAddItemBefore = "cart.add_item.before"
@@ -56,6 +75,9 @@ const (
 	HookCartRecalculateBefore = "cart.recalculate.before"
 	// HookCartValidate runs to collect structured cart validation issues for storefront APIs.
 	HookCartValidate = "cart.validate"
+	// HookOrderLineDisplay lets plugins append derived shopper-facing fields
+	// (e.g. signed thumbnail URL) to confirmation email and order page lines.
+	HookOrderLineDisplay = "order.line.display"
 )
 
 // CartHookPoints returns documented cart lifecycle hook names (stable ordering).
@@ -68,6 +90,21 @@ func CartHookPoints() []string {
 		HookCartRecalculateBefore,
 		HookCartValidate,
 	}
+}
+
+// OrderHookPoints returns documented order-line display hook names.
+func OrderHookPoints() []string {
+	return []string{HookOrderLineDisplay}
+}
+
+// DocumentedHookPoints returns every stable hook point name (cart + order).
+func DocumentedHookPoints() []string {
+	cart := CartHookPoints()
+	order := OrderHookPoints()
+	out := make([]string, 0, len(cart)+len(order))
+	out = append(out, cart...)
+	out = append(out, order...)
+	return out
 }
 
 var hookNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
