@@ -15,9 +15,10 @@ import (
 
 // SnapshotLineOutcome is one design line after a successful commit.
 type SnapshotLineOutcome struct {
-	VariantID string
-	DesignID  string
-	Written   bool
+	VariantID        string
+	DesignID         string
+	Written          bool
+	ThumbnailSkipped bool
 }
 
 // SnapshotOrderError is a failed snapshot. The order is unchanged.
@@ -46,6 +47,9 @@ type SnapshotOrder struct {
 	Versions  ports.DesignVersionRepository
 	Templates ports.TemplateStore
 	Snapshots ports.OrderDesignSnapshotRepository
+	Mockups   ports.ArtworkMockupLookup
+	Assets    ports.AssetRepository
+	Store     ports.AssetStore
 	Clock     ports.Clock
 }
 
@@ -64,28 +68,41 @@ func (s *SnapshotOrder) Execute(ctx context.Context, orderID string) ([]Snapshot
 	}
 	now := s.Clock.Now().UTC()
 	var snaps []domain.OrderDesignSnapshot
+	var thumbs []domain.Asset
+	var skipped []bool
 	for _, line := range lines {
 		designID := strings.TrimSpace(line.DesignID)
 		if designID == "" {
 			continue
 		}
-		snap, err := s.build(ctx, orderID, line, designID, now)
+		snap, thumb, skip, err := s.build(ctx, orderID, line, designID, now)
 		if err != nil {
+			s.deleteUnreferencedThumbnails(ctx, thumbs)
 			return nil, err
 		}
 		snaps = append(snaps, snap)
+		thumbs = append(thumbs, thumb)
+		skipped = append(skipped, skip)
 	}
 	if len(snaps) == 0 {
 		return nil, nil
 	}
-	written, err := s.Snapshots.CommitOrder(ctx, snaps, now)
+	written, dropped, err := s.Snapshots.CommitOrder(ctx, snaps, thumbs, now)
 	if err != nil {
+		s.deleteUnreferencedThumbnails(ctx, thumbs)
 		return nil, commitOrderError(orderID, snaps, err)
 	}
 	out := make([]SnapshotLineOutcome, len(snaps))
 	for i, snap := range snaps {
 		ok := i < len(written) && written[i]
-		out[i] = SnapshotLineOutcome{VariantID: snap.VariantID, DesignID: snap.DesignID, Written: ok}
+		lineDropped := i < len(dropped) && dropped[i]
+		if lineDropped && i < len(thumbs) {
+			s.deleteUnreferencedThumbnail(ctx, thumbs[i])
+		}
+		out[i] = SnapshotLineOutcome{
+			VariantID: snap.VariantID, DesignID: snap.DesignID, Written: ok,
+			ThumbnailSkipped: (i < len(skipped) && skipped[i]) || lineDropped,
+		}
 	}
 	return out, nil
 }
@@ -126,9 +143,9 @@ func variantForDesign(snaps []domain.OrderDesignSnapshot, designID string) strin
 	return variant
 }
 
-func (s *SnapshotOrder) build(ctx context.Context, orderID string, line ports.OrderLine, designID string, now time.Time) (domain.OrderDesignSnapshot, error) {
-	fail := func(err error) (domain.OrderDesignSnapshot, error) {
-		return domain.OrderDesignSnapshot{}, &SnapshotOrderError{
+func (s *SnapshotOrder) build(ctx context.Context, orderID string, line ports.OrderLine, designID string, now time.Time) (domain.OrderDesignSnapshot, domain.Asset, bool, error) {
+	fail := func(err error) (domain.OrderDesignSnapshot, domain.Asset, bool, error) {
+		return domain.OrderDesignSnapshot{}, domain.Asset{}, false, &SnapshotOrderError{
 			OrderID:   orderID,
 			VariantID: strings.TrimSpace(line.VariantID),
 			DesignID:  designID,
@@ -182,7 +199,7 @@ func (s *SnapshotOrder) build(ctx context.Context, orderID string, line ports.Or
 	if err != nil {
 		return fail(err)
 	}
-	return snap, nil
+	return s.attachThumbnail(ctx, snap, d)
 }
 
 func canonicalOrderID(orderID string) error {

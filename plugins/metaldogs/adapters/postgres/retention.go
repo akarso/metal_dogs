@@ -34,7 +34,7 @@ type dbSession interface {
 }
 
 // AssetsReferencedBySnapshots reports which of assetIDs are an order snapshot's
-// artwork_asset_id or production_asset_id. It is the only snapshot-protection decision.
+// artwork, production, mockup, or thumbnail asset id. It is the only snapshot-protection decision.
 func AssetsReferencedBySnapshots(ctx context.Context, q dbSession, assetIDs []string) (map[string]struct{}, error) {
 	out := make(map[string]struct{})
 	ids := canonicalUUIDs(assetIDs)
@@ -47,6 +47,12 @@ func AssetsReferencedBySnapshots(ctx context.Context, q dbSession, assetIDs []st
 		UNION
 		SELECT production_asset_id::text FROM metaldogs_order_design_snapshots
 		WHERE production_asset_id = ANY($1::uuid[])
+		UNION
+		SELECT mockup_asset_id::text FROM metaldogs_order_design_snapshots
+		WHERE mockup_asset_id = ANY($1::uuid[])
+		UNION
+		SELECT thumbnail_asset_id::text FROM metaldogs_order_design_snapshots
+		WHERE thumbnail_asset_id = ANY($1::uuid[])
 	`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("metaldogs snapshot asset refs: %w", err)

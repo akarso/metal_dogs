@@ -2,6 +2,7 @@ package metaldogs
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,11 @@ type Settings struct {
 	MaxAttemptsPerDesign int
 	CooldownSeconds      int
 	OrderSnapshotEnabled bool
+	// ThumbnailSigningKey is empty when plugins.metaldogs.thumbnail_signing_key is absent.
+	ThumbnailSigningKey string
+	// PublicBaseURL is plugins.metaldogs.public_base_url with any trailing slash removed.
+	// Host.ConfigValue is plugin-scoped, and PlatformConfig does not allow server.public_base_url.
+	PublicBaseURL string
 	// ProductionSpec is nil when plugins.metaldogs.production_spec is absent.
 	ProductionSpec *production.Spec
 }
@@ -85,6 +91,14 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	thumbKey, err := parseThumbnailSigningKey(get)
+	if err != nil {
+		return Settings{}, err
+	}
+	publicBase, err := parsePublicBaseURL(get)
+	if err != nil {
+		return Settings{}, err
+	}
 	prod, err := parseProductionSpec(get)
 	if err != nil {
 		return Settings{}, err
@@ -96,8 +110,35 @@ func SettingsFrom(get func(string) string) (Settings, error) {
 		MaxAttemptsPerDesign: maxAttempts,
 		CooldownSeconds:      cooldown,
 		OrderSnapshotEnabled: orderSnapshot,
+		ThumbnailSigningKey:  thumbKey,
+		PublicBaseURL:        publicBase,
 		ProductionSpec:       prod,
 	}, nil
+}
+
+const thumbnailSigningKeyMinLen = 32
+
+func parseThumbnailSigningKey(get func(string) string) (string, error) {
+	raw := strings.TrimSpace(get(metalDogsKey("thumbnail_signing_key")))
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) < thumbnailSigningKeyMinLen {
+		return "", fmt.Errorf("metaldogs plugin: plugins.metaldogs.thumbnail_signing_key must be at least 32 characters")
+	}
+	return raw, nil
+}
+
+func parsePublicBaseURL(get func(string) string) (string, error) {
+	raw := strings.TrimSpace(get(metalDogsKey("public_base_url")))
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return "", fmt.Errorf("metaldogs plugin: plugins.metaldogs.public_base_url must be an absolute http(s) URL with no query or fragment")
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 var productionSpecFields = []string{

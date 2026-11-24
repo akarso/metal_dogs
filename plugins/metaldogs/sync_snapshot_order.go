@@ -91,12 +91,19 @@ func (p *Plugin) snapshotOrderHandler() extapi.SyncJobHandler {
 			logSnapshot(job, "failed", orderID, "", "", err)
 			return err
 		}
+		var store ports.AssetStore
+		if p != nil {
+			store = p.assets
+		}
 		svc := &application.SnapshotOrder{
 			Orders:    p.orderSource,
 			Designs:   postgres.NewDesignRepo(db),
 			Versions:  postgres.NewDesignVersionRepo(db),
 			Templates: postgres.NewTemplateStore(db),
 			Snapshots: postgres.NewOrderDesignSnapshotRepo(db),
+			Mockups:   postgres.NewGenerationJobRepo(db),
+			Assets:    postgres.NewAssetRepo(db),
+			Store:     store,
 			Clock:     p.snapshotClock,
 		}
 		outcomes, err := svc.Execute(ctx, orderID)
@@ -105,6 +112,9 @@ func (p *Plugin) snapshotOrderHandler() extapi.SyncJobHandler {
 			return err
 		}
 		for _, line := range outcomes {
+			if line.ThumbnailSkipped {
+				warnThumbnail(job, orderID, line.VariantID)
+			}
 			kind := "duplicate"
 			if line.Written {
 				kind = "written"
@@ -179,6 +189,25 @@ func logSnapshotFailure(job extapi.SyncJobContext, orderID string, err error) {
 		return
 	}
 	logSnapshot(job, "failed", orderID, se.VariantID, se.DesignID, err)
+}
+
+func warnThumbnail(job extapi.SyncJobContext, orderID, variantID string) {
+	if job.Logger == nil {
+		return
+	}
+	fields := map[string]interface{}{
+		"order_id":   orderID,
+		"variant_id": variantID,
+	}
+	const event = "metaldogs.snapshot_order_design.thumbnail"
+	type warner interface {
+		Warn(string, map[string]interface{})
+	}
+	if w, ok := job.Logger.(warner); ok {
+		w.Warn(event, fields)
+		return
+	}
+	job.Logger.Info(event, fields)
 }
 
 func logSnapshot(job extapi.SyncJobContext, kind, orderID, variantID, designID string, err error) {

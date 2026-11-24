@@ -31,6 +31,10 @@ const PermissionSnapshotsRead = "metaldogs.snapshots.read"
 // OrderArtworkAdminRoute is GET artwork for one order.
 const OrderArtworkAdminRoute = "GET /api/v1/admin/orders/{order_id}/artwork"
 
+// OrderThumbnailRoute is the public thumbnail GET. Registered only when
+// order_snapshot.enabled is true and thumbnail_signing_key is set.
+const OrderThumbnailRoute = "GET /api/customizer/order-thumbnails/{token}"
+
 const roleAdmin = "admin"
 
 // Plugin is the Metal Dogs Shopanda external plugin.
@@ -47,6 +51,8 @@ type Plugin struct {
 	orderLookup          ports.OrderLookup
 	snapshotClock        ports.Clock
 	orderSnapshotEnabled bool
+	thumbnailKey         string
+	publicBaseURL        string
 	productionSpec       *production.Spec
 	productionFill       func(ctx context.Context, versionID string) error
 }
@@ -239,6 +245,8 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 		p.noteSyncJob(generateJobName)
 	}
 	p.orderSnapshotEnabled = settings.OrderSnapshotEnabled
+	p.thumbnailKey = settings.ThumbnailSigningKey
+	p.publicBaseURL = settings.PublicBaseURL
 	if settings.OrderSnapshotEnabled {
 		// Host.Orders is closed until this plugin declares CapOrders.
 		h.Require(pluginsdk.CapOrders)
@@ -259,6 +267,12 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 			return fmt.Errorf("metaldogs plugin: reconcile_snapshots: %w", err)
 		}
 		p.noteSyncJob(ReconcileSnapshotsJobName)
+		if settings.ThumbnailSigningKey != "" {
+			// NoCache would denylist this prefix as no-store; the handler sets private max-age.
+			if err := h.RegisterPublicRoute(OrderThumbnailRoute, httpapi.OrderThumbnail(p.openOrderThumbnail, h.Logger())); err != nil {
+				return fmt.Errorf("metaldogs plugin: order thumbnail route: %w", err)
+			}
+		}
 	}
 	return nil
 }

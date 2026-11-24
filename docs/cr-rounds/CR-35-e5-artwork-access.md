@@ -66,7 +66,7 @@ Operator fetch of snapshot artwork. Dark. `plugins.metaldogs.order_snapshot.enab
 ## Follow-ups
 
 - M3 turns `plugins.metaldogs.order_snapshot.enabled` on. This round does not.
-- E6: customer thumbnail. Out of this slice.
+- E6a order thumbnail closed in [CR-37](CR-37-e6a-order-thumbnail.md). E6b display stays open.
 - P1: list pending fulfilment and record an external POD id. The artwork download this runbook calls is done.
 - G5a fills production columns when `production_spec` is set ([CR-36](CR-36-g5a-production-artwork.md)). Without that section, `production` stays null. P0 values are still open.
 - O5: exercise the runbook and replace "Last exercised: never".

@@ -77,6 +77,20 @@ func TestOrderDesignSnapshot_FillProductionOnce(t *testing.T) {
 	if filled.ProductionAssetID != "66666666-6666-4666-8666-666666666666" || filled.ProductionChecksum != "sha256:prod" {
 		t.Fatalf("%+v", filled)
 	}
+	withThumb, err := s.WithThumbnail("88888888-8888-4888-8888-888888888888", "")
+	if err == nil || withThumb.MockupAssetID != "" {
+		t.Fatal("partial thumbnail must fail")
+	}
+	withThumb, err = s.WithThumbnail("88888888-8888-4888-8888-888888888888", "99999999-9999-4999-8999-999999999999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MockupAssetID != "" || s.ThumbnailAssetID != "" {
+		t.Fatal("WithThumbnail mutated the original")
+	}
+	if withThumb.MockupAssetID != "88888888-8888-4888-8888-888888888888" || withThumb.ThumbnailAssetID != "99999999-9999-4999-8999-999999999999" {
+		t.Fatalf("%+v", withThumb)
+	}
 	if _, err := filled.FillProduction("77777777-7777-4777-8777-777777777777", "sha256:other"); !errors.Is(err, domain.ErrProductionAlreadySet) {
 		t.Fatalf("second fill: %v", err)
 	}

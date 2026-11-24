@@ -27,6 +27,8 @@ type OrderDesignSnapshot struct {
 	PromptVersion      string
 	ArtworkAssetID     string
 	ArtworkChecksum    string
+	MockupAssetID      string
+	ThumbnailAssetID   string
 	ProductionAssetID  string
 	ProductionChecksum string
 	CreatedAt          time.Time
@@ -87,10 +89,31 @@ func (s OrderDesignSnapshot) Validate() error {
 	if (strings.TrimSpace(s.ProductionAssetID) == "") != (strings.TrimSpace(s.ProductionChecksum) == "") {
 		return fmt.Errorf("order design snapshot: production asset and checksum are set together")
 	}
+	if (strings.TrimSpace(s.MockupAssetID) == "") != (strings.TrimSpace(s.ThumbnailAssetID) == "") {
+		return fmt.Errorf("order design snapshot: mockup and thumbnail are set together")
+	}
 	if s.CreatedAt.IsZero() {
 		return fmt.Errorf("order design snapshot: created_at required")
 	}
 	return nil
+}
+
+// WithThumbnail returns a copy that records the approved mockup and its thumbnail.
+// Both ids are required. The original is unchanged.
+func (s OrderDesignSnapshot) WithThumbnail(mockupAssetID, thumbnailAssetID string) (OrderDesignSnapshot, error) {
+	mockupAssetID = strings.TrimSpace(mockupAssetID)
+	thumbnailAssetID = strings.TrimSpace(thumbnailAssetID)
+	if mockupAssetID == "" || thumbnailAssetID == "" {
+		return OrderDesignSnapshot{}, fmt.Errorf("order design snapshot: mockup and thumbnail are set together")
+	}
+	next := s
+	next.Texts = copyTexts(s.Texts)
+	next.MockupAssetID = mockupAssetID
+	next.ThumbnailAssetID = thumbnailAssetID
+	if err := next.Validate(); err != nil {
+		return OrderDesignSnapshot{}, err
+	}
+	return next, nil
 }
 
 // FillProduction returns a copy with production artwork set.

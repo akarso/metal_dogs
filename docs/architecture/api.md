@@ -1,10 +1,10 @@
 # Customizer HTTP API
 
-Public surface under `/api/customizer/*` (plugin flag `plugins.metaldogs.enabled`). Guest responses use platform `Cache-Control: no-store` (F1 prefix list). Not k8s probes — use `/healthz` / `/readyz`.
+Public surface under `/api/customizer/*` (plugin flag `plugins.metaldogs.enabled`). Guest responses use platform `Cache-Control: no-store` (F1 prefix list), except the order-thumbnail GET. Not k8s probes — use `/healthz` / `/readyz`.
 
 ## Enablement & health
 
-Exact `/api/customizer` is not a route. The platform answers with a plain 404, which may be cached. Every registered `/api/customizer/*` route is `Cache-Control: no-store` on guest GET and HEAD.
+Exact `/api/customizer` is not a route. The platform answers with a plain 404, which may be cached. Every registered `/api/customizer/*` route except the order-thumbnail GET is `Cache-Control: no-store` on guest GET and HEAD (`pluginsdk.NoCache`). `GET /api/customizer/order-thumbnails/{token}` is registered without `NoCache`. A `200` sets `Cache-Control: private, max-age=86400`. A `404` sets `Cache-Control: no-store`.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
@@ -419,6 +419,25 @@ Measured by `TestOrderArtworkAdminRoute` (isolated Postgres, `RequirePermission`
 | `503` | `plugin.metaldogs.artwork_unavailable` | `order artwork access failed` | Store, asset, or audit write failed. Body has no URL and no storage key. No new audit row |
 
 Plugin error shape: `{"data":null,"error":{"code":"…","message":"…"}}`.
+
+## Order thumbnail (E6a)
+
+Registered only when the plugin is enabled, `plugins.metaldogs.order_snapshot.enabled` is true, and `plugins.metaldogs.thumbnail_signing_key` is set. The key has no default and must be a freshly generated random secret, not a passphrase. Shorter than 32 characters fails plugin Init and the error does not include the value. Absent key: this route is not registered and `(*Plugin).OrderThumbnailURL` returns an empty string. No auth and no owner token.
+
+`GET /api/customizer/order-thumbnails/{token}` is `httpapi.OrderThumbnail`. The token is `base64url(order_id|variant_id)` + `.` + `base64url(HMAC-SHA256(key, "order-thumbnail:" + order_id + "|" + variant_id))` (`encoding/base64` raw URL encoding). It does not expire. Verification uses `hmac.Equal`. The handler loads the snapshot, reads the thumbnail through `AssetStore`, and writes the bytes. The handler does not log the token. The platform HTTP access log (and any proxy log) records the full request path, so the token appears there on every hit: treat those logs as credential-bearing for this route. Platform gap, not fixable in the plugin: the access log should use the route pattern or redact the path per route. A snapshot, asset, or object read error is still `404` and logs `metaldogs.order_thumbnail` once, with `order_id`, `variant_id`, and `cause` (`snapshot`, `asset`, or `object`). The error text is not logged.
+
+`200` headers: `Content-Type` is one of `image/jpeg`, `image/png`, `image/webp` (the stored MIME, lower-cased); `Content-Disposition: inline`; `Cache-Control: private, max-age=86400`; `X-Content-Type-Options: nosniff`. Any other stored MIME is the same `404` as a missing object. The route is not on the `NoCache` denylist, so platform middleware does not replace that `Cache-Control`.
+
+`404` body is only `{"error":"not_found"}`, with `Content-Type: application/json`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`. That body is used for a bad or truncated token, a token whose order id or variant id was swapped, an unknown snapshot, a snapshot with no thumbnail, a missing object, and a MIME outside the allowlist. Headers and body contain no storage key and no URL.
+
+`(*Plugin).OrderThumbnailURL(ctx, orderID, variantID)` returns `<public_base_url>/api/customizer/order-thumbnails/<token>` when that snapshot has a thumbnail. It returns an empty string when the flag is off, the key is absent, the line is missing, or the thumbnail id is empty. `plugins.metaldogs.public_base_url` is an absolute `http` or `https` origin with no query or fragment. Empty, when a thumbnail exists, is an error. The plugin cannot read `server.public_base_url` (`Host.ConfigValue` is plugin-scoped). Nothing in email or a storefront page calls this function.
+
+Measured by `TestOrderThumbnailHTTP` (isolated Postgres, in-memory store). The link from `OrderThumbnailURL` is the request the handler accepts.
+
+| HTTP | Body | When |
+| --- | --- | --- |
+| `200` | image bytes | Token verifies and the snapshot thumbnail object exists with an allowlisted MIME |
+| `404` | `{"error":"not_found"}` | Bad, truncated, or swapped token; unknown line; no thumbnail; missing object; MIME outside the allowlist. Same body for each |
 
 ## Safe delivery
 

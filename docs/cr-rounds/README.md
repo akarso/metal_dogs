@@ -88,3 +88,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-34 | E4b order source adapter (closed) | M3 → E4b | [`CR-34-e4b-order-source.md`](CR-34-e4b-order-source.md) |
 | CR-35 | E5 admin snapshot and artwork access (closed) | M3 → E5 | [`CR-35-e5-artwork-access.md`](CR-35-e5-artwork-access.md) |
 | CR-36 | G5a production artwork pipeline (G5 open until P0) | M3 → G5 partial | [`CR-36-g5a-production-artwork.md`](CR-36-g5a-production-artwork.md) |
+| CR-37 | E6a order thumbnail link (E6b open) | M3 → E6a | [`CR-37-e6a-order-thumbnail.md`](CR-37-e6a-order-thumbnail.md) |

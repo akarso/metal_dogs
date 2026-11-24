@@ -1,8 +1,8 @@
 # ADR-0005: Approval freezes a `DesignVersion`; orders carry an `OrderDesignSnapshot`
 
-- **Status:** Accepted for `DesignVersion` / approve (`C6`, CR-16). `OrderDesignSnapshot` is implemented in E4a (CR-32, 2026-11-23). E4b (CR-34, 2026-11-23) binds `adapters/hostorders` to `Host.Orders()` when `plugins.metaldogs.order_snapshot.enabled` is true. That flag still defaults to false
-- **Date:** 2026-10-15 (Accepted C6 portion 2026-11-10; snapshot portion 2026-11-23; order source 2026-11-23)
-- **Related slices:** `C6`, `G5`, `E2`, `E4a`, `E4b`, `E5`, `O2`
+- **Status:** Accepted for `DesignVersion` / approve (`C6`, CR-16). `OrderDesignSnapshot` is implemented in E4a (CR-32, 2026-11-23). E4b (CR-34, 2026-11-23) binds `adapters/hostorders` to `Host.Orders()` when `plugins.metaldogs.order_snapshot.enabled` is true. That flag still defaults to false. E6a (CR-37, 2026-11-24) stores the approved mockup and a thumbnail on the snapshot: see amendment below
+- **Date:** 2026-10-15 (Accepted C6 portion 2026-11-10; snapshot portion 2026-11-23; order source 2026-11-23; thumbnail columns 2026-11-24)
+- **Related slices:** `C6`, `G5`, `E2`, `E4a`, `E4b`, `E5`, `E6a`, `O2`
 - **Related ADRs:** [ADR-0006](0006-design-and-job-status-model.md), [ADR-0009](0009-pod-provider-and-catalog-modelling.md)
 
 ## Context
@@ -17,6 +17,10 @@ Project principle 4: every order is bound to an immutable version of the approve
 4. The cart line carries only `metaldogs.design_id`. Shopanda order items have no id of their own. The line key is `(order_id, variant_id)`, the same pair core uses for `order_item` extension values. **At order creation**, the plugin creates one `OrderDesignSnapshot` per custom-tee line that **copies** the version's identifying data (not just a foreign key): artwork asset id and checksum, production asset id and checksum (nullable until ready), template slug and version, texts, provider, model, prompt version, variant SKU. The snapshot's unique key is that pair. This decision called the key `order_line_id`; the stored key is the pair, not a single column. A line with no `metaldogs.design_id` is skipped. A value that is not a string fails the read. The write is E4a. E4b reads the field from `Host.Orders()` after the pin copies it and publishes `order.created`. The flag stays off until M3 turns it on.
 5. Assets referenced by a snapshot are excluded from retention until the fulfilment record is `shipped` plus the grace period; approved and production artwork retention after that is a policy decision in `O2`.
 6. Templates are versioned; publishing a changed template increments the version. In-flight designs keep their pinned version; nothing is migrated.
+
+## Amendment (E6a): mockup and thumbnail on the snapshot
+
+On insert the snapshot also stores `mockup_asset_id` and `thumbnail_asset_id` (migration `018`). Both are set or both are null. The append-only trigger refuses a later change. `AssetsReferencedBySnapshots` treats both ids as referenced assets. A missing mockup does not block the snapshot. [CR-37](../cr-rounds/CR-37-e6a-order-thumbnail.md).
 
 ## Alternatives considered
 
