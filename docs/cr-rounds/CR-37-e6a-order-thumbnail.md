@@ -55,7 +55,7 @@ A stable public thumbnail for one order line. Dark. `plugins.metaldogs.order_sna
 
 ## Documentation updated
 
-- [x] `docs/ROADMAP.md`: E6a **DONE** (CR-37). E6b open with the two Shopanda blockers. M3 lists E6a; M4 lists E6b. E4a/E4b/E5 known limits point here.
+- [x] `docs/ROADMAP.md`: E6a **DONE** (CR-37). E6b open: pin `084d1206` ([CR-38](CR-38-upg12-pin-084d1206.md)) puts per-line `VariantID`, `SKU`, and public `order_item` extensions on the confirmation email and the storefront order pages; no enrich hook for a derived image URL. E6b is not done. M3 lists E6a; M4 lists E6b. E4a/E4b/E5 known limits point here.
 - [x] `docs/architecture/api.md`: token, headers, uniform `404`, `public_base_url`, no `NoCache`.
 - [x] ADR-0004 amendment: the thumbnail endpoint is the exception to the 15-minute rule. `docs/adr/README.md` matches.
 - [x] ADR-0005 amendment: insert stores `mockup_asset_id` and `thumbnail_asset_id`. `docs/adr/README.md` matches.
