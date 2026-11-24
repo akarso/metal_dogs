@@ -136,6 +136,47 @@ func TestSettingsFrom_OrderSnapshotFlag(t *testing.T) {
 	}
 }
 
+func TestSettingsFrom_ThumbnailKeyAndPublicBase(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	got, err := SettingsFrom(func(string) string { return "" })
+	if err != nil || got.ThumbnailSigningKey != "" || got.PublicBaseURL != "" {
+		t.Fatalf("absent %+v err=%v", got, err)
+	}
+	got, err = SettingsFrom(func(key string) string {
+		switch key {
+		case "plugins.metaldogs.thumbnail_signing_key":
+			return "  " + secret + "  "
+		case "plugins.metaldogs.public_base_url":
+			return "https://shop.example/store/"
+		default:
+			return ""
+		}
+	})
+	if err != nil || got.ThumbnailSigningKey != secret || got.PublicBaseURL != "https://shop.example/store" {
+		t.Fatalf("parsed %+v err=%v", got, err)
+	}
+	_, err = SettingsFrom(func(key string) string {
+		if key == "plugins.metaldogs.thumbnail_signing_key" {
+			return "short-key"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "thumbnail_signing_key") || !strings.Contains(err.Error(), "32") || strings.Contains(err.Error(), "short-key") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, raw := range []string{"shop.example", "ftp://shop.example", "https://shop.example?x=1", "https://user:pass@shop.example"} {
+		_, err = SettingsFrom(func(key string) string {
+			if key == "plugins.metaldogs.public_base_url" {
+				return raw
+			}
+			return ""
+		})
+		if err == nil || !strings.Contains(err.Error(), "public_base_url") {
+			t.Fatalf("raw %q err = %v", raw, err)
+		}
+	}
+}
+
 func TestSettingsFrom_ScalarGenerationKey(t *testing.T) {
 	_, err := SettingsFrom(func(key string) string {
 		if key == "plugins.metaldogs.generation" {
