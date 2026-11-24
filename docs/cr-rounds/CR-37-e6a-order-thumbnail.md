@@ -33,6 +33,7 @@ A stable public thumbnail for one order line. Dark. `plugins.metaldogs.order_sna
 | `TestSnapshotOrder_Thumbnail` | In the tree. Isolated Postgres |
 | `TestRetention_MockupAndThumbnailSurviveEachPath` | In the tree. Isolated Postgres |
 | `bash .github/scripts/check-product-docs-links.sh` | Exit 0 on 2026-11-24 in this worktree |
+| `bash .github/scripts/check-upstream-deviations.sh` | Exit 0 on 2026-11-24: `upstream-deviations OK (pin e062d4d3d479, 16 listed path(s))` |
 
 ## Tests added
 
@@ -56,6 +57,7 @@ A stable public thumbnail for one order line. Dark. `plugins.metaldogs.order_sna
 - [x] `docs/ROADMAP.md`: E6a **DONE** (CR-37). E6b open with the two Shopanda blockers. M3 lists E6a; M4 lists E6b. E4a/E4b/E5 known limits point here.
 - [x] `docs/architecture/api.md`: token, headers, uniform `404`, `public_base_url`, no `NoCache`.
 - [x] ADR-0004 amendment: the thumbnail endpoint is the exception to the 15-minute rule. `docs/adr/README.md` matches.
+- [x] ADR-0005 amendment: insert stores `mockup_asset_id` and `thumbnail_asset_id`. `docs/adr/README.md` matches.
 - [x] `docs/architecture/flows/checkout-snapshot-and-fulfillment.md`: snapshot-time thumbnail and the public endpoint.
 - [x] `docs/architecture/domain-model.md`: both columns, retention check, policy row.
 - [x] `docs/architecture/overview.md`: route registers only when the key is set.
