@@ -36,9 +36,10 @@ type OrderDesignSnapshotRepository interface {
 	// and returns written=false.
 	Insert(ctx context.Context, s domain.OrderDesignSnapshot) (written bool, err error)
 	// CommitOrder inserts every snapshot and moves each design from approved
-	// to ordered in one transaction. written[i] is false when that line already
-	// existed. Any error rolls the transaction back.
-	CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, at time.Time) (written []bool, err error)
+	// to ordered in one transaction. thumbnails[i] is stored in that same
+	// transaction when its ID is set; a nil or empty slice stores none.
+	// written[i] is false when that line already existed. Any error rolls the transaction back.
+	CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, thumbnails []domain.Asset, at time.Time) (written []bool, err error)
 	Get(ctx context.Context, orderID, variantID string) (domain.OrderDesignSnapshot, bool, error)
 	ListByOrder(ctx context.Context, orderID string) ([]domain.OrderDesignSnapshot, error)
 	// ListUnfilledProduction returns snapshots of designVersionID whose production columns are NULL.

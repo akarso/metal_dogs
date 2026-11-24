@@ -86,6 +86,120 @@ func TestRetention_ReferencedAssetsSurviveEachPath(t *testing.T) {
 	})
 }
 
+func TestRetention_MockupAndThumbnailSurviveEachPath(t *testing.T) {
+	db := testutil.OpenIsolated(t, "retention_preview")
+	ctx := context.Background()
+	now := time.Date(2026, 11, 23, 5, 0, 0, 0, time.UTC)
+
+	t.Run("asset cleanup", func(t *testing.T) {
+		mockID, thumbID, other := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		insertRetentionAsset(t, db, mockID, domain.AssetTypeMockup, "design-m", now, now.Add(-time.Minute))
+		insertRetentionAsset(t, db, thumbID, domain.AssetTypeThumbnail, "design-m", now, now.Add(-time.Minute))
+		insertRetentionAsset(t, db, other, domain.AssetTypeReference, "design-m", now, now.Add(-time.Minute))
+		insertRetentionPreview(t, db, mockID, thumbID, now)
+		buf := &bytes.Buffer{}
+		if err := postgres.CleanupDueAssets(ctx, db, now, logger.NewWithWriter(buf, "info")); err != nil {
+			t.Fatal(err)
+		}
+		assertAssetActive(t, db, mockID, true)
+		assertAssetActive(t, db, thumbID, true)
+		assertAssetActive(t, db, other, false)
+		assertKeptOnce(t, buf.String(), postgres.RetentionPathAssetCleanup, mockID, thumbID)
+	})
+
+	t.Run("unattached upload cleanup", func(t *testing.T) {
+		mockID, thumbID, other := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		insertRetentionAsset(t, db, mockID, domain.AssetTypeMockup, "", now, now.Add(-time.Minute))
+		insertRetentionAsset(t, db, thumbID, domain.AssetTypeThumbnail, "", now, now.Add(-time.Minute))
+		insertRetentionAsset(t, db, other, domain.AssetTypeSource, "", now, now.Add(-time.Minute))
+		insertRetentionPreview(t, db, mockID, thumbID, now)
+		buf := &bytes.Buffer{}
+		if err := postgres.CleanupUnattachedUploads(ctx, db, now, logger.NewWithWriter(buf, "info")); err != nil {
+			t.Fatal(err)
+		}
+		assertAssetActive(t, db, mockID, true)
+		assertAssetActive(t, db, thumbID, true)
+		assertAssetActive(t, db, other, false)
+		assertKeptOnce(t, buf.String(), postgres.RetentionPathUnattachedUploads, mockID, thumbID)
+	})
+
+	t.Run("design expiry", func(t *testing.T) {
+		designID, sourceID, _, _ := seedExpiringDesign(t, db, now)
+		mockID, thumbID, other := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		insertRetentionAsset(t, db, mockID, domain.AssetTypeMockup, designID, now, now.Add(-time.Minute))
+		insertRetentionAsset(t, db, thumbID, domain.AssetTypeThumbnail, designID, now, now.Add(-time.Minute))
+		insertRetentionAsset(t, db, other, domain.AssetTypeReference, designID, now, now.Add(-time.Minute))
+		insertRetentionPreview(t, db, mockID, thumbID, now)
+		buf := &bytes.Buffer{}
+		if err := postgres.ExpireDesigns(ctx, db, now, logger.NewWithWriter(buf, "info")); err != nil {
+			t.Fatal(err)
+		}
+		assertAssetActive(t, db, mockID, true)
+		assertAssetActive(t, db, thumbID, true)
+		assertAssetActive(t, db, other, false)
+		assertAssetActive(t, db, sourceID, false)
+		assertDesignStatus(t, db, designID, domain.DesignExpired)
+		assertKeptOnce(t, buf.String(), postgres.RetentionPathDesignExpiry, mockID, thumbID)
+	})
+
+	t.Run("soft delete", func(t *testing.T) {
+		mockID, thumbID, other := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		insertRetentionAsset(t, db, mockID, domain.AssetTypeMockup, "", now, now.Add(time.Hour))
+		insertRetentionAsset(t, db, thumbID, domain.AssetTypeThumbnail, "", now, now.Add(time.Hour))
+		insertRetentionAsset(t, db, other, domain.AssetTypeArtwork, "", now, now.Add(time.Hour))
+		insertRetentionPreview(t, db, mockID, thumbID, now)
+		buf := &bytes.Buffer{}
+		repo := postgres.NewAssetRepo(db)
+		repo.SetKeptLog(logger.NewWithWriter(buf, "info"))
+		if err := repo.SoftDelete(ctx, mockID, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.SoftDelete(ctx, thumbID, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.SoftDelete(ctx, other, now); err != nil {
+			t.Fatal(err)
+		}
+		assertAssetActive(t, db, mockID, true)
+		assertAssetActive(t, db, thumbID, true)
+		assertAssetActive(t, db, other, false)
+		assertKeptOnce(t, buf.String(), "soft_delete", mockID, thumbID)
+	})
+
+	t.Run("replace source", func(t *testing.T) {
+		for _, column := range []string{"mockup", "thumbnail"} {
+			t.Run(column, func(t *testing.T) {
+				designID, sourceID := seedDraftDesign(t, db, now)
+				other := uuid.NewString()
+				insertRetentionAsset(t, db, other, domain.AssetTypeArtwork, "", now, now.Add(time.Hour))
+				mockID, thumbID := other, sourceID
+				if column == "mockup" {
+					mockID, thumbID = sourceID, other
+				}
+				insertRetentionPreview(t, db, mockID, thumbID, now)
+				fresh := uuid.NewString()
+				insertRetentionAsset(t, db, fresh, domain.AssetTypeSource, "", now, now.Add(time.Hour))
+				got, ok, err := postgres.NewDesignRepo(db).GetByID(ctx, designID)
+				if err != nil || !ok {
+					t.Fatalf("design ok=%v err=%v", ok, err)
+				}
+				buf := &bytes.Buffer{}
+				designs := postgres.NewDesignRepo(db)
+				designs.SetKeptLog(logger.NewWithWriter(buf, "info"))
+				expected := got.UpdatedAt
+				got.SourceAssetID = fresh
+				got.UpdatedAt = now.Add(time.Minute)
+				if _, err := designs.ReplaceSource(ctx, got, sourceID, expected, now.Add(time.Hour)); err == nil {
+					t.Fatal("replace of a snapshot-referenced source must not commit")
+				}
+				assertAssetActive(t, db, sourceID, true)
+				assertDesignStatus(t, db, designID, domain.DesignDraft)
+				assertKeptOnce(t, buf.String(), "replace_source", sourceID)
+			})
+		}
+	})
+}
+
 func TestRetention_NoSnapshotStillDeletes(t *testing.T) {
 	db := testutil.OpenIsolated(t, "retention_open")
 	ctx := context.Background()
@@ -289,6 +403,27 @@ func insertRetentionAsset(t *testing.T, db *sql.DB, id, assetType, owner string,
 		Checksum: "sha256:" + id, CreatedAt: created, DeleteAfter: deleteAfter,
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func insertRetentionPreview(t *testing.T, db *sql.DB, mockID, thumbID string, at time.Time) {
+	t.Helper()
+	snap, err := domain.NewOrderDesignSnapshot(
+		uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), "TEE-M",
+		"black-tee", 1, map[string]string{"dog_name": "Burek"},
+		"openai", "gpt-image", "prompt-v1",
+		uuid.NewString(), "sha256:art", "", "", at,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err = snap.WithThumbnail(mockID, thumbID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err := postgres.NewOrderDesignSnapshotRepo(db).Insert(context.Background(), snap)
+	if err != nil || !written {
+		t.Fatalf("snapshot written=%v err=%v", written, err)
 	}
 }
 

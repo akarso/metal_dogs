@@ -1,14 +1,17 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/akarso/shopanda/internal/platform/logger"
 	"github.com/akarso/shopanda/plugins/metaldogs/adapters/postgres"
 	"github.com/akarso/shopanda/plugins/metaldogs/application"
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
@@ -373,5 +376,84 @@ func TestGenerationJobRepo_BeginGeneratingStaleLatestFence(t *testing.T) {
 	cur, _, _ := designs.GetByID(ctx, designID)
 	if cur.LatestJobID != jobID || cur.GenerationAttempts != 1 {
 		t.Fatalf("design must stay on first job: %+v", cur)
+	}
+}
+
+func TestGenerationJobRepo_ReplaceLiveKeepsReferencedPreview(t *testing.T) {
+	db := testutil.OpenIsolated(t, "generation_preview_keep")
+	ctx := context.Background()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	for i, column := range []string{"mockup", "thumbnail"} {
+		t.Run(column, func(t *testing.T) {
+			n := i + 1
+			designID := fmt.Sprintf("c1000000-0000-4000-8000-%012d", n)
+			sourceID := fmt.Sprintf("c2000000-0000-4000-8000-%012d", n)
+			jobID := fmt.Sprintf("c3000000-0000-4000-8000-%012d", n)
+			artID := fmt.Sprintf("c4000000-0000-4000-8000-%012d", n)
+			priorID := fmt.Sprintf("c5000000-0000-4000-8000-%012d", n)
+			nextID := fmt.Sprintf("c6000000-0000-4000-8000-%012d", n)
+			otherID := fmt.Sprintf("c7000000-0000-4000-8000-%012d", n)
+			assets := postgres.NewAssetRepo(db)
+			designs := postgres.NewDesignRepo(db)
+			jobs := postgres.NewGenerationJobRepo(db)
+			buf := &bytes.Buffer{}
+			jobs.SetKeptLog(logger.NewWithWriter(buf, "info"))
+			seedDesignForJobs(t, designs, assets, designID, sourceID, now)
+			d, _, _ := designs.GetByID(ctx, designID)
+			_ = d.RequestGeneration(jobID, 3, now)
+			job := domain.NewQueuedJob(jobID, designID, "idem-keep-"+column, "fake", 1, now, "", d.SourceAssetID, d.TemplateVersion, domain.TextsDigestFor(d.Texts))
+			if err := jobs.BeginGenerating(ctx, job, d, now.Add(domain.SourceAttachedRetention), d.GenerationAttempts-1, ""); err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := jobs.ClaimForWork(ctx, jobID, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			art := domain.Asset{
+				ID: artID, Type: domain.AssetTypeArtwork, OwnerRef: designID,
+				StorageKey: "private/blobs/metaldogs/artwork/2026/11/" + artID + ".png",
+				MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+				Checksum: application.ChecksumSHA256Prefix + "art", CreatedAt: now, DeleteAfter: now.Add(time.Hour),
+			}
+			if _, err := jobs.PersistArtwork(ctx, claimed, art); err != nil {
+				t.Fatal(err)
+			}
+			prior := domain.Asset{
+				ID: priorID, Type: domain.AssetTypeMockup, OwnerRef: designID,
+				StorageKey: "private/blobs/metaldogs/mockup/2026/11/" + priorID + ".png",
+				MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+				Checksum: application.ChecksumSHA256Prefix + "m0", CreatedAt: now, DeleteAfter: now.Add(time.Hour),
+			}
+			if err := assets.Insert(ctx, prior); err != nil {
+				t.Fatal(err)
+			}
+			mockID, thumbID := priorID, otherID
+			if column == "thumbnail" {
+				mockID, thumbID = otherID, priorID
+			}
+			insertRetentionPreview(t, db, mockID, thumbID, now)
+			next := prior
+			next.ID = nextID
+			next.StorageKey = "private/blobs/metaldogs/mockup/2026/11/" + nextID + ".png"
+			next.Checksum = application.ChecksumSHA256Prefix + "m1"
+			claimed.ArtworkAssetID = artID
+			if err := claimed.Succeed(artID, nextID, []byte(`{"status":"pass"}`), 1, nil, "", "fake", "v1", []byte(`{}`), now); err != nil {
+				t.Fatal(err)
+			}
+			d.Status = domain.DesignPreviewReady
+			d.UpdatedAt = now
+			if _, err := jobs.CompleteSuccess(ctx, claimed, next, d); err == nil {
+				t.Fatal("replacing a snapshot-referenced mockup must not commit")
+			}
+			if _, ok, err := assets.GetByID(ctx, priorID); err != nil || !ok {
+				t.Fatalf("referenced mockup active=%v err=%v", ok, err)
+			}
+			if _, ok, _ := assets.GetByID(ctx, nextID); ok {
+				t.Fatal("replacement mockup was stored")
+			}
+			if !strings.Contains(buf.String(), priorID) || !strings.Contains(buf.String(), "replace_live_asset") {
+				t.Fatalf("log %s", buf.String())
+			}
+		})
 	}
 }

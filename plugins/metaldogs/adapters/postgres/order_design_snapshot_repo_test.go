@@ -41,6 +41,12 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const mockID = "33333333-3333-4333-8333-333333333333"
+	const thumbID = "44444444-4444-4444-8444-444444444444"
+	lineM, err = lineM.WithThumbnail(mockID, thumbID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	written, err := repo.Insert(ctx, lineM)
 	if err != nil || !written {
 		t.Fatalf("insert written=%v err=%v", written, err)
@@ -114,7 +120,8 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 	if filled.ProductionAssetID != prodID || filled.ProductionChecksum != "sha256:production" {
 		t.Fatalf("fill: %+v", filled)
 	}
-	if filled.SKU != lineM.SKU || filled.ArtworkChecksum != lineM.ArtworkChecksum {
+	if filled.SKU != lineM.SKU || filled.ArtworkChecksum != lineM.ArtworkChecksum ||
+		filled.MockupAssetID != lineM.MockupAssetID || filled.ThumbnailAssetID != lineM.ThumbnailAssetID {
 		t.Fatalf("fill changed frozen fields: %+v", filled)
 	}
 	if err := repo.FillProduction(ctx, orderID, variantM, "33333333-3333-4333-8333-333333333333", "sha256:second"); !errors.Is(err, domain.ErrProductionAlreadySet) {
@@ -149,6 +156,8 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 		{"prompt_version", "tampered-prompt", ""},
 		{"artwork_asset_id", "99999999-9999-4999-8999-999999999993", ""},
 		{"artwork_checksum", "sha256:tampered", ""},
+		{"mockup_asset_id", "99999999-9999-4999-8999-999999999994", ""},
+		{"thumbnail_asset_id", "99999999-9999-4999-8999-999999999995", ""},
 		{"created_at", at.Add(time.Hour), ""},
 	}
 	for _, u := range frozen {
@@ -160,6 +169,39 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "append-only") {
 			t.Fatalf("%s update: %v", u.column, err)
 		}
+	}
+	covered := map[string]struct{}{
+		"production_asset_id": {},
+		"production_checksum": {},
+	}
+	for _, u := range frozen {
+		covered[u.column] = struct{}{}
+	}
+	colRows, err := db.QueryContext(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'metaldogs_order_design_snapshots'
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer colRows.Close()
+	var colCount int
+	for colRows.Next() {
+		var name string
+		if err := colRows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		colCount++
+		if _, ok := covered[name]; !ok {
+			t.Fatalf("column %s is not frozen and is not production_*", name)
+		}
+	}
+	if err := colRows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if colCount != len(covered) {
+		t.Fatalf("columns=%d covered=%d", colCount, len(covered))
 	}
 	if _, err := db.ExecContext(ctx, `
 		UPDATE metaldogs_order_design_snapshots
@@ -225,12 +267,14 @@ func TestOrderDesignSnapshotRepo_InsertRoundTripFillAndRules(t *testing.T) {
 		WHERE schemaname = current_schema()
 		  AND indexname IN (
 			'metaldogs_order_design_snapshots_artwork_asset_id_idx',
-			'metaldogs_order_design_snapshots_production_asset_id_idx'
+			'metaldogs_order_design_snapshots_production_asset_id_idx',
+			'metaldogs_order_design_snapshots_mockup_asset_id_idx',
+			'metaldogs_order_design_snapshots_thumbnail_asset_id_idx'
 		  )
 	`).Scan(&indexes); err != nil {
 		t.Fatal(err)
 	}
-	if indexes != 2 {
+	if indexes != 4 {
 		t.Fatalf("snapshot asset indexes=%d", indexes)
 	}
 }
@@ -289,6 +333,7 @@ func assertSnapshotEqual(t *testing.T, want, got domain.OrderDesignSnapshot) {
 		want.Provider != got.Provider || want.Model != got.Model ||
 		want.PromptVersion != got.PromptVersion ||
 		want.ArtworkAssetID != got.ArtworkAssetID || want.ArtworkChecksum != got.ArtworkChecksum ||
+		want.MockupAssetID != got.MockupAssetID || want.ThumbnailAssetID != got.ThumbnailAssetID ||
 		want.ProductionAssetID != got.ProductionAssetID ||
 		want.ProductionChecksum != got.ProductionChecksum ||
 		!want.CreatedAt.Equal(got.CreatedAt) {

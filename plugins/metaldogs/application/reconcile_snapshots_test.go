@@ -337,7 +337,7 @@ type reconcileSnapStub struct {
 func (reconcileSnapStub) Insert(context.Context, domain.OrderDesignSnapshot) (bool, error) {
 	return false, nil
 }
-func (reconcileSnapStub) CommitOrder(context.Context, []domain.OrderDesignSnapshot, time.Time) ([]bool, error) {
+func (reconcileSnapStub) CommitOrder(context.Context, []domain.OrderDesignSnapshot, []domain.Asset, time.Time) ([]bool, error) {
 	return nil, nil
 }
 func (reconcileSnapStub) Get(context.Context, string, string) (domain.OrderDesignSnapshot, bool, error) {

@@ -3,7 +3,10 @@ package application
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
@@ -48,6 +51,28 @@ func TestCommitOrderError_NamesFailingDesign(t *testing.T) {
 	}
 	if !errors.Is(err, err.Err) {
 		t.Fatal("cause dropped")
+	}
+}
+
+func TestThumbnailAssetID_IsV5OfOrderAndVariant(t *testing.T) {
+	t.Parallel()
+	const orderID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const variantID = "variant-m"
+	id, err := ThumbnailAssetID("  "+strings.ToUpper(orderID)+"  ", " "+variantID+" ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := ThumbnailAssetID(orderID, variantID)
+	if err != nil || again != id {
+		t.Fatalf("id %s again %s err %v", id, again, err)
+	}
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.Version() != 5 {
+		t.Fatalf("id %s err %v", id, err)
+	}
+	other, err := ThumbnailAssetID(orderID, "variant-l")
+	if err != nil || other == id {
+		t.Fatalf("variant changed id %s", other)
 	}
 }
 

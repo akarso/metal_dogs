@@ -1,11 +1,18 @@
 package metaldogs_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,6 +39,7 @@ import (
 	"github.com/akarso/shopanda/plugins/metaldogs/domain"
 	"github.com/akarso/shopanda/plugins/metaldogs/ports"
 	"github.com/akarso/shopanda/plugins/metaldogs/testutil"
+	"github.com/akarso/shopanda/plugins/metaldogs/thumbnail"
 )
 
 func TestSnapshotOrderJobID_IsV5(t *testing.T) {
@@ -631,7 +639,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		at := clock.Now()
 		lineA := snapshotFromSeed(t, orderID, v1, "TEE-A", first, at)
 		lineB := snapshotFromSeed(t, orderID, v2, "TEE-B", second, at)
-		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{lineA, lineB}, at)
+		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{lineA, lineB}, nil, at)
 		var de *ports.SnapshotDesignError
 		if !errors.As(err, &de) || de.DesignID != second.Design.ID {
 			t.Fatalf("%v", err)
@@ -656,7 +664,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		}
 		orderID := uuid.NewString()
 		line := snapshotFromSeed(t, orderID, uuid.NewString(), "TEE-DEAD", seed, at)
-		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, at)
+		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, nil, at)
 		var de *ports.SnapshotDesignError
 		if !errors.As(err, &de) || de.DesignID != seed.Design.ID || !strings.Contains(err.Error(), "missing or deleted") {
 			t.Fatalf("%v", err)
@@ -683,7 +691,7 @@ func TestSnapshotOrder_Job(t *testing.T) {
 		line := snapshotFromSeed(t, orderID, uuid.NewString(), "TEE-DEAD-PROD", seed, at)
 		line.ProductionAssetID = seed.ProductionID
 		line.ProductionChecksum = "sha256:production"
-		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, at)
+		_, err := snaps.CommitOrder(ctx, []domain.OrderDesignSnapshot{line}, nil, at)
 		var de *ports.SnapshotDesignError
 		if !errors.As(err, &de) || de.DesignID != seed.Design.ID || !strings.Contains(err.Error(), seed.ProductionID) {
 			t.Fatalf("%v", err)
@@ -769,6 +777,306 @@ type seeded struct {
 	ArtworkID       string
 	ArtworkChecksum string
 	ProductionID    string
+}
+
+func TestSnapshotOrder_Thumbnail(t *testing.T) {
+	db := testutil.OpenIsolatedWithCore(t, "snapshot_thumb")
+	ctx := context.Background()
+	app := testApp(t, true)
+	app.Bootstrap = &plugin.Bootstrap{DB: db}
+	app.Config.Plugins.Extra["metaldogs"]["order_snapshot.enabled"] = "true"
+	reg := plugin.NewRegistry(app.Logger)
+	p := metaldogs.New()
+	reg.Register(pluginsdk.Adapt(p))
+	summary := reg.InitAll(app)
+	if summary.Failed > 0 || summary.Initialized != 1 {
+		t.Fatalf("InitAll %+v", summary)
+	}
+	clock := testutil.NewFakeClock(time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC))
+	p.SetSnapshotClock(clock)
+	store := newMemBlobs()
+	p.SetAssetStore(store)
+	src := memory.NewOrderSource()
+	p.SetOrderSource(src)
+	handler := findSnapshotHandler(t, app)
+	snaps := postgres.NewOrderDesignSnapshotRepo(db)
+	assets := postgres.NewAssetRepo(db)
+	cat := &application.TemplateCatalog{Store: postgres.NewTemplateStore(db), IDs: ports.UUIDGenerator{}}
+
+	t.Run("mockup", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-thumb", "prompt-thumb", false)
+		pngBytes := snapshotTextPNG(t, 800, 200, "EXIF-SECRET")
+		mockID := insertSnapshotMockup(t, db, seed.Design.ID, seed.ArtworkID, seed.ArtworkChecksum, pngBytes, store, clock.Now())
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		log := &snapLog{}
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, log); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok {
+			t.Fatalf("get ok=%v err=%v", ok, err)
+		}
+		wantID, err := application.ThumbnailAssetID(orderID, variantID)
+		if err != nil || got.MockupAssetID != mockID || got.ThumbnailAssetID != wantID {
+			t.Fatalf("ids got=%s/%s want mock %s thumb %s err=%v", got.MockupAssetID, got.ThumbnailAssetID, mockID, wantID, err)
+		}
+		thumb, ok, err := assets.GetByID(ctx, wantID)
+		if err != nil || !ok || thumb.Type != domain.AssetTypeThumbnail || thumb.Width > thumbnail.MaxEdge || thumb.Height > thumbnail.MaxEdge {
+			t.Fatalf("asset ok=%v err=%v %+v", ok, err, thumb)
+		}
+		blob, ok := store.blob(thumb.StorageKey)
+		if !ok {
+			t.Fatal("thumbnail object missing")
+		}
+		cfg, err := png.DecodeConfig(bytes.NewReader(blob))
+		if err != nil || cfg.Width != thumb.Width || cfg.Height != thumb.Height || cfg.Width > thumbnail.MaxEdge || cfg.Height > thumbnail.MaxEdge {
+			t.Fatalf("png %dx%d asset %dx%d err=%v", cfg.Width, cfg.Height, thumb.Width, thumb.Height, err)
+		}
+		if cfg.Width != thumbnail.MaxEdge || cfg.Height != 80 {
+			t.Fatalf("edge %dx%d", cfg.Width, cfg.Height)
+		}
+		if bytes.Contains(blob, []byte("EXIF-SECRET")) || pngHasAncillary(blob) {
+			t.Fatal("thumbnail kept metadata")
+		}
+		if log.contains("WARN metaldogs.snapshot_order_design.thumbnail") {
+			t.Fatalf("success warned %+v", log.lines)
+		}
+		sum := sha256.Sum256(blob)
+		if thumb.Checksum != "sha256:"+hex.EncodeToString(sum[:]) {
+			t.Fatalf("checksum %s", thumb.Checksum)
+		}
+
+		clock.Advance(time.Minute)
+		puts := store.puts
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, &snapLog{}); err != nil {
+			t.Fatal(err)
+		}
+		if store.puts != puts {
+			t.Fatalf("rerun stored another object puts %d -> %d keys %v", puts, store.puts, store.keys())
+		}
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM metaldogs_assets WHERE id = $1`, wantID).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("thumbnail rows=%d err=%v", n, err)
+		}
+		again, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || again.ThumbnailAssetID != wantID || again.MockupAssetID != mockID {
+			t.Fatalf("rerun snapshot ok=%v err=%v %+v", ok, err, again)
+		}
+	})
+
+	t.Run("no mockup", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-nomock", "prompt-nomock", false)
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		log := &snapLog{}
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, log); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || got.MockupAssetID != "" || got.ThumbnailAssetID != "" || got.DesignID != seed.Design.ID {
+			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+		assertThumbnailWarning(t, log, orderID, variantID, seed.Design.ID)
+	})
+
+	t.Run("store failure", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-store", "prompt-store", false)
+		pngBytes := snapshotTextPNG(t, 40, 40, "")
+		insertSnapshotMockup(t, db, seed.Design.ID, seed.ArtworkID, seed.ArtworkChecksum, pngBytes, store, clock.Now())
+		store.failPuts = 1
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		log := &snapLog{}
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, log); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || got.MockupAssetID != "" || got.ThumbnailAssetID != "" {
+			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+		assertThumbnailWarning(t, log, orderID, variantID, seed.Design.ID)
+		var n int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM metaldogs_assets WHERE type = 'thumbnail' AND owner_ref = $1
+		`, seed.Design.ID).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("thumbnail rows=%d err=%v", n, err)
+		}
+	})
+
+	t.Run("unreadable mockup", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-bad", "prompt-bad", false)
+		insertSnapshotMockup(t, db, seed.Design.ID, seed.ArtworkID, seed.ArtworkChecksum, []byte("not-a-png"), store, clock.Now())
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		log := &snapLog{}
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, log); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || got.MockupAssetID != "" || got.ThumbnailAssetID != "" || got.ArtworkAssetID != seed.ArtworkID {
+			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+		assertThumbnailWarning(t, log, orderID, variantID, seed.Design.ID)
+	})
+
+	t.Run("checksum fallback", func(t *testing.T) {
+		seed := seedApprovedDesign(t, db, cat, "tee-fall", "prompt-fall", false)
+		pngBytes := snapshotTextPNG(t, 10, 10, "")
+		otherArt := uuid.NewString()
+		if err := assets.Insert(ctx, domain.Asset{
+			ID: otherArt, Type: domain.AssetTypeArtwork,
+			StorageKey: "private/blobs/metaldogs/artwork/2026/11/" + otherArt + ".png",
+			MimeType:   "image/png", SizeBytes: 1, Width: 8, Height: 8,
+			Checksum: seed.ArtworkChecksum, CreatedAt: clock.Now(), DeleteAfter: clock.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		mockID := uuid.NewString()
+		key := "private/blobs/metaldogs/mockup/2026/11/" + mockID + ".png"
+		if err := assets.Insert(ctx, domain.Asset{
+			ID: mockID, Type: domain.AssetTypeMockup, OwnerRef: seed.Design.ID,
+			StorageKey: key, MimeType: "image/png", SizeBytes: int64(len(pngBytes)), Width: 10, Height: 10,
+			Checksum: "sha256:mock-fallback", CreatedAt: clock.Now(), DeleteAfter: clock.Now().Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		store.put(key, pngBytes)
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO metaldogs_generation_jobs (
+				id, design_id, attempt, status, provider, artwork_asset_id, mockup_asset_id, finished_at
+			) VALUES ($1,$2,1,'succeeded','openai',$3,$4,$5)
+		`, uuid.NewString(), seed.Design.ID, otherArt, mockID, clock.Now()); err != nil {
+			t.Fatal(err)
+		}
+		orderID := uuid.NewString()
+		variantID := uuid.NewString()
+		src.Add(orderID, clock.Now(), []ports.OrderLine{{
+			VariantID: variantID, SKU: "TEE-M", Quantity: 1, DesignID: seed.Design.ID,
+		}})
+		if err := runSnapshot(t, handler, orderID, map[string]interface{}{"order_id": orderID}, &snapLog{}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := snaps.Get(ctx, orderID, variantID)
+		if err != nil || !ok || got.MockupAssetID != mockID || got.ThumbnailAssetID == "" {
+			t.Fatalf("ok=%v err=%v %+v", ok, err, got)
+		}
+	})
+}
+
+func insertSnapshotMockup(t *testing.T, db *sql.DB, designID, artworkID, checksum string, pngBytes []byte, store *memBlobs, at time.Time) string {
+	t.Helper()
+	ctx := context.Background()
+	mockID := uuid.NewString()
+	key := "private/blobs/metaldogs/mockup/2026/11/" + mockID + ".png"
+	if err := postgres.NewAssetRepo(db).Insert(ctx, domain.Asset{
+		ID: mockID, Type: domain.AssetTypeMockup, OwnerRef: designID,
+		StorageKey: key, MimeType: "image/png", SizeBytes: int64(len(pngBytes)),
+		Width: 8, Height: 8, Checksum: "sha256:mock-" + mockID,
+		CreatedAt: at, DeleteAfter: at.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.put(key, pngBytes)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO metaldogs_generation_jobs (
+			id, design_id, attempt, status, provider, artwork_asset_id, mockup_asset_id, finished_at
+		) VALUES ($1,$2,1,'succeeded','openai',$3,$4,$5)
+	`, uuid.NewString(), designID, artworkID, mockID, at); err != nil {
+		t.Fatal(err)
+	}
+	if checksum == "" {
+		t.Fatal("checksum required")
+	}
+	return mockID
+}
+
+func assertThumbnailWarning(t *testing.T, log *snapLog, orderID, variantID, designID string) {
+	t.Helper()
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	var hits int
+	for _, line := range log.lines {
+		if !strings.Contains(line, "WARN metaldogs.snapshot_order_design.thumbnail") {
+			continue
+		}
+		hits++
+		if !strings.Contains(line, orderID) || !strings.Contains(line, variantID) || strings.Contains(line, designID) {
+			t.Fatalf("warning fields: %s", line)
+		}
+		if strings.Contains(line, "private/blobs") || strings.Contains(line, "storage") {
+			t.Fatalf("warning leaked storage: %s", line)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("warnings=%d %+v", hits, log.lines)
+	}
+}
+
+func snapshotTextPNG(t *testing.T, w, h int, secret string) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	img.Set(0, 0, color.NRGBA{R: 1, G: 2, B: 3, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if secret == "" {
+		return buf.Bytes()
+	}
+	return insertPNGText(t, buf.Bytes(), secret)
+}
+
+func insertPNGText(t *testing.T, raw []byte, secret string) []byte {
+	t.Helper()
+	at := bytes.LastIndex(raw, []byte("IEND"))
+	if at < 4 {
+		t.Fatal("no IEND")
+	}
+	at -= 4
+	payload := append(append([]byte("Comment"), 0), []byte(secret)...)
+	chunk := make([]byte, 12+len(payload))
+	binary.BigEndian.PutUint32(chunk[0:4], uint32(len(payload)))
+	copy(chunk[4:8], "tEXt")
+	copy(chunk[8:], payload)
+	sum := crc32.ChecksumIEEE(chunk[4 : 8+len(payload)])
+	binary.BigEndian.PutUint32(chunk[8+len(payload):], sum)
+	out := append([]byte{}, raw[:at]...)
+	out = append(out, chunk...)
+	return append(out, raw[at:]...)
+}
+
+func pngHasAncillary(raw []byte) bool {
+	if len(raw) < 8 {
+		return true
+	}
+	rest := raw[8:]
+	for len(rest) >= 12 {
+		n := binary.BigEndian.Uint32(rest[:4])
+		kind := string(rest[4:8])
+		switch kind {
+		case "IHDR", "IDAT", "IEND":
+		default:
+			return true
+		}
+		if len(rest) < 12+int(n) {
+			return true
+		}
+		rest = rest[12+int(n):]
+	}
+	return len(rest) != 0
 }
 
 func seedApprovedDesign(t *testing.T, db *sql.DB, cat *application.TemplateCatalog, slug, prompt string, productionReady bool) seeded {
@@ -976,6 +1284,10 @@ type snapLog struct {
 
 func (l *snapLog) Info(msg string, fields map[string]interface{}) {
 	l.add(msg, fields)
+}
+
+func (l *snapLog) Warn(msg string, fields map[string]interface{}) {
+	l.add("WARN "+msg, fields)
 }
 
 func (l *snapLog) Error(msg string, _ error, fields map[string]interface{}) {

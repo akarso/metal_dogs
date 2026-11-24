@@ -31,8 +31,8 @@ var _ ports.OrderDesignSnapshotRepository = (*OrderDesignSnapshotRepo)(nil)
 const orderDesignSnapshotColumns = `
 	order_id, variant_id, design_id, design_version_id, sku,
 	template_slug, template_version, texts, provider, model, prompt_version,
-	artwork_asset_id, artwork_checksum, production_asset_id, production_checksum,
-	created_at
+	artwork_asset_id, artwork_checksum, mockup_asset_id, thumbnail_asset_id,
+	production_asset_id, production_checksum, created_at
 `
 
 type snapshotExecer interface {
@@ -45,9 +45,12 @@ func (r *OrderDesignSnapshotRepo) Insert(ctx context.Context, s domain.OrderDesi
 
 // CommitOrder writes every snapshot and moves approved designs to ordered together.
 // A failed insert or status check leaves designs and snapshots unchanged.
-func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, at time.Time) ([]bool, error) {
+func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []domain.OrderDesignSnapshot, thumbnails []domain.Asset, at time.Time) ([]bool, error) {
 	if len(snapshots) == 0 {
 		return nil, nil
+	}
+	if len(thumbnails) != 0 && len(thumbnails) != len(snapshots) {
+		return nil, fmt.Errorf("metaldogs order_design_snapshots commit: thumbnail count")
 	}
 	if at.IsZero() {
 		return nil, fmt.Errorf("metaldogs order_design_snapshots commit: updated_at required")
@@ -108,6 +111,14 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 
 	written := make([]bool, len(snapshots))
 	for i, s := range snapshots {
+		var thumb domain.Asset
+		if i < len(thumbnails) {
+			thumb = thumbnails[i]
+		}
+		s, err = attachSnapshotThumbnail(ctx, tx, s, thumb)
+		if err != nil {
+			return nil, snapshotDesignErr(s.DesignID, err)
+		}
 		ok, err := insertOrderDesignSnapshot(ctx, tx, s)
 		if err != nil {
 			return nil, snapshotDesignErr(s.DesignID, err)
@@ -118,6 +129,42 @@ func (r *OrderDesignSnapshotRepo) CommitOrder(ctx context.Context, snapshots []d
 		return nil, fmt.Errorf("metaldogs order_design_snapshots commit: %w", err)
 	}
 	return written, nil
+}
+
+// A deleted mockup must not roll back the snapshot; that line is stored with both ids NULL.
+func attachSnapshotThumbnail(ctx context.Context, tx *sql.Tx, s domain.OrderDesignSnapshot, thumb domain.Asset) (domain.OrderDesignSnapshot, error) {
+	if thumb.ID == "" {
+		return s, nil
+	}
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT metaldogs_thumb"); err != nil {
+		return s, fmt.Errorf("metaldogs order_design_snapshots thumbnail: %w", err)
+	}
+	release := func() {
+		_, _ = tx.ExecContext(ctx, "RELEASE SAVEPOINT metaldogs_thumb")
+	}
+	drop := func() domain.OrderDesignSnapshot {
+		_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT metaldogs_thumb")
+		release()
+		s.MockupAssetID = ""
+		s.ThumbnailAssetID = ""
+		return s
+	}
+	if err := lockLiveAssetIDs(ctx, tx, []string{s.MockupAssetID}); err != nil {
+		var missing errAssetNotLive
+		if errors.As(err, &missing) {
+			return drop(), nil
+		}
+		_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT metaldogs_thumb")
+		release()
+		return s, err
+	}
+	if err := insertAsset(ctx, tx, thumb); err != nil {
+		_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT metaldogs_thumb")
+		release()
+		return s, err
+	}
+	release()
+	return s, nil
 }
 
 func snapshotDesignErr(designID string, err error) error {
@@ -151,28 +198,32 @@ func insertOrderDesignSnapshot(ctx context.Context, db snapshotExecer, s domain.
 	if s.Texts == nil {
 		texts = []byte("{}")
 	}
-	var prodAsset, prodChecksum any
+	var prodAsset, prodChecksum, mockupAsset, thumbAsset any
 	if s.ProductionAssetID != "" {
 		prodAsset = s.ProductionAssetID
 		prodChecksum = s.ProductionChecksum
+	}
+	if s.MockupAssetID != "" {
+		mockupAsset = s.MockupAssetID
+		thumbAsset = s.ThumbnailAssetID
 	}
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO metaldogs_order_design_snapshots (
 			order_id, variant_id, design_id, design_version_id, sku,
 			template_slug, template_version, texts, provider, model, prompt_version,
-			artwork_asset_id, artwork_checksum, production_asset_id, production_checksum,
-			created_at
+			artwork_asset_id, artwork_checksum, mockup_asset_id, thumbnail_asset_id,
+			production_asset_id, production_checksum, created_at
 		) VALUES (
 			$1,$2,$3,$4,$5,
 			$6,$7,$8::jsonb,$9,$10,$11,
 			$12,$13,$14,$15,
-			$16
+			$16,$17,$18
 		)
 		ON CONFLICT (order_id, variant_id) DO NOTHING
 	`, s.OrderID, s.VariantID, s.DesignID, s.DesignVersionID, s.SKU,
 		s.TemplateSlug, s.TemplateVersion, texts, s.Provider, s.Model, s.PromptVersion,
-		s.ArtworkAssetID, s.ArtworkChecksum, prodAsset, prodChecksum,
-		s.CreatedAt.UTC(),
+		s.ArtworkAssetID, s.ArtworkChecksum, mockupAsset, thumbAsset,
+		prodAsset, prodChecksum, s.CreatedAt.UTC(),
 	)
 	if err != nil {
 		return false, fmt.Errorf("metaldogs order_design_snapshots insert: %w", err)
@@ -400,12 +451,12 @@ func requireUUIDOrderID(orderID string) error {
 func scanOrderDesignSnapshot(row designScanner) (domain.OrderDesignSnapshot, bool, error) {
 	var s domain.OrderDesignSnapshot
 	var texts []byte
-	var prodAsset, prodChecksum sql.NullString
+	var mockupAsset, thumbAsset, prodAsset, prodChecksum sql.NullString
 	err := row.Scan(
 		&s.OrderID, &s.VariantID, &s.DesignID, &s.DesignVersionID, &s.SKU,
 		&s.TemplateSlug, &s.TemplateVersion, &texts, &s.Provider, &s.Model, &s.PromptVersion,
-		&s.ArtworkAssetID, &s.ArtworkChecksum, &prodAsset, &prodChecksum,
-		&s.CreatedAt,
+		&s.ArtworkAssetID, &s.ArtworkChecksum, &mockupAsset, &thumbAsset,
+		&prodAsset, &prodChecksum, &s.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return domain.OrderDesignSnapshot{}, false, nil
@@ -418,6 +469,12 @@ func scanOrderDesignSnapshot(row designScanner) (domain.OrderDesignSnapshot, boo
 		if err := json.Unmarshal(texts, &s.Texts); err != nil {
 			return domain.OrderDesignSnapshot{}, false, fmt.Errorf("metaldogs order_design_snapshots texts: %w", err)
 		}
+	}
+	if mockupAsset.Valid {
+		s.MockupAssetID = mockupAsset.String
+	}
+	if thumbAsset.Valid {
+		s.ThumbnailAssetID = thumbAsset.String
 	}
 	if prodAsset.Valid {
 		s.ProductionAssetID = prodAsset.String
