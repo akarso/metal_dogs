@@ -89,3 +89,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-35 | E5 admin snapshot and artwork access (closed) | M3 → E5 | [`CR-35-e5-artwork-access.md`](CR-35-e5-artwork-access.md) |
 | CR-36 | G5a production artwork pipeline (G5 open until P0) | M3 → G5 partial | [`CR-36-g5a-production-artwork.md`](CR-36-g5a-production-artwork.md) |
 | CR-37 | E6a order thumbnail link (E6b open) | M3 → E6a | [`CR-37-e6a-order-thumbnail.md`](CR-37-e6a-order-thumbnail.md) |
+| CR-38 | UPG12 pin `084d1206` (ticket 00; PR-1603). E6b not done | M3 pin | [`CR-38-upg12-pin-084d1206.md`](CR-38-upg12-pin-084d1206.md) |

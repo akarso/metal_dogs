@@ -23,7 +23,7 @@ A stable public thumbnail for one order line. Dark. `plugins.metaldogs.order_sna
 - A missing key is not a boot error. The feature stays off until the operator sets one.
 - The store origin is `plugins.metaldogs.public_base_url`. There is no existing plugin setting for it.
 - When the generation job for the approved artwork is missing, the snapshot uses the design's latest mockup with the same artwork checksum.
-- E6b stays open. Email data is not extensible by a plugin, and storefront order pages cannot show plugin data per line. Those two Shopanda rows are not re-opened here.
+- E6b stays open. Pin `084d1206` ([CR-38](CR-38-upg12-pin-084d1206.md)) puts `VariantID`, `SKU`, and public `order_item` extensions on the confirmation email and the storefront order pages. There is no enrich hook for a derived image URL. E6b is not done.
 
 ## Verification results
 
@@ -73,5 +73,5 @@ A stable public thumbnail for one order line. Dark. `plugins.metaldogs.order_sna
 - Shopanda gap: the HTTP access log writes the full request path, so non-expiring thumbnail tokens land in it. Needs route-pattern logging or per-route path redaction. Add to the Shopanda roadmap.
 
 - M3 turns `plugins.metaldogs.order_snapshot.enabled` on and sets `thumbnail_signing_key` and `public_base_url`. This round does not.
-- E6b: call `OrderThumbnailURL` from the confirmation email and order pages. Blocked on Shopanda: email data is not extensible by a plugin; storefront order pages cannot show plugin data per line. Already on the Shopanda roadmap. This round does not edit those templates.
+- E6b: call `OrderThumbnailURL` from the confirmation email and order pages. Pin `084d1206` ([CR-38](CR-38-upg12-pin-084d1206.md)) already puts `VariantID`, `SKU`, and public `order_item` extensions on those lines. There is no enrich hook for a derived image URL. E6b is not done. This round does not edit those templates.
 - O5: exercise the retention runbook and replace "Last exercised: never".
