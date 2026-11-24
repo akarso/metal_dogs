@@ -57,7 +57,7 @@ plugins/metaldogs/
 | `PATCH` | `/api/customizer/designs/{id}` | Bearer | Texts / replace photo (editable statuses only) |
 | `POST` | `/api/customizer/designs/{id}/generate` | Bearer + `Idempotency-Key` | `202` GenerationJob; enqueues sync generate |
 | `GET` | `/api/customizer/generation-jobs/{id}` | Bearer | Job status + `retry_after` |
-| `POST` | `/api/customizer/designs/{id}/approve` | Bearer | Freeze `DesignVersion`; design → `approved`; enqueue prepare (stub fails until G5; 503 + retry) |
+| `POST` | `/api/customizer/designs/{id}/approve` | Bearer | Freeze `DesignVersion`; design → `approved`; enqueue prepare (no spec: `pending_spec`, version stays `pending`; spec set: store the file or `failed` + `production_failure_reason`; enqueue failure is 503) |
 | `POST` | `/api/customizer/designs/{id}/clone` | Bearer | New draft + token; Put-copies source bytes |
 | `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer | Session cart line for one custom-tee variant; `200` `{ "cart_url": "/cart" }`. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `Host.Jobs().CountsByType` |

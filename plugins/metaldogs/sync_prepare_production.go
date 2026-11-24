@@ -72,7 +72,7 @@ func prepareProductionHandler(p *Plugin, log pluginsdk.Logger) extapi.SyncJobHan
 		}
 		if spec == nil {
 			fields["pending_spec"] = true
-			err := fmt.Errorf("metaldogs: prepare_production_artwork pending_spec until G5/P0")
+			err := fmt.Errorf("metaldogs: prepare_production_artwork pending_spec")
 			logPrepare(job, log, "metaldogs.prepare_production_artwork.pending_spec", err, fields)
 			terminalizePrepareJob(ctx, job)
 			if versionID == "" || designID == "" {

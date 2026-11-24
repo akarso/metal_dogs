@@ -15,7 +15,7 @@ flowchart TB
     end
 
     subgraph worker[Worker]
-        w1[prepare_production_artwork: render to POD spec, checksum, store]
+        w1[prepare_production_artwork: spec set → fit, checksum, store; absent → pending_spec]
         w2[snapshot_order_design: copy version data per order line]
         w3[submit_fulfillment: send artwork + order to POD]
         w4[reconciliation sweep: orders with design lines and no snapshot]
