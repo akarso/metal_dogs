@@ -73,5 +73,5 @@ A stable public thumbnail for one order line. Dark. `plugins.metaldogs.order_sna
 - Shopanda access-log gap closed on pin `7ab17606` (PR-1604, [CR-39](CR-39-upg13-pin-7ab17606.md)): the app log records the route pattern. A reverse proxy that logs the raw URL can still record the token.
 
 - M3 turns `plugins.metaldogs.order_snapshot.enabled` on and sets `thumbnail_signing_key` and `public_base_url`. This round does not.
-- E6b: call `OrderThumbnailURL` from the confirmation email and order pages. Pin `084d1206` ([CR-38](CR-38-upg12-pin-084d1206.md)) already puts `VariantID`, `SKU`, and public `order_item` extensions on those lines. Pin `7ab17606` ([CR-39](CR-39-upg13-pin-7ab17606.md)) adds `order.line.display` and `Kind=image`. Pin `98d67491` ([CR-41](CR-41-upg14-pin-98d67491.md)) adds payload `language` (`OrderLineDisplayLanguage()`). Metal Dogs does not register the hook. E6b is not done. This round does not edit those templates.
+- E6b closed in [CR-42](CR-42-e6b-order-thumbnail-display.md). The plugin registers `order.line.display` and appends `OrderThumbnailURL`. This round did not edit the email or page templates.
 - O5: exercise the retention runbook and replace "Last exercised: never".

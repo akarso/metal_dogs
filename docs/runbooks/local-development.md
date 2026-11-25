@@ -91,6 +91,10 @@ set_env SHOPANDA_PLUGINS_METALDOGS_ENABLED true
 
 For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollout (HMAC v1)** section in [Shopanda DEPLOYMENT (upstream)](https://github.com/akarso/shopanda/blob/98d67491c3db574fefec59dee3f3b1af734a859b/docs/guides/DEPLOYMENT.md): upgrade all `local-signed` handlers before mixed-fleet signers mint v1 tokens, or accept claim-then-403 grant burns until the fleet is uniform.
 
+## Order thumbnail on the email and the order pages
+
+`plugins.metaldogs.public_base_url` has to be https before Init registers `order.line.display` (E6b, [CR-42](../cr-rounds/CR-42-e6b-order-thumbnail-display.md)). `http://localhost` logs `metaldogs.order_line_display.public_base_url` once and leaves the hook unregistered. Even with https, the platform drops an image URL whose host is not public, and `localhost` is not public, so a local shop does not show the design picture on the confirmation email or the order pages. The thumbnail bytes route can still answer a direct `GET` when the snapshot flag and the signing key are set.
+
 ### Why stock `.env.example` alone fails
 
 | Check | Behaviour |

@@ -274,6 +274,9 @@ func (p *Plugin) Init(h pluginsdk.Host) error {
 			}
 		}
 	}
+	if err := registerOrderLineDisplay(h.Hooks(p.Name()), p, log); err != nil {
+		return fmt.Errorf("metaldogs plugin: order line display: %w", err)
+	}
 	return nil
 }
 
