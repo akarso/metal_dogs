@@ -30,7 +30,7 @@ func (p *Plugin) openOrderThumbnail() (*application.OrderThumbnail, error) {
 
 // OrderThumbnailURL is the stable public link for one order line.
 // It is empty when order snapshots are off, the signing key is absent, or the line has no thumbnail.
-// Nothing in email or storefront pages calls it.
+// The order.line.display hook calls it when that hook is registered.
 func (p *Plugin) OrderThumbnailURL(ctx context.Context, orderID, variantID string) (string, error) {
 	if p == nil || !p.orderSnapshotEnabled || len(p.thumbnailKey) < 32 {
 		return "", nil

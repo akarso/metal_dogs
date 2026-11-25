@@ -19,6 +19,8 @@ The cron, once `hostorders` is bound, only lists orders created in the last 30 d
 
 Fulfilment is blocked for that order. The approved artwork still exists as a `DesignVersion` unless retention has deleted it — which is why the snapshot and the retention "keep" switch must happen promptly.
 
+If the snapshot is still missing when `order.paid` renders the confirmation email, that email has no design picture for the line. The hook adds no field (`TestOrderLineDisplay_HookOnPostgres`). The message is not rewritten when the snapshot arrives later. A page opened after the thumbnail exists can show it ([`local-development.md`](local-development.md)).
+
 ## Diagnosis
 
 1. Identify the order id and the line key `(order_id, variant_id)` from `metaldogs.reconcile_snapshots.gap` (`order_id`, `line_key`, `reason`).
