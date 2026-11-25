@@ -156,6 +156,8 @@ sequenceDiagram
     Note over API,Q: continues in checkout-snapshot-and-fulfillment.md
 ```
 
+`metaldogs.design_id` is private. Checkout still copies it. Public order JSON, the confirmation email, and the storefront order pages omit it ([CR-40](../../cr-rounds/CR-40-did1-hide-design-id.md)).
+
 ## Error and resume paths
 
 | Where | Failure | Customer sees | Recovery |
@@ -171,7 +173,7 @@ sequenceDiagram
 | Add to cart | unknown, foreign, or expired design | `404` `not_found` | Use the caller's own approved design |
 | Add to cart | variant is not the custom tee, or the body is invalid | `422` `unprocessable` | Pick a size of `mdogs-tee` |
 | Add to cart | that size already has another design, or a custom-tee line with no design id | `409` `conflict`; cart unchanged | Remove the line, then add again |
-| Add to cart | another client sets `metaldogs.design_id` | `403` `forbidden_plugin_only_field`; nothing stored | Use this route |
+| Add to cart | another client sets `metaldogs.design_id` | `403` `forbidden_private_field`; nothing stored | Use this route |
 | Cart read or line change | custom tee missing, unknown, expired, or neither `approved` nor `ordered` | Blocking cart issue. Same `validateDesignLine` rules as checkout | Fix or remove that line. Other products still change |
 | Checkout | custom-tee line missing, unknown, expired, deleted, or not `approved` or `ordered` | API `422` `plugin.metaldogs.design_unavailable`, message "Design no longer available", `details.lines` for every failing line, `retryable: false`. No reservation and no order | Return to the customizer and add the design again |
 | Checkout | cart, catalog, or design store cannot be read | API `503` `plugin.metaldogs.validation_unavailable`, message "Checkout validation unavailable", `retryable: true`. The cause is only in the log | Retry. Nothing was reserved or ordered |

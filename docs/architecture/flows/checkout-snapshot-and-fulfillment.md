@@ -165,6 +165,6 @@ On insert, `snapshot_order_design` looks up a mockup and, when that read, the PN
 
 ## Open items to verify (tracked in ROADMAP §1)
 
-- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). E3 contract-tests `POST /api/v1/checkout` re-validation with manual payment (CR-30), including `plugin.metaldogs.design_unavailable` and a retryable `503`. Core copies the field onto the order line before `order.created`. E4b reads that copy through `Host.Orders()` when the flag is on ([CR-34](../../cr-rounds/CR-34-e4b-order-source.md)). The flag defaults off. SSR confirm exists upstream (PR-1598). Guest Stripe test mode is not recorded.
+- Cart-line `metaldogs.design_id` is contract-tested in E2 (CR-19). E3 contract-tests `POST /api/v1/checkout` re-validation with manual payment (CR-30), including `plugin.metaldogs.design_unavailable` and a retryable `503`. Core copies the field onto the order line before `order.created`. The field is private, so public order values omit it ([CR-40](../../cr-rounds/CR-40-did1-hide-design-id.md)). E4b reads that copy through `Host.Orders()` when the flag is on ([CR-34](../../cr-rounds/CR-34-e4b-order-source.md)). The flag defaults off. SSR confirm exists upstream (PR-1598). Guest Stripe test mode is not recorded.
 - `order.created` is confirmed at this pin and is not inside the order transaction: the order row is already saved, and there is no transactional enqueue. `payment.confirmed` and the shipment update API stay track P.
 - Shopanda API for updating shipment/tracking from a plugin.

@@ -60,8 +60,8 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		if len(items) != 1 || items[0].VariantID != variantM || items[0].Quantity != 1 {
 			t.Fatalf("items=%+v", items)
 		}
-		if len(items[0].Extensions) != 1 || items[0].Extensions[0].FieldCode != "metaldogs.design_id" || items[0].Extensions[0].Value != approved.ID {
-			t.Fatalf("extensions=%+v", items[0].Extensions)
+		if storedDesignID(t, db, cartID, variantM) != approved.ID {
+			t.Fatalf("stored design=%q", storedDesignID(t, db, cartID, variantM))
 		}
 		pageStatus, page := miniCart(t, srv, &http.Cookie{Name: sessionCartCookie, Value: cartID})
 		if pageStatus != http.StatusOK {
@@ -69,6 +69,9 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		}
 		if !strings.Contains(page, "Metal Dogs custom tee") || strings.Contains(page, "Your cart is empty.") {
 			t.Fatalf("mini-cart does not show the line: %s", page)
+		}
+		if strings.Contains(page, approved.ID) || strings.Contains(page, "Design ID") {
+			t.Fatalf("mini-cart shows the design id: %s", page)
 		}
 		after := getDesign(t, srv, approved.ID, token)
 		assertDesignUnchanged(t, before, after)
@@ -92,8 +95,8 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		if len(items) != 1 || items[0].VariantID != variantM || items[0].Quantity != 1 {
 			t.Fatalf("items=%+v", items)
 		}
-		if len(items[0].Extensions) != 1 || items[0].Extensions[0].Value != approved.ID {
-			t.Fatalf("extensions=%+v", items[0].Extensions)
+		if storedDesignID(t, db, newID, variantM) != approved.ID {
+			t.Fatalf("stored design=%q", storedDesignID(t, db, newID, variantM))
 		}
 		old := publicCart(t, srv, oldID)
 		if old.Status != "checked_out" || len(old.Items) != 0 {
@@ -119,8 +122,8 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 		if len(items) != 1 || items[0].VariantID != variantL || items[0].Quantity != 1 {
 			t.Fatalf("items=%+v", items)
 		}
-		if len(items[0].Extensions) != 1 || items[0].Extensions[0].Value != approved.ID {
-			t.Fatalf("extensions=%+v", items[0].Extensions)
+		if storedDesignID(t, db, cartID, variantL) != approved.ID {
+			t.Fatalf("stored design=%q", storedDesignID(t, db, cartID, variantL))
 		}
 		after := getDesign(t, srv, approved.ID, token)
 		assertDesignUnchanged(t, before, after)
@@ -192,15 +195,15 @@ func TestAddToCart_HappyPathAndAuthorization(t *testing.T) {
 
 	t.Run("variant outside the custom tee", func(t *testing.T) {
 		other := insertPublishedOtherVariant(t, db)
-		assertVariantRefused(t, srv, approved.ID, token, variantM, other)
+		assertVariantRefused(t, db, srv, approved.ID, token, variantM, other)
 	})
 
 	t.Run("unknown variant", func(t *testing.T) {
-		assertVariantRefused(t, srv, approved.ID, token, variantM, id.New())
+		assertVariantRefused(t, db, srv, approved.ID, token, variantM, id.New())
 	})
 }
 
-func assertVariantRefused(t *testing.T, srv *httptest.Server, designID, token, keep, refused string) {
+func assertVariantRefused(t *testing.T, db *sql.DB, srv *httptest.Server, designID, token, keep, refused string) {
 	t.Helper()
 	status, body, cookies := addDesignToCart(t, srv, designID, token, keep, nil)
 	if status != http.StatusOK {
@@ -208,6 +211,7 @@ func assertVariantRefused(t *testing.T, srv *httptest.Server, designID, token, k
 	}
 	cartID := cookieValue(cookies, sessionCartCookie)
 	before := cartItems(t, srv, cartID)
+	beforeDesign := designIDs(t, db, cartID, before)
 	status, payload, _ := addDesignToCart(t, srv, designID, token, refused, &http.Cookie{Name: sessionCartCookie, Value: cartID})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("status=%d body=%s", status, payload)
@@ -233,6 +237,9 @@ func assertVariantRefused(t *testing.T, srv *httptest.Server, designID, token, k
 			if before[i].Extensions[j].FieldCode != after[i].Extensions[j].FieldCode || before[i].Extensions[j].Value != after[i].Extensions[j].Value {
 				t.Fatalf("extensions changed\nbefore=%+v\nafter=%+v", before[i].Extensions, after[i].Extensions)
 			}
+		}
+		if storedDesignID(t, db, cartID, before[i].VariantID) != beforeDesign[before[i].VariantID] {
+			t.Fatalf("stored design changed for %s", before[i].VariantID)
 		}
 	}
 }

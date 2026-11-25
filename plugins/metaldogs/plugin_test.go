@@ -559,7 +559,7 @@ func TestPlugin_Init_Enabled_RegistersDesignIDField(t *testing.T) {
 		if app.ExtensionRegistry().Owner("metaldogs.design_id") != metaldogs.PluginName {
 			t.Fatalf("media=%v: owner = %q", withMedia, app.ExtensionRegistry().Owner("metaldogs.design_id"))
 		}
-		if field.Visibility != domainext.VisibilityPublic {
+		if field.Visibility != domainext.VisibilityPrivate {
 			t.Fatalf("visibility = %q", field.Visibility)
 		}
 		if !field.Access.PluginOnlyWrite {

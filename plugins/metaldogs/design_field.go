@@ -18,7 +18,7 @@ func registerDesignIDField(h pluginsdk.Host) error {
 		Type:        extapi.FieldTypeString,
 		Scope:       extapi.TargetCartItem,
 		StorageMode: extapi.StorageSnapshot,
-		Visibility:  extapi.VisibilityPublic,
+		Visibility:  extapi.VisibilityPrivate,
 		Access:      extapi.Access{PluginOnlyWrite: true},
 		Validation:  extapi.Validation{Regex: designIDPattern},
 	})
