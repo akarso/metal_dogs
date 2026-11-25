@@ -41,4 +41,4 @@ No migration and no flag. Rollback is reverting the visibility change. Rows alre
 
 ## Follow-ups
 
-- E6b: register `order.line.display` and append `OrderThumbnailURL`.
+- E6b: register `order.line.display` and append `OrderThumbnailURL`. Pin `98d67491` ([CR-41](CR-41-upg14-pin-98d67491.md)) adds payload `language` (`OrderLineDisplayLanguage()`). E6b is not done.
