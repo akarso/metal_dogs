@@ -1,7 +1,7 @@
 # Runbook: upgrading the pinned Shopanda version
 
 - **Introduced by slice:** `F0`
-- **Last exercised:** 2026-11-24 (pin → `084d1206`; PR-1603 / shopanda#660). Explicit SHA. On `upstream/main` and the tip of `upstream/dev`. Tree equals `upstream/dev` tip `084d1206` and `upstream/main` tip `7d386c6b` (shopanda#661).
+- **Last exercised:** 2026-11-24 (pin → `7ab17606`; PR-1604, PR-1605, PR-1606 / shopanda#664, #662, #666). Explicit SHA. Tip of `upstream/main` (shopanda#667). Tree equals `upstream/dev` tip `b736a1fc` (shopanda#666).
 - **Severity when triggered:** medium (planned change with regression risk)
 - **Owner:** backend maintainer
 
@@ -39,7 +39,7 @@ Risk of contract drift in extension points (cart hook, checkout step, extension 
    ```
 
    Resolve conflicts using the upstream runbook at the pin
-   ([product-fork-upgrade](https://github.com/akarso/shopanda/blob/084d120660c50acabb045c1b19a78f25677d6843/docs/runbooks/product-fork-upgrade.md);
+   ([product-fork-upgrade](https://github.com/akarso/shopanda/blob/7ab1760627ba666bac20d1c217ae3f185f5cb20d/docs/runbooks/product-fork-upgrade.md);
    manifest [`../PRODUCT_OWNED.md`](../PRODUCT_OWNED.md)):
    - **`docs/`** — keep Metal Dogs narrative. Keep upstream `docs/PRODUCT_OWNED.md`. Do not vendor Shopanda guide files, phase history, or the upstream product-fork-upgrade runbook (it links guide files that are not in this tree).
    - **`AGENTS.md`** — keep Metal Dogs project rules; refresh the build/test command section from upstream if commands changed.
