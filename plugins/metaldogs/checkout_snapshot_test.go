@@ -87,7 +87,7 @@ func TestCheckout_OrderSnapshot(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		assertOrderCarriesDesign(t, body, seed.Design.ID, variantM)
+		assertOrderCarriesDesign(t, db, body, seed.Design.ID, variantM)
 		orderID, _ := checkoutOrder(t, body)
 		if n := waitOrderJobs(t, db, dispatchType, orderID, 1); n != 1 {
 			t.Fatalf("dispatcher jobs=%d", n)

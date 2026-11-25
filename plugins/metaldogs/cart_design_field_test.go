@@ -1,7 +1,10 @@
 package metaldogs_test
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,7 +44,7 @@ func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
 			"value":      "11111111-1111-4111-8111-111111111111",
 		}},
 	})
-	if status != http.StatusForbidden || cartErrorCode(t, body) != "forbidden_plugin_only_field" {
+	if status != http.StatusForbidden || cartErrorCode(t, body) != "forbidden_private_field" {
 		t.Fatalf("add with design field: status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
 	}
 	if items := cartItems(t, srv, cartID); len(items) != 0 {
@@ -70,8 +73,8 @@ func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
 	}
 	designCartID := cookieValue(cookies, sessionCartCookie)
 	before := cartItems(t, srv, designCartID)
-	if len(before) != 1 || extensionValue(t, before[0]) != design.ID {
-		t.Fatalf("design line=%+v", before)
+	if len(before) != 1 || storedDesignID(t, db, designCartID, variantID) != design.ID {
+		t.Fatalf("design line=%+v stored=%q", before, storedDesignID(t, db, designCartID, variantID))
 	}
 
 	status, body = cartDo(t, srv, http.MethodPost, "/api/v1/carts/"+designCartID+"/items", map[string]any{
@@ -82,11 +85,11 @@ func TestPublicCartAPI_DesignFieldRefusedAndPlainAddWorks(t *testing.T) {
 			"value":      "22222222-2222-4222-8222-222222222222",
 		}},
 	})
-	if status != http.StatusForbidden || cartErrorCode(t, body) != "forbidden_plugin_only_field" {
+	if status != http.StatusForbidden || cartErrorCode(t, body) != "forbidden_private_field" {
 		t.Fatalf("update with design field: status=%d code=%s body=%s", status, cartErrorCode(t, body), body)
 	}
 	items := cartItems(t, srv, designCartID)
-	if len(items) != 1 || items[0].Quantity != before[0].Quantity || items[0].VariantID != before[0].VariantID || extensionValue(t, items[0]) != design.ID {
+	if len(items) != 1 || items[0].Quantity != before[0].Quantity || items[0].VariantID != before[0].VariantID || storedDesignID(t, db, designCartID, variantID) != design.ID {
 		t.Fatalf("cart after refused update = %+v, want %+v", items, before)
 	}
 }
@@ -138,7 +141,41 @@ func cartItems(t *testing.T, srv *httptest.Server, cartID string) []cartLine {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		t.Fatalf("cart body: %v %s", err, body)
 	}
+	for _, item := range envelope.Data.Cart.Items {
+		for _, ext := range item.Extensions {
+			if ext.FieldCode == ports.DesignIDFieldCode {
+				t.Fatalf("public cart exposes %s: %+v", ports.DesignIDFieldCode, item.Extensions)
+			}
+		}
+	}
 	return envelope.Data.Cart.Items
+}
+
+func storedDesignID(t *testing.T, db *sql.DB, cartID, variantID string) string {
+	t.Helper()
+	var value sql.NullString
+	err := db.QueryRowContext(context.Background(),
+		`SELECT value->>'string_value' FROM extension_values WHERE target_type = 'cart_item' AND target_id = $1 AND field_code = $2`,
+		cartID+":"+variantID, ports.DesignIDFieldCode).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("stored design id %s:%s: %v", cartID, variantID, err)
+	}
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func designIDs(t *testing.T, db *sql.DB, cartID string, items []cartLine) map[string]string {
+	t.Helper()
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		out[item.VariantID] = storedDesignID(t, db, cartID, item.VariantID)
+	}
+	return out
 }
 
 func cartErrorCode(t *testing.T, body []byte) string {

@@ -59,7 +59,7 @@ plugins/metaldogs/
 | `GET` | `/api/customizer/generation-jobs/{id}` | Bearer | Job status + `retry_after` |
 | `POST` | `/api/customizer/designs/{id}/approve` | Bearer | Freeze `DesignVersion`; design → `approved`; enqueue prepare (no spec: `pending_spec`, version stays `pending`; spec set: store the file or `failed` + `production_failure_reason`; enqueue failure is 503) |
 | `POST` | `/api/customizer/designs/{id}/clone` | Bearer | New draft + token; Put-copies source bytes |
-| `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer | Session cart line for one custom-tee variant; `200` `{ "cart_url": "/cart" }`. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |
+| `POST` | `/api/customizer/designs/{id}/add-to-cart` | Bearer | Session cart line for one custom-tee variant; `200` `{ "cart_url": "/cart" }`. `metaldogs.design_id` is private. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |
 | `GET` | `/api/v1/admin/customizer/health` | `jobs.read` | Per-type depths via `Host.Jobs().CountsByType` |
 | `GET` | `/api/v1/admin/orders/{order_id}/artwork` | `metaldogs.snapshots.read` (`admin` only) | Snapshot metadata and 300s signed URLs. Only when `order_snapshot.enabled` is true. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |
 | `GET` | `/api/customizer/order-thumbnails/{token}` | public | Thumbnail bytes for one order line. Only when `order_snapshot.enabled` is true and `thumbnail_signing_key` is set. Not `NoCache`. Contract: [`docs/architecture/api.md`](../../docs/architecture/api.md) |

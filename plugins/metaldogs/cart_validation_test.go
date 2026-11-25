@@ -57,7 +57,7 @@ func TestCartValidation_DesignLines(t *testing.T) {
 			t.Fatalf("issues after quantity=%+v", issues)
 		}
 		items := cartItems(t, srv, cartID)
-		if len(items) != 1 || items[0].Quantity != 2 || extensionValue(t, items[0]) != design.ID {
+		if len(items) != 1 || items[0].Quantity != 2 || storedDesignID(t, db, cartID, variantM) != design.ID {
 			t.Fatalf("items=%+v", items)
 		}
 	})
@@ -209,10 +209,10 @@ func TestCartValidation_DesignLines(t *testing.T) {
 			t.Fatalf("other product: status=%d body=%s", status, body)
 		}
 		items := cartItems(t, srv, cartID)
-		if extensionValue(t, lineByVariant(t, items, variantM)) != good.ID || lineByVariant(t, items, variantM).Quantity != 2 {
+		if storedDesignID(t, db, cartID, variantM) != good.ID || lineByVariant(t, items, variantM).Quantity != 2 {
 			t.Fatalf("M=%+v", lineByVariant(t, items, variantM))
 		}
-		if extensionValue(t, lineByVariant(t, items, variantL)) != stale.ID {
+		if storedDesignID(t, db, cartID, variantL) != stale.ID {
 			t.Fatalf("L=%+v", lineByVariant(t, items, variantL))
 		}
 		status, body = cartDo(t, srv, http.MethodPut, "/api/v1/carts/"+cartID+"/items/"+otherVariant, map[string]any{"quantity": 1})
@@ -235,7 +235,7 @@ func TestCartValidation_DesignLines(t *testing.T) {
 				t.Fatalf("removed line still present: %+v", items)
 			}
 		}
-		if extensionValue(t, lineByVariant(t, items, variantL)) != stale.ID {
+		if storedDesignID(t, db, cartID, variantL) != stale.ID {
 			t.Fatalf("L lost design: %+v", lineByVariant(t, items, variantL))
 		}
 		issues := cartValidationIssues(t, srv, cartID)
@@ -267,7 +267,7 @@ func TestCartValidation_DraftOtherLineDoesNotBlockSiblingMutation(t *testing.T) 
 		t.Fatalf("tee add: status=%d body=%s", status, body)
 	}
 	items := cartItems(t, srv, cartID)
-	if len(items) != 2 || lineByVariant(t, items, other).Quantity != 2 || extensionValue(t, lineByVariant(t, items, variantM)) != design.ID {
+	if len(items) != 2 || lineByVariant(t, items, other).Quantity != 2 || storedDesignID(t, db, cartID, variantM) != design.ID {
 		t.Fatalf("after tee add items=%+v", items)
 	}
 
@@ -366,7 +366,7 @@ func TestAddToCart_ConcurrentSameDesignKeepsDesignID(t *testing.T) {
 	}
 
 	items := cartItems(t, srv, cartID)
-	if len(items) != 1 || items[0].VariantID != variantM || extensionValue(t, items[0]) != design.ID {
+	if len(items) != 1 || items[0].VariantID != variantM || storedDesignID(t, db, cartID, variantM) != design.ID {
 		t.Fatalf("items=%+v", items)
 	}
 }

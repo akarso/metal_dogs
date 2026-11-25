@@ -1,6 +1,7 @@
 package metaldogs_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -27,8 +28,9 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 		t.Fatal("session cart cookie missing")
 	}
 	want := cartItems(t, srv, cartID)
-	if len(want) != 1 || want[0].Quantity != 1 || extensionValue(t, want[0]) != approved.ID {
-		t.Fatalf("items=%+v", want)
+	wantDesign := designIDs(t, db, cartID, want)
+	if len(want) != 1 || want[0].Quantity != 1 || wantDesign[variantM] != approved.ID {
+		t.Fatalf("items=%+v design=%v", want, wantDesign)
 	}
 
 	t.Run("same design same variant", func(t *testing.T) {
@@ -40,7 +42,7 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 		if got := cookieValue(cookies, sessionCartCookie); got != cartID {
 			t.Fatalf("cookie=%q", got)
 		}
-		assertSameLines(t, want, cartItems(t, srv, cartID))
+		assertSameLines(t, db, cartID, want, cartItems(t, srv, cartID), wantDesign)
 	})
 
 	t.Run("different design same variant", func(t *testing.T) {
@@ -57,7 +59,7 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 		if errBody.Error != "conflict" {
 			t.Fatalf("error=%q", errBody.Error)
 		}
-		assertSameLines(t, want, cartItems(t, srv, cartID))
+		assertSameLines(t, db, cartID, want, cartItems(t, srv, cartID), wantDesign)
 	})
 
 	t.Run("same design other variant", func(t *testing.T) {
@@ -73,10 +75,10 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 		if len(items) != 2 {
 			t.Fatalf("items=%+v", items)
 		}
-		if extensionValue(t, lineByVariant(t, items, variantM)) != approved.ID || lineByVariant(t, items, variantM).Quantity != 1 {
+		if storedDesignID(t, db, cartID, variantM) != approved.ID || lineByVariant(t, items, variantM).Quantity != 1 {
 			t.Fatalf("M=%+v", lineByVariant(t, items, variantM))
 		}
-		if extensionValue(t, lineByVariant(t, items, variantL)) != approved.ID || lineByVariant(t, items, variantL).Quantity != 1 {
+		if storedDesignID(t, db, cartID, variantL) != approved.ID || lineByVariant(t, items, variantL).Quantity != 1 {
 			t.Fatalf("L=%+v", lineByVariant(t, items, variantL))
 		}
 	})
@@ -87,8 +89,9 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 			t.Fatalf("update: status=%d body=%s", status, body)
 		}
 		raised := cartItems(t, srv, cartID)
-		if lineByVariant(t, raised, variantM).Quantity != 2 || extensionValue(t, lineByVariant(t, raised, variantM)) != approved.ID {
-			t.Fatalf("after update=%+v", raised)
+		raisedDesign := designIDs(t, db, cartID, raised)
+		if lineByVariant(t, raised, variantM).Quantity != 2 || raisedDesign[variantM] != approved.ID {
+			t.Fatalf("after update=%+v design=%v", raised, raisedDesign)
 		}
 		if lineByVariant(t, raised, variantL).Quantity != 1 {
 			t.Fatalf("L changed=%+v", raised)
@@ -97,7 +100,7 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("repeat: status=%d body=%s", status, body)
 		}
-		assertSameLines(t, raised, cartItems(t, srv, cartID))
+		assertSameLines(t, db, cartID, raised, cartItems(t, srv, cartID), raisedDesign)
 	})
 
 	t.Run("remove and add again", func(t *testing.T) {
@@ -117,10 +120,10 @@ func TestAddToCart_RepeatConflictQuantityAndRemove(t *testing.T) {
 		if len(items) != 2 {
 			t.Fatalf("items=%+v", items)
 		}
-		if lineByVariant(t, items, variantM).Quantity != 1 || extensionValue(t, lineByVariant(t, items, variantM)) != other.ID {
+		if lineByVariant(t, items, variantM).Quantity != 1 || storedDesignID(t, db, cartID, variantM) != other.ID {
 			t.Fatalf("M=%+v", lineByVariant(t, items, variantM))
 		}
-		if lineByVariant(t, items, variantL).Quantity != 1 || extensionValue(t, lineByVariant(t, items, variantL)) != approved.ID {
+		if lineByVariant(t, items, variantL).Quantity != 1 || storedDesignID(t, db, cartID, variantL) != approved.ID {
 			t.Fatalf("L=%+v", lineByVariant(t, items, variantL))
 		}
 	})
@@ -144,14 +147,14 @@ func assertCartURL(t *testing.T, body []byte, cartID string) {
 	}
 }
 
-func assertSameLines(t *testing.T, before, after []cartLine) {
+func assertSameLines(t *testing.T, db *sql.DB, cartID string, before, after []cartLine, beforeDesign map[string]string) {
 	t.Helper()
 	if len(before) != len(after) {
 		t.Fatalf("lines %d -> %d\nbefore=%+v\nafter=%+v", len(before), len(after), before, after)
 	}
 	for _, line := range before {
 		got := lineByVariant(t, after, line.VariantID)
-		if got.Quantity != line.Quantity || extensionValue(t, got) != extensionValue(t, line) {
+		if got.Quantity != line.Quantity || storedDesignID(t, db, cartID, line.VariantID) != beforeDesign[line.VariantID] {
 			t.Fatalf("line %s changed\nbefore=%+v\nafter=%+v", line.VariantID, line, got)
 		}
 	}
@@ -166,16 +169,4 @@ func lineByVariant(t *testing.T, items []cartLine, variantID string) cartLine {
 	}
 	t.Fatalf("variant %s missing in %+v", variantID, items)
 	return cartLine{}
-}
-
-func extensionValue(t *testing.T, line cartLine) string {
-	t.Helper()
-	if len(line.Extensions) != 1 || line.Extensions[0].FieldCode != "metaldogs.design_id" {
-		t.Fatalf("extensions=%+v", line.Extensions)
-	}
-	value, ok := line.Extensions[0].Value.(string)
-	if !ok {
-		t.Fatalf("value=%T %+v", line.Extensions[0].Value, line.Extensions[0].Value)
-	}
-	return value
 }

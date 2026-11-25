@@ -318,9 +318,9 @@ Bearer handling matches Designs (C3): an owner token has no dots, so `AuthMiddle
 
 ### Success
 
-`200` and `Set-Cookie` for the session cart. `cart_url` is `/cart`. A new line has quantity `1`. The public cart response shows `metaldogs.design_id` on that line. Repeating the same design and the same variant returns `200` and does not change quantity. The same design on another variant adds a second line. Quantity above one is changed on the Shopanda cart page; this route never raises it. The design's status, versions, and expiry are unchanged.
+`200` and `Set-Cookie` for the session cart. `cart_url` is `/cart`. A new line has quantity `1`. The public cart response does not show `metaldogs.design_id`. Repeating the same design and the same variant returns `200` and does not change quantity. The same design on another variant adds a second line. Quantity above one is changed on the Shopanda cart page; this route never raises it. The design's status, versions, and expiry are unchanged.
 
-The field is public, plugin-only write, snapshot storage, UUID-shaped. The trusted-write context is created only around `AddItem`. `EnsureStorefrontCart` and `CatalogPort.FindVariants` run without that grant. The field code and the trust marker are fixed in code.
+The field is private, plugin-only write, snapshot storage, UUID-shaped. Shopper order JSON, the confirmation email, and the storefront order pages omit it. Checkout still copies the stored value onto the order line. The trusted-write context is created only around `AddItem`. `EnsureStorefrontCart` and `CatalogPort.FindVariants` run without that grant. The field code and the trust marker are fixed in code.
 
 Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line at checkout, before `order.created` at this pin. E4b reads that copy through `Host.Orders()` when the flag is on ([CR-34](../cr-rounds/CR-34-e4b-order-source.md)). The flag defaults off. This route does not create the order snapshot. An `ordered` design stays `409` `invalid_transition` here; re-order is clone, then approve.
 
@@ -329,7 +329,7 @@ Snapshot storage means Shopanda copies `metaldogs.design_id` onto the order line
 | HTTP | Body | When |
 | --- | --- | --- |
 | `400` | `bad_request` | Owner token in the query string |
-| `403` | `forbidden_plugin_only_field` | Any path other than this route tries to set `metaldogs.design_id` (public cart API add and update, SSR cart pages, admin values API). Nothing is stored |
+| `403` | `forbidden_private_field` | Any path other than this route tries to set `metaldogs.design_id` (public cart API add and update, SSR cart pages, admin values API). Nothing is stored. A private field is refused before the plugin-only check |
 | `404` | `not_found` | Unknown design, non-UUID design id, missing or wrong Bearer, expired design |
 | `409` | `invalid_transition` | Design exists and is owned but is not `approved` (including `ordered`) |
 | `409` | `conflict` | This variant already has a different design, or it is already a custom-tee line with no `metaldogs.design_id`. The cart is unchanged. The customer removes that line before a design can be attached |

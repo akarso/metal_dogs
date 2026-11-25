@@ -48,7 +48,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		assertOrderCarriesDesign(t, body, design.ID, variantM)
+		assertOrderCarriesDesign(t, db, body, design.ID, variantM)
 	})
 
 	t.Run("same design two sizes", func(t *testing.T) {
@@ -62,7 +62,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		assertOrderCarriesDesign(t, body, design.ID, variantM, variantL)
+		assertOrderCarriesDesign(t, db, body, design.ID, variantM, variantL)
 	})
 
 	t.Run("ordered", func(t *testing.T) {
@@ -75,7 +75,7 @@ func TestCheckout_DesignSale(t *testing.T) {
 		if status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", status, body)
 		}
-		assertOrderCarriesDesign(t, body, design.ID, variantM)
+		assertOrderCarriesDesign(t, db, body, design.ID, variantM)
 	})
 
 	t.Run("expired", func(t *testing.T) {
@@ -487,33 +487,37 @@ func orderVariantIDs(t *testing.T, body []byte) []string {
 	return out
 }
 
-func assertOrderCarriesDesign(t *testing.T, body []byte, designID string, variantIDs ...string) {
+func assertOrderCarriesDesign(t *testing.T, db *sql.DB, body []byte, designID string, variantIDs ...string) {
 	t.Helper()
-	_, items := checkoutOrder(t, body)
+	orderID, items := checkoutOrder(t, body)
 	if len(items) != len(variantIDs) {
 		t.Fatalf("items=%d want %d body=%s", len(items), len(variantIDs), body)
+	}
+	if strings.Contains(string(body), ports.DesignIDFieldCode) || strings.Contains(string(body), designID) {
+		t.Fatalf("public order body contains design id: %s", body)
 	}
 	seen := map[string]int{}
 	for _, item := range items {
 		seen[item.VariantID]++
-		got := ""
 		for _, ext := range item.Extensions {
-			if ext.FieldCode != ports.DesignIDFieldCode {
-				continue
+			if ext.FieldCode == ports.DesignIDFieldCode {
+				t.Fatalf("public order item exposes %s: %+v", ports.DesignIDFieldCode, item.Extensions)
 			}
-			value, ok := ext.Value.(string)
-			if !ok {
-				t.Fatalf("variant %s design id %#v body=%s", item.VariantID, ext.Value, body)
-			}
-			got = value
-		}
-		if got != designID {
-			t.Fatalf("variant %s design_id=%q want %q body=%s", item.VariantID, got, designID, body)
 		}
 	}
 	for _, id := range variantIDs {
 		if seen[id] != 1 {
 			t.Fatalf("variant %s count=%d body=%s", id, seen[id], body)
+		}
+		var got sql.NullString
+		err := db.QueryRowContext(context.Background(),
+			`SELECT value->>'string_value' FROM extension_values WHERE target_type = 'order_item' AND target_id = $1 AND field_code = $2`,
+			orderID+":"+id, ports.DesignIDFieldCode).Scan(&got)
+		if err != nil {
+			t.Fatalf("order line %s design id: %v body=%s", id, err, body)
+		}
+		if !got.Valid || got.String != designID {
+			t.Fatalf("order line %s design_id=%q want %q", id, got.String, designID)
 		}
 	}
 }
