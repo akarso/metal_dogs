@@ -129,5 +129,5 @@ plugins/b2b/
 ## See also
 
 - [Commercial licensing](../../docs/COMMERCIAL.md)
-- [Developer guide — three tiers](https://github.com/akarso/shopanda/blob/7ab1760627ba666bac20d1c217ae3f185f5cb20d/docs/guides/DEVELOPER.md#three-tier-extension-model)
+- [Developer guide — three tiers](https://github.com/akarso/shopanda/blob/98d67491c3db574fefec59dee3f3b1af734a859b/docs/guides/DEVELOPER.md#three-tier-extension-model)
 - [Example external plugin](../example/README.md) — OSS reference for plugin mechanics

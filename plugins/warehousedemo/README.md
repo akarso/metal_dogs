@@ -47,4 +47,4 @@ Environment variables:
 | `extapi.IntegrationStockSyncer` | Upsert port |
 | `internal/application/inventory.StockSyncService` | SKU lookup + stock persistence |
 
-See also: `plugins/integrationdemo` (inbound Track D), `https://github.com/akarso/shopanda/blob/7ab1760627ba666bac20d1c217ae3f185f5cb20d/docs/guides/PLUGIN_COMPOSITION.md` (outbound section).
+See also: `plugins/integrationdemo` (inbound Track D), `https://github.com/akarso/shopanda/blob/98d67491c3db574fefec59dee3f3b1af734a859b/docs/guides/PLUGIN_COMPOSITION.md` (outbound section).
