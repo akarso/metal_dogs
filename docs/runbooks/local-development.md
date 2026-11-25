@@ -93,7 +93,9 @@ For HA / multi-replica local media, follow Shopanda’s **Local signed URL rollo
 
 ## Order thumbnail on the email and the order pages
 
-`plugins.metaldogs.public_base_url` has to be https before Init registers `order.line.display` (E6b, [CR-42](../cr-rounds/CR-42-e6b-order-thumbnail-display.md)). `http://localhost` logs `metaldogs.order_line_display.public_base_url` once and leaves the hook unregistered. Even with https, the platform drops an image URL whose host is not public, and `localhost` is not public, so a local shop does not show the design picture on the confirmation email or the order pages. The thumbnail bytes route can still answer a direct `GET` when the snapshot flag and the signing key are set.
+`plugins.metaldogs.public_base_url` has to be https before Init registers `order.line.display` (E6b, [CR-42](../cr-rounds/CR-42-e6b-order-thumbnail-display.md)). `http://localhost` logs `metaldogs.order_line_display.public_base_url` once and leaves the hook unregistered. Even with https, the platform drops an image URL whose host is not public (`normalizeHTTPSImageURL` rejects `localhost`), so a local shop does not show the design picture on the confirmation email or the order pages. The thumbnail bytes route can still answer a direct `GET` when the snapshot flag and the signing key are set.
+
+A line with no snapshot when the confirmation email is rendered has no picture in that email. `HandleOrderPaid` calls the hook once while building the message and then enqueues it (`internal/application/notification/service.go`); a later snapshot does not rewrite that message. The checkout confirmation page and the account order page call the hook when the page is rendered (`internal/interfaces/http/storefront/order_extensions.go`), so they can show the picture after a thumbnail exists. `TestOrderLineDisplay_HookOnPostgres` covers a missing snapshot: no field.
 
 ### Why stock `.env.example` alone fails
 

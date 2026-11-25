@@ -82,6 +82,7 @@ flowchart LR
 | **C** Customizer | Templates catalog, uploads, designs, generation jobs orchestration, approval, assets | REST `/api/customizer/*`; application services used by E |
 | **S** Storefront | Vanilla JS customizer UI, mobile capture, polling, previews, accessibility | Static assets served under the shop origin |
 | **E** Commerce | Shopanda catalog setup, cart attach, checkout validation, order design snapshot, admin views | Cart line extension `metaldogs.design_id`; `OrderDesignSnapshot` read API for P |
+| **I** Plugin copy (proposed) | Customizer UI strings and API error messages. E6b localizes only the order-line thumbnail label and alt | Not scheduled. Not on the milestone graph. Not part of M3 or M4 |
 | **P** Fulfillment | POD selection, artwork spec, manual fulfillment, automated submission, status sync | Fulfillment status on snapshot |
 | **O** Trust & ops | Consent copy, retention/deletion, cost caps, rate limits, monitoring, backups | Policies enforced in C/G; dashboards; runbooks |
 | **X** Expansion | Template authoring at scale, hoodies, Etsy decision, accounts, SSE | — |
@@ -497,13 +498,17 @@ The customizer is a vanilla HTML/CSS/JS application served under the shop origin
 - **Status:** The plugin registers `order.line.display` only when it is enabled, `plugins.metaldogs.order_snapshot.enabled` is true, `thumbnail_signing_key` is set, and `public_base_url` is https. The handler appends one image field, code `metaldogs.thumbnail`, whose value is `OrderThumbnailURL`. Label and alt come from one table: en, pl, de, fr, es. The language is the BCP 47 primary subtag (`pl-PL` is pl). An unknown or empty language is en. No snapshot, a snapshot without a thumbnail, or a lookup error skips the field and logs the order id and variant id only. The handler returns nil. When the flag, the key, and a base URL are set but the base is not https, Init logs `metaldogs.order_line_display.public_base_url` once and does not register the hook. The thumbnail route still follows E6a. Shopanda renders `Kind=image` on the confirmation email and on both order pages. This slice does not edit those templates. The flag still defaults to false. DID1 is not this slice.
 - **Tests:** `TestOrderLineDisplay_HookOnPostgres` on isolated Postgres invokes the registered hook through the hook registry. A line with a thumbnail gets the image field, and `GET` on that URL returns the image from the E6a handler. Labels cover en, pl, de, fr, es, `pl-PL`, an unknown tag, and an empty language. A missing snapshot, a snapshot without a thumbnail, and another variant with no snapshot add no field. A closed database skips, logs, and does not fail the hook. `TestOrderLineDisplay_NotRegisteredWhileDark`. `TestOrderLineDisplay_HTTPBaseWarnsAndSkipsRegistration`. The account order page is not rendered from this package: storefront fixture helpers are unexported, and this slice does not edit `internal/*`. Upstream `TestStorefrontHandler_AccountOrderDetail_OrderLineDisplayImage` already renders `<img>` for `Kind=image`. [CR-42](cr-rounds/CR-42-e6b-order-thumbnail-display.md).
 - **Safe delivery:** Flag off, missing key, or a non-https base: the hook is not registered. Rollback is the flag, the key, or the base URL. No migration. Nothing under `internal/*`, `pkg/*`, or core `cmd/api/*`. No template edits.
-- **Known limits:** The platform drops an image URL whose host is not public, so `localhost` does not show the picture. The hook also requires https, so a local http origin never registers. A snapshot written before a mockup existed stays without a thumbnail. The lookup does not require the order to be paid. `metaldogs.design_id` stays private ([CR-40](cr-rounds/CR-40-did1-hide-design-id.md)). Other plugin copy is the proposed slice I1.
-- **Docs:** [ADR-0004](adr/0004-private-object-storage-signed-urls.md); [`architecture/api.md`](architecture/api.md); [`architecture/flows/checkout-snapshot-and-fulfillment.md`](architecture/flows/checkout-snapshot-and-fulfillment.md); `plugins/metaldogs/README.md`; `configs/config.example.product.yaml`; [`runbooks/local-development.md`](runbooks/local-development.md); [CR-42](cr-rounds/CR-42-e6b-order-thumbnail-display.md).
+- **Known limits:** The platform drops an image URL whose host is not public, so `localhost` does not show the picture. The hook also requires https, so a local http origin never registers. A missing snapshot when the confirmation email is rendered leaves that email without the picture; the message is not rewritten later. A snapshot written before a mockup existed stays without a thumbnail. The lookup does not require the order to be paid. `metaldogs.design_id` stays private ([CR-40](cr-rounds/CR-40-did1-hide-design-id.md)). Other plugin copy is proposed track I.
+- **Docs:** [ADR-0004](adr/0004-private-object-storage-signed-urls.md); [`architecture/api.md`](architecture/api.md); [`architecture/flows/checkout-snapshot-and-fulfillment.md`](architecture/flows/checkout-snapshot-and-fulfillment.md); `plugins/metaldogs/README.md`; `configs/config.example.product.yaml`; [`runbooks/local-development.md`](runbooks/local-development.md); [`runbooks/order-without-design-snapshot.md`](runbooks/order-without-design-snapshot.md); [CR-42](cr-rounds/CR-42-e6b-order-thumbnail-display.md).
+
+### Track I — Plugin copy (proposed)
+
+Not on the milestone graph. Not part of M3 or M4. E6b does not cover this track.
 
 #### I1 · Remaining plugin copy — size S — proposed
 
 - **Goal:** Localize customizer UI strings and API error messages. E6b localizes only the order-line thumbnail label and alt.
-- **Status:** Not scheduled. Not part of M3 or M4.
+- **Status:** Not scheduled.
 
 ### Track P — Fulfillment / POD
 

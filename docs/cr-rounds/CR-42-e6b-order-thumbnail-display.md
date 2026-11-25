@@ -47,7 +47,7 @@ The plugin registers hook `order.line.display` and appends one image field for a
 - [x] ADR-0004 amendment: the order-line image field. `docs/adr/README.md` matches.
 - [x] `docs/architecture/flows/checkout-snapshot-and-fulfillment.md`: the hook calls `OrderThumbnailURL`.
 - [x] `docs/architecture/overview.md`: the pin paragraph records the registration.
-- [x] `docs/runbooks/README.md` and `docs/runbooks/local-development.md`: https required; `localhost` does not show the image.
+- [x] `docs/runbooks/README.md`, `docs/runbooks/local-development.md`, and `docs/runbooks/order-without-design-snapshot.md`: https required; `localhost` does not show the image; a missing snapshot when the confirmation email is rendered leaves that email without the picture.
 - [x] `configs/config.example.product.yaml` and `plugins/metaldogs/README.md`: hook and string table.
 - [x] [CR-37](CR-37-e6a-order-thumbnail.md) follow-up points here.
 - [x] Index row in this file's parent README.
