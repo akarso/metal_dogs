@@ -4,7 +4,7 @@
 
 No provider is chosen. The fulfilment rows in [ADR-0009](../adr/0009-pod-provider-and-catalog-modelling.md) stay `_pending_` until a sample is reviewed. This repository holds no printer numbers until P0 records them here.
 
-The 2026-11-25 read used search snippets. Some vendor pages returned 403. It did not record a source host except `api.sandbox.prodigi.com` (Prodigi sandbox). Every provider cell below is that read: date 2026-11-25, source host `not confirmed`, unless the cell names that host. A value is not a dashboard confirmation.
+The 2026-11-25 read used search snippets. Some vendor pages returned 403. The source column names the provider's own hosts the read drew from; the read did not keep a URL per row, so a row is not traceable to one page. Every provider cell below is that read, dated 2026-11-25. A value is not a dashboard confirmation. Where the read found no value, the cell says `not confirmed`.
 
 ## Selection requirements
 
@@ -25,31 +25,31 @@ Same garment for the two sample orders: Bella+Canvas 3001, so the comparison is 
 
 | Criterion | Value | Date | Source host |
 | --- | --- | --- | --- |
-| DTG, white underbase | yes (automatic) | 2026-11-25 | not confirmed |
-| File | PNG, sRGB, 150 minimum / 300 DPI | 2026-11-25 | not confirmed |
-| Production in the EU | local to the ship-to address; Poland and Germany for Bella+Canvas 3001 | 2026-11-25 | not confirmed |
-| Order creation | `POST v4/orders`, `orderReferenceId` | 2026-11-25 | not confirmed |
-| Cancellation | endpoint exists; window unclear (409 after the print has started) | 2026-11-25 | not confirmed |
-| Webhooks | 4 events; signature not confirmed | 2026-11-25 | not confirmed |
-| Sandbox | none; draft orders | 2026-11-25 | not confirmed |
-| Sample price | from about 9.78 EUR net; discount applied automatically; shipping to Poland not confirmed | 2026-11-25 | not confirmed |
-| Data-processing agreement | not confirmed (API Terms mention a DPA) | 2026-11-25 | not confirmed |
-| Neutral packaging | labels and inserts; whether the standard plan includes them not confirmed | 2026-11-25 | not confirmed |
+| DTG, white underbase | yes (automatic) | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| File | PNG, sRGB, 150 minimum / 300 DPI | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Production in the EU | local to the ship-to address; Poland and Germany for Bella+Canvas 3001 | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Order creation | `POST v4/orders`, `orderReferenceId` | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Cancellation | endpoint exists; window unclear (409 after the print has started) | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Webhooks | 4 events; signature not confirmed | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Sandbox | none; draft orders | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Sample price | from about 9.78 EUR net; discount applied automatically; shipping to Poland not confirmed | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Data-processing agreement | not confirmed (API Terms mention a DPA) | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
+| Neutral packaging | labels and inserts; whether the standard plan includes them not confirmed | 2026-11-25 | `gelato.com`, `support.gelato.com`, `dashboard.gelato.com` (page not read in full, see note) |
 
 ### Printful — to sample
 
 | Criterion | Value | Date | Source host |
 | --- | --- | --- | --- |
-| DTG, white underbase | yes | 2026-11-25 | not confirmed |
-| File | PNG, sRGB, 150–300 DPI | 2026-11-25 | not confirmed |
-| Production in the EU | Riga (LV), Barcelona (ES) | 2026-11-25 | not confirmed |
-| Order creation | `POST /orders`, `external_id` (max 32 characters) | 2026-11-25 | not confirmed |
-| Cancellation | draft and pending only | 2026-11-25 | not confirmed |
-| Webhooks | HMAC-SHA256 (header) | 2026-11-25 | not confirmed |
-| Sandbox | webhook simulator only; draft order | 2026-11-25 | not confirmed |
-| Sample price | Bella+Canvas 3001 about 11.9 USD, 20% discount, shipping in Europe 4.99 USD | 2026-11-25 | not confirmed |
-| Data-processing agreement | published; processor; SCC | 2026-11-25 | not confirmed |
-| Neutral packaging | no Printful brand; own packing slip | 2026-11-25 | not confirmed |
+| DTG, white underbase | yes | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| File | PNG, sRGB, 150–300 DPI | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Production in the EU | Riga (LV), Barcelona (ES) | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Order creation | `POST /orders`, `external_id` (max 32 characters) | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Cancellation | draft and pending only | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Webhooks | HMAC-SHA256 (header) | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Sandbox | webhook simulator only; draft order | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Sample price | Bella+Canvas 3001 about 11.9 USD, 20% discount, shipping in Europe 4.99 USD | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Data-processing agreement | published; processor; SCC | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
+| Neutral packaging | no Printful brand; own packing slip | 2026-11-25 | `printful.com`, `help.printful.com`, `developers.printful.com` (page not read in full, see note) |
 
 ### Prodigi — excluded
 
@@ -57,16 +57,16 @@ No confirmed EU apparel lab. The read places shirts in the UK and the US (duty a
 
 | Criterion | Value | Date | Source host |
 | --- | --- | --- | --- |
-| DTG, white underbase | DTG; underbase not confirmed | 2026-11-25 | not confirmed |
-| File | PNG/PDF, 300 DPI | 2026-11-25 | not confirmed |
-| Production in the EU | shirts from the UK and the US; no confirmed EU lab | 2026-11-25 | not confirmed |
-| Order creation | `POST /v4.0/orders`, idempotency header (optional) | 2026-11-25 | not confirmed |
-| Cancellation | unclear; the read found contradictory docs | 2026-11-25 | not confirmed |
-| Webhooks | CloudEvents; signature not confirmed | 2026-11-25 | not confirmed |
+| DTG, white underbase | DTG; underbase not confirmed | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| File | PNG/PDF, 300 DPI | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| Production in the EU | shirts from the UK and the US; no confirmed EU lab | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| Order creation | `POST /v4.0/orders`, idempotency header (optional) | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| Cancellation | unclear; the read found contradictory docs | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| Webhooks | CloudEvents; signature not confirmed | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
 | Sandbox | yes (`api.sandbox.prodigi.com`) | 2026-11-25 | `api.sandbox.prodigi.com` |
-| Sample price | shipping not confirmed; 50% refund not confirmed for apparel | 2026-11-25 | not confirmed |
-| Data-processing agreement | published; artwork retention 30 vs 45 days (the read found both) | 2026-11-25 | not confirmed |
-| Neutral packaging | no brand on some products | 2026-11-25 | not confirmed |
+| Sample price | shipping not confirmed; 50% refund not confirmed for apparel | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| Data-processing agreement | published; artwork retention 30 vs 45 days (the read found both) | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
+| Neutral packaging | no brand on some products | 2026-11-25 | `prodigi.com`, `support.prodigi.com` (page not read in full, see note) |
 
 ### Printify — excluded
 
@@ -74,16 +74,16 @@ Quality depends on the third-party print provider. The read found no sample disc
 
 | Criterion | Value | Date | Source host |
 | --- | --- | --- | --- |
-| DTG, white underbase | yes | 2026-11-25 | not confirmed |
-| File | PNG/JPEG/SVG, 300 DPI | 2026-11-25 | not confirmed |
-| Production in the EU | providers in DE, LV, PL, ES; names not confirmed | 2026-11-25 | not confirmed |
-| Order creation | `POST orders.json`, `external_id` (duplicate returns 409) | 2026-11-25 | not confirmed |
-| Cancellation | on-hold and payment-not-received only | 2026-11-25 | not confirmed |
-| Webhooks | HMAC-SHA256 (header) | 2026-11-25 | not confirmed |
-| Sandbox | not confirmed | 2026-11-25 | not confirmed |
-| Sample price | standard price; no sample discount | 2026-11-25 | not confirmed |
-| Data-processing agreement | published; EU party not confirmed | 2026-11-25 | not confirmed |
-| Neutral packaging | partial; depends on the provider | 2026-11-25 | not confirmed |
+| DTG, white underbase | yes | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| File | PNG/JPEG/SVG, 300 DPI | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Production in the EU | providers in DE, LV, PL, ES; names not confirmed | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Order creation | `POST orders.json`, `external_id` (duplicate returns 409) | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Cancellation | on-hold and payment-not-received only | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Webhooks | HMAC-SHA256 (header) | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Sandbox | not confirmed | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Sample price | standard price; no sample discount | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Data-processing agreement | published; EU party not confirmed | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
+| Neutral packaging | partial; depends on the provider | 2026-11-25 | `printify.com`, `help.printify.com`, `developers.printify.com` (page not read in full, see note) |
 
 ## Mapping to `production_spec`
 
