@@ -89,7 +89,7 @@ Quality depends on the third-party print provider. The read found no sample disc
 
 `plugins.metaldogs.production_spec` is configuration for `prepare_production_artwork` ([CR-36](../cr-rounds/CR-36-g5a-production-artwork.md)). One file per design version. Per-size files stay out of scope (G5a).
 
-A reviewed sample is what fills the keys. Until then every value stays empty. Do not copy example numbers from `configs/config.example.product.yaml`; those are not a printer size. This repository holds no printer numbers until P0 records them in the value column.
+A reviewed sample is what fills the keys. Until then every value stays empty. The `width_px`, `height_px`, and `dpi` placeholders in `configs/config.example.product.yaml` are empty; they are not a printer size. This repository holds no printer numbers until P0 records them in the value column.
 
 | Key | How a reviewed sample fills it | Value |
 | --- | --- | --- |
