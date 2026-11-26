@@ -94,3 +94,4 @@ Run at the close of every round; paste the completed checklist into the round re
 | CR-40 | DID1 hide `metaldogs.design_id` from shopper order surfaces | M3 | [`CR-40-did1-hide-design-id.md`](CR-40-did1-hide-design-id.md) |
 | CR-41 | UPG14 pin `98d67491` (ticket 00; PR-1607). E6b not done in that pin | M3 pin | [`CR-41-upg14-pin-98d67491.md`](CR-41-upg14-pin-98d67491.md) |
 | CR-42 | E6b order thumbnail on the confirmation email and the order pages. M4 stays open | M4 → E6b | [`CR-42-e6b-order-thumbnail-display.md`](CR-42-e6b-order-thumbnail-display.md) |
+| CR-43 | P0 production-spec document and sample plan. Sample not ordered. Provider not chosen | P0 in progress | [`CR-43-p0a-production-spec.md`](CR-43-p0a-production-spec.md) |
