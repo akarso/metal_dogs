@@ -37,9 +37,11 @@ Catalog modelling above is Accepted. `plugins/metaldogs/catalog/` plus `metaldog
 | Data-processing terms (customer address, artwork retention) | _pending_ |
 | Physical sample result (garment, print quality vs preview) | _pending_ |
 
+Requirements, the candidate comparison, the sample plan, and the empty mapping onto `plugins.metaldogs.production_spec` are in [production-spec.md](../architecture/production-spec.md) ([CR-43](../cr-rounds/CR-43-p0a-production-spec.md)). No provider is chosen. This table stays `_pending_` until that sample is reviewed.
+
 ### G5a (CR-36) — config until P0
 
-The table above stays Proposed. Until P0 fills it, `prepare_production_artwork` reads `plugins.metaldogs.production_spec` (`width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` only `srgb`, `upscale_policy` `reject|upscale`). No defaults. The section absent leaves the job on `pending_spec` and the version `pending`. A present section with any field missing or invalid ends that plugin's Init: worker, scheduler, and the jobs CLI refuse to start; `serve` starts with metaldogs inactive (no routes and no jobs). Those keys are not the accepted printer specification and are not hard-coded sizes. `docs/architecture/production-spec.md` is still the P0 deliverable; it is not in the tree. One spec per product; one production file per `DesignVersion`. Per-size files stay out of scope.
+The table above stays Proposed. The working document for the sample is [production-spec.md](../architecture/production-spec.md) ([CR-43](../cr-rounds/CR-43-p0a-production-spec.md)). Until a reviewed sample fills the table, `prepare_production_artwork` reads `plugins.metaldogs.production_spec` (`width_px`, `height_px`, `dpi`, `require_transparency`, `color_profile` only `srgb`, `upscale_policy` `reject|upscale`). No defaults. The section absent leaves the job on `pending_spec` and the version `pending`. A present section with any field missing or invalid ends that plugin's Init: worker, scheduler, and the jobs CLI refuse to start; `serve` starts with metaldogs inactive (no routes and no jobs). Those keys are not the accepted printer specification and are not hard-coded sizes. The repository holds no printer numbers until P0 records them. One spec per product; one production file per `DesignVersion`. Per-size files stay out of scope.
 
 ## Alternatives considered
 

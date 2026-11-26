@@ -515,6 +515,7 @@ Not on the milestone graph. Not part of M3 or M4. E6b does not cover this track.
 #### P0 · POD selection, file specification, physical sample — size M (external, paid sample)
 
 - **Goal:** Choose provider; record print technology, file format, DPI, dimensions per size, transparency, colour profile, API capabilities (order creation, status webhooks, cancellation window), data-processing terms; order a physical sample from a G1 artwork.
+- **Status:** in progress: [production-spec.md](architecture/production-spec.md) ([CR-43](cr-rounds/CR-43-p0a-production-spec.md)), sample not ordered
 - **Docs:** ADR-0009 → Accepted (provider); spec stored in `architecture/production-spec.md`.
 - **Safe delivery:** No code.
 
